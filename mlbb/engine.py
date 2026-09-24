@@ -16,8 +16,9 @@ ROLE_TO_STAT = {"EXP": "exp", "Лес": "jungle", "Мид": "mid", "Голд": "
 
 # Same normalized recommendation model as the Wild Rift project.  The draft
 # itself is the main signal: matchup quality + multi-target coverage = 80%.
-# MLBB currently has no independent tier table in its local data source, so the
-# tier slot remains neutral (50) instead of inventing meta data.
+# MLBB tier data is cached from MLBBDex /api/v1/rankings during database update.
+# If that provider is temporarily unavailable, the last known-good tier remains
+# in SQLite; heroes without a tier fall back to the neutral score of 50.
 FINAL_WEIGHTS = {
     "matchup": 0.60,
     "coverage": 0.20,
@@ -137,9 +138,13 @@ def _stat(champion_id: str, lane: str, rank_segment: str = "all", snapshot: dict
 
 
 def _tier(champion_id: str, role_ru: str, snapshot: dict | None = None) -> str:
-    # The MLBB database has no independent tier-list table at present.  Returning
-    # an empty tier makes the shared scoring model use the neutral value (50).
-    return ""
+    """Return the latest cached MLBB meta tier for the selected lane."""
+    stat_lane = ROLE_TO_STAT.get(role_ru, "")
+    if not stat_lane:
+        return ""
+    st = _stat(champion_id, stat_lane, "all", snapshot)
+    tier = str((st or {}).get("tier") or "").strip().upper()
+    return tier if tier in TIER_SCORE else ""
 
 
 def _role_evidence(champ: dict, role_ru: str, snapshot: dict | None = None) -> float | None:
@@ -269,7 +274,7 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
     Score components are normalized to 0..100 and weighted as follows:
       60% matchup strength against the whole enemy draft
       20% number of entered enemies the candidate actually counters
-      15% meta tier (neutral until MLBB has an independent tier source)
+      15% current meta tier from MLBBDex
        5% current role win-rate percentile
 
     Enemy roles are inferred from lane metadata and role-specific statistics.
