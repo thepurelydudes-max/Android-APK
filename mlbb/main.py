@@ -7,8 +7,6 @@ import traceback
 
 import flet as ft
 
-from license_gate import LicenseGate
-
 from paths import RUNTIME_DIR, ensure_initial_data, resolve_media_path
 
 # Android bundles are read-only. Seed the writable database/cache before db.py
@@ -80,7 +78,7 @@ TEXT = {
         "score": "Оценка",
         "recommended_items": "Рекомендуемые предметы",
         "build_description": "Описание сборки",
-        "offline": "Основная работа офлайн; интернет нужен для проверки лицензии не реже одного раза в 30 дней и для обновления базы.",
+        "offline": "Основная работа офлайн; интернет нужен только для обновления базы.",
     },
     "en": {
         "title": "Mobile Legends Counter Assistant",
@@ -112,7 +110,7 @@ TEXT = {
         "score": "Score",
         "recommended_items": "Recommended items",
         "build_description": "Build description",
-        "offline": "Normal use is offline; internet is required for a license check at least once every 30 days and for database updates.",
+        "offline": "Normal use is offline; internet is required only for database updates.",
     },
 }
 
@@ -1189,14 +1187,8 @@ class MobileAssistant:
 
 
 async def main(page: ft.Page):
-    gate = LicenseGate(
-        page,
-        product_id="mobilelegends",
-        product_name="Mobile Legends Counter Assistant",
-        logo_asset="mobilelegends_logo.png",
-        app_factory=MobileAssistant,
-    )
-    await gate.start()
+    app = MobileAssistant(page)
+    await app.start()
 
 
 if __name__ == "__main__":
