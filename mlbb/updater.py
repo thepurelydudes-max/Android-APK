@@ -11,8 +11,6 @@ from media_cache import CHAMPION_DIR, ITEM_DIR, create_fallback_champion_icon, e
 from paths import APP_DIR
 from localization import has_cyrillic, russian_hero_name, russian_item_name
 from sources import (
-    INSIGHT_BUILDS,
-    INSIGHT_COUNTERS,
     MLBBDEX_ITEMS,
     RONE_ACADEMY_RECOMMENDED,
     RONE_EQUIPMENT_EXPANDED,
@@ -26,8 +24,6 @@ from sources import (
     fetch_mlbbdex_heroes,
     fetch_mlbbdex_items,
     fetch_mlbbdex_rankings,
-    parse_insight_builds,
-    parse_insight_counters,
     parse_rone_equipment,
     parse_rone_public_heroes,
     parse_rone_rank_payload,
@@ -620,14 +616,11 @@ def update_all(
         if tier_dates:
             db.set_meta("tier_date", max(tier_dates))
 
-    # 3) Matchups: current Rone relations + static detailed fallback + live Academy hints.
+    # 3) Matchups: current Rone relations + live Academy hints.
+    # The old Rafael-VH/Insight-Data-MLBB fallback was removed upstream and now
+    # returns 404, so it is no longer queried.
     emit(update_text("loading_matchups", lang))
     relation_rows = relation_matchups(champs)
-    insight_matchups: list[tuple[str, str, str, float]] = []
-    try:
-        insight_matchups = parse_insight_counters(net.get(INSIGHT_COUNTERS).json())
-    except Exception as exc:
-        summary["errors"].append(f"Insight counters fallback: {exc}")
 
     # 4) Items and builds. MLBBDex defines the final shop catalog; Rone adds icons/details.
     emit(update_text("loading_items", lang))
@@ -678,19 +671,13 @@ def update_all(
         live_pools, live_matchups = parse_rone_recommended_payload(recommended, equipment_by_id)
     except Exception as exc:
         summary["errors"].append(f"Rone Academy recommendations: {exc}")
-    static_pools: list[tuple[str, str, str, int]] = []
-    try:
-        static_pools = parse_insight_builds(net.get(INSIGHT_BUILDS).json(), equipment_by_id)
-    except Exception as exc:
-        summary["errors"].append(f"Insight build fallback: {exc}")
-
-    # Current live records come first; static guide data fills uncovered heroes/items.
-    merged_pool_input = [*live_pools, *static_pools]
-    pools = _filter_build_pool(merged_pool_input, valid_ids, item_by_slug)
+    # Rone Academy is the live build source. The former Insight fallback was
+    # removed upstream and is intentionally not queried anymore.
+    pools = _filter_build_pool(live_pools, valid_ids, item_by_slug)
     db.replace_source_item_pools("mlbb.builds", pools)
     summary["item_pool"] = len(pools)
 
-    matchups = _merge_matchups(insight_matchups, relation_rows, live_matchups, valid_ids=valid_ids)
+    matchups = _merge_matchups(relation_rows, live_matchups, valid_ids=valid_ids)
     db.replace_source_matchups("mlbb.matchups", matchups)
     summary["matchups"] = len(matchups)
 
@@ -718,7 +705,7 @@ def update_all(
     db.set_meta("last_update_iso", now_iso)
     db.set_meta(
         "source_note",
-        "Mobile Legends data: Rone Arena API (unofficial) + MLBBDex + Rafael-VH/Insight-Data-MLBB fallback. "
+        "Mobile Legends data: Rone Arena API (unofficial) + MLBBDex. "
         "Internet is used only during Update; runtime recommendations use the local SQLite database and cache.",
     )
     raw_progress(update_text("done", lang))
