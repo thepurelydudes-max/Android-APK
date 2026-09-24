@@ -36,3 +36,5 @@ jobs:
           for i, err in enumerate(summary.get("errors") or [], 1):
               print(f"{i}. {err}")
           PY
+
+# diagnostics-run-2
