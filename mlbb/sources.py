@@ -359,12 +359,16 @@ def parse_mlbbdex_rankings(payload: dict) -> list[dict]:
         slug = clean(str(row.get("slug") or row.get("hero_slug") or ""))
         if not (name or slug):
             continue
+        tier = clean(str(row.get("tier") or "")).upper()
+        if tier not in {"S+", "S", "A", "B", "C", "D"}:
+            tier = ""
         out.append({
             "id": slug,
             "name": name,
             "win_rate": _pct(row.get("winRate") if "winRate" in row else row.get("win_rate")),
             "pick_rate": _pct(row.get("pickRate") if "pickRate" in row else row.get("pick_rate")),
             "ban_rate": _pct(row.get("banRate") if "banRate" in row else row.get("ban_rate")),
+            "tier": tier,
             "date": clean(str(row.get("date") or row.get("recordedAt") or row.get("updated_at") or "")),
         })
     return out
