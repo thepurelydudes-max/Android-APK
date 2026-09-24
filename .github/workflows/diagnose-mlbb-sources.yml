@@ -15,10 +15,12 @@ jobs:
           python - <<'PY'
           import requests, json
           urls = [
-              ("Rone heroes EN", "https://arena.rone.dev/api/heroes/heroes?size=300&index=1&lang=en"),
-              ("Rone heroes RU", "https://arena.rone.dev/api/heroes/heroes?size=300&index=1&lang=ru"),
+              ("Rone heroes CURRENT EN", "https://arena.rone.dev/api/heroes?size=300&index=1&lang=en"),
+              ("Rone heroes CURRENT RU", "https://arena.rone.dev/api/heroes?size=300&index=1&lang=ru"),
+              ("Rone heroes ALT EN", "https://arena.rone.dev/api/heroes/heroes?size=300&index=1&lang=en"),
               ("Rone patch", "https://arena.rone.dev/api/academy/meta/version"),
-              ("Rone rank", "https://arena.rone.dev/api/heroes/heroes/rank?days=7&rank=all&size=300&index=1&lang=en"),
+              ("Rone rank CURRENT", "https://arena.rone.dev/api/heroes/rank?days=7&rank=all&size=300&index=1&lang=en"),
+              ("Rone rank ALT", "https://arena.rone.dev/api/heroes/heroes/rank?days=7&rank=all&size=300&index=1&lang=en"),
               ("MLBBDex heroes", "https://mlbbdex.com/api/v1/heroes"),
               ("MLBBDex rankings", "https://mlbbdex.com/api/v1/rankings"),
               ("MLBBDex items", "https://mlbbdex.com/api/v1/items"),
