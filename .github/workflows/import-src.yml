@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: import-full-src
+  cancel-in-progress: false
+
 jobs:
   import:
     runs-on: ubuntu-latest
@@ -73,5 +77,6 @@ jobs:
             echo "SRC folders are already up to date."
           else
             git commit -m "Import full Wild Rift and MLBB SRC"
+            git pull --rebase origin main
             git push
           fi
