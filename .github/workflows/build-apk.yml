@@ -12,6 +12,11 @@ on:
           - wild_rift
           - mlbb
           - both
+  push:
+    branches:
+      - main
+    paths:
+      - ".build-trigger"
 
 permissions:
   contents: read
@@ -24,6 +29,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Select project
+        id: select
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "project=${{ inputs.project }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "project=both" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
@@ -47,15 +62,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ inputs.project }}" == "wild_rift" || "${{ inputs.project }}" == "both" ]]; then
-            test -f wild_rift/main.py || { echo "wild_rift/main.py is missing. Run Import full SRC archives first."; exit 1; }
+          PROJECT="${{ steps.select.outputs.project }}"
+          if [[ "$PROJECT" == "wild_rift" || "$PROJECT" == "both" ]]; then
+            test -f wild_rift/main.py || { echo "wild_rift/main.py is missing."; exit 1; }
+            test -d wild_rift/assets || { echo "wild_rift/assets is missing."; exit 1; }
           fi
-          if [[ "${{ inputs.project }}" == "mlbb" || "${{ inputs.project }}" == "both" ]]; then
-            test -f mlbb/main.py || { echo "mlbb/main.py is missing. Run Import full SRC archives first."; exit 1; }
+          if [[ "$PROJECT" == "mlbb" || "$PROJECT" == "both" ]]; then
+            test -f mlbb/main.py || { echo "mlbb/main.py is missing."; exit 1; }
+            test -d mlbb/assets || { echo "mlbb/assets is missing."; exit 1; }
           fi
 
       - name: Build Wild Rift APK
-        if: ${{ inputs.project == 'wild_rift' || inputs.project == 'both' }}
+        if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -67,7 +85,7 @@ jobs:
             --verbose
 
       - name: Build MLBB APK
-        if: ${{ inputs.project == 'mlbb' || inputs.project == 'both' }}
+        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -86,7 +104,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FARLINER-${{ inputs.project }}-APK
+          name: FARLINER-${{ steps.select.outputs.project }}-APK
           path: apk_output/
           if-no-files-found: error
           retention-days: 14
