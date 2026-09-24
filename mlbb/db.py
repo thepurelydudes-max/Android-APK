@@ -95,6 +95,9 @@ def init_db() -> None:
         _ensure_column(con, "items", "data_patch", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "data_source_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "tier", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(con, "stats", "tier", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(con, "stats", "tier_date", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(con, "stats", "tier_source", "TEXT NOT NULL DEFAULT ''")
 
         # 1.0.3 localization repair: never preserve Latin-only values as RU just
         # because a provider answered a lang=ru request. Built-in names also make
@@ -228,6 +231,27 @@ def upsert_stat(champion_id: str, lane: str, rank_segment: str, win_rate: Option
         con.execute("""INSERT INTO stats(champion_id,lane,rank_segment,win_rate,pick_rate,ban_rate,date) VALUES(?,?,?,?,?,?,?)
         ON CONFLICT(champion_id,lane,rank_segment) DO UPDATE SET win_rate=excluded.win_rate,pick_rate=excluded.pick_rate,ban_rate=excluded.ban_rate,date=excluded.date""",
         (champion_id, lane, rank_segment, win_rate, pick_rate, ban_rate, date))
+
+
+def upsert_stat_tier(
+    champion_id: str,
+    lane: str,
+    rank_segment: str,
+    tier: str,
+    date: str = "",
+    source: str = "",
+) -> None:
+    tier = str(tier or "").strip().upper()
+    if tier not in {"S+", "S", "A", "B", "C", "D"}:
+        return
+    with connect() as con:
+        con.execute(
+            """INSERT INTO stats(champion_id,lane,rank_segment,tier,tier_date,tier_source)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(champion_id,lane,rank_segment) DO UPDATE SET
+            tier=excluded.tier,tier_date=excluded.tier_date,tier_source=excluded.tier_source""",
+            (champion_id, lane, rank_segment, tier, date or "", source or ""),
+        )
 
 
 def replace_source_matchups(source: str, rows: Iterable[tuple[str, str, str, float]]) -> None:
