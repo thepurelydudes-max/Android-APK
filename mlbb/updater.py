@@ -51,7 +51,7 @@ def _check_cancel(cancel_check: Callable[[], bool] | None) -> None:
 UPDATE_TEXT = {
     "ru": {
         "loading_champions": "1/6 Загружаю героев Mobile Legends…",
-        "loading_stats": "2/6 Загружаю актуальные win/pick/ban…",
+        "loading_stats": "2/6 Загружаю актуальные win/pick/ban и Tier…",
         "loading_matchups": "3/6 Загружаю матрицу контрпиков…",
         "loading_items": "4/6 Загружаю предметы и базовые сборки…",
         "loading_counter_items": "5/6 Строю ситуационные контрпредметы…",
@@ -62,7 +62,7 @@ UPDATE_TEXT = {
     },
     "en": {
         "loading_champions": "1/6 Loading Mobile Legends heroes…",
-        "loading_stats": "2/6 Loading current win/pick/ban…",
+        "loading_stats": "2/6 Loading current win/pick/ban and Tier…",
         "loading_matchups": "3/6 Loading counter-pick matrix…",
         "loading_items": "4/6 Loading items and core builds…",
         "loading_counter_items": "5/6 Building situational counter-items…",
