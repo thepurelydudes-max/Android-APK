@@ -101,10 +101,20 @@ jobs:
         run: |
           find "$GITHUB_WORKSPACE/apk_output" -type f -maxdepth 5 -print || true
 
-      - name: Upload APK artifact
+      - name: Upload Wild Rift APK
+        if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
         uses: actions/upload-artifact@v4
         with:
-          name: FARLINER-${{ steps.select.outputs.project }}-APK
-          path: apk_output/
+          name: FARLINER-Wild-Rift-APK
+          path: apk_output/wild_rift/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload MLBB APK
+        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: FARLINER-MLBB-APK
+          path: apk_output/mlbb/
           if-no-files-found: error
           retention-days: 14
