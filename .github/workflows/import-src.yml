@@ -1,0 +1,76 @@
+name: Import full SRC archives
+
+on:
+  push:
+    paths:
+      - "SRC WILD RIFT.zip"
+      - "SRC_MLBB_1.0.5_REWORKED.zip"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "SRC WILD RIFT.zip" || { echo "Missing: SRC WILD RIFT.zip"; exit 1; }
+          test -f "SRC_MLBB_1.0.5_REWORKED.zip" || { echo "Missing: SRC_MLBB_1.0.5_REWORKED.zip"; exit 1; }
+
+      - name: Expand Wild Rift full SRC
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _import_wr wild_rift
+          mkdir -p _import_wr wild_rift
+          unzip -q "SRC WILD RIFT.zip" -d _import_wr
+          test -f "_import_wr/src/main.py" || { echo "Wild Rift main.py not found"; find _import_wr -maxdepth 3 -type f | head -100; exit 1; }
+          cp -a _import_wr/src/. wild_rift/
+
+      - name: Expand MLBB full SRC
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _import_mlbb mlbb
+          mkdir -p _import_mlbb mlbb
+          unzip -q "SRC_MLBB_1.0.5_REWORKED.zip" -d _import_mlbb
+          MLBB_ROOT="$(dirname "$(find _import_mlbb -type f -name main.py -print -quit)")"
+          test -n "$MLBB_ROOT" || { echo "MLBB main.py not found"; exit 1; }
+          cp -a "$MLBB_ROOT"/. mlbb/
+
+      - name: Verify imported projects
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f wild_rift/main.py
+          test -f wild_rift/assets/data/wildrift.db
+          test -f wild_rift/assets/icon.png
+          test -f mlbb/main.py
+          test -f mlbb/assets/icon.png
+          find wild_rift -type f | wc -l
+          find mlbb -type f | wc -l
+          du -sh wild_rift mlbb
+
+      - name: Commit full SRC folders
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _import_wr _import_mlbb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wild_rift mlbb
+          if git diff --cached --quiet; then
+            echo "SRC folders are already up to date."
+          else
+            git commit -m "Import full Wild Rift and MLBB SRC"
+            git push
+          fi
