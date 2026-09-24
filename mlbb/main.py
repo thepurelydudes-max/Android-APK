@@ -848,6 +848,8 @@ class MobileAssistant:
         selected = cid == self.selected_pick_id
         wr = result.get("win_rate")
         wr_text = "—" if wr is None else f"{float(wr):.1f}%"
+        tier = str(result.get("tier") or "").strip().upper()
+        tier_text = f"Tier {tier}" if tier else "Tier —"
         build = self.pick_builds.get(cid)
 
         identity = ft.Row(
@@ -867,7 +869,7 @@ class MobileAssistant:
                     controls=[
                         ft.Text(f"{rank}. {self.champ_name(champ)}", size=13, weight=ft.FontWeight.BOLD, color=P["gold_bright"]),
                         ft.Text(
-                            f"{self.t('score')} {float(result.get('score') or 0):.2f} · {self.t('winrate')} {wr_text}",
+                            f"{self.t('score')} {float(result.get('score') or 0):.2f} · {tier_text} · {self.t('winrate')} {wr_text}",
                             size=9,
                             color=P["muted"],
                         ),
