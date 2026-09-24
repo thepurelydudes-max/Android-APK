@@ -79,6 +79,8 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/apk_output/wild_rift"
           flet build apk "$GITHUB_WORKSPACE/wild_rift" \
+            --product "WR Counter Assistant" \
+            --artifact "WR_Counter_Assistant" \
             --output "$GITHUB_WORKSPACE/apk_output/wild_rift" \
             --python-version 3.12 \
             --yes \
@@ -91,6 +93,8 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/apk_output/mlbb"
           flet build apk "$GITHUB_WORKSPACE/mlbb" \
+            --product "MLBB Counter Assistant" \
+            --artifact "MLBB_Counter_Assistant" \
             --output "$GITHUB_WORKSPACE/apk_output/mlbb" \
             --python-version 3.12 \
             --yes \
