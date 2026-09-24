@@ -1,0 +1,766 @@
+{
+  "heroes": {
+    "1": {
+      "name_en": "Miya",
+      "name_ru": "Мия"
+    },
+    "10": {
+      "name_en": "Franco",
+      "name_ru": "Франко"
+    },
+    "100": {
+      "name_en": "Brody",
+      "name_ru": "Броуди"
+    },
+    "101": {
+      "name_en": "Yve",
+      "name_ru": "Ив"
+    },
+    "102": {
+      "name_en": "Mathilda",
+      "name_ru": "Матильда"
+    },
+    "103": {
+      "name_en": "Paquito",
+      "name_ru": "Пакито"
+    },
+    "104": {
+      "name_en": "Gloo",
+      "name_ru": "Глу"
+    },
+    "105": {
+      "name_en": "Beatrix",
+      "name_ru": "Беатрис"
+    },
+    "106": {
+      "name_en": "Phoveus",
+      "name_ru": "Фовиус"
+    },
+    "107": {
+      "name_en": "Natan",
+      "name_ru": "Натан"
+    },
+    "108": {
+      "name_en": "Aulus",
+      "name_ru": "Аулус"
+    },
+    "109": {
+      "name_en": "Aamon",
+      "name_ru": "Эймон"
+    },
+    "11": {
+      "name_en": "Bane",
+      "name_ru": "Бэйн"
+    },
+    "110": {
+      "name_en": "Valentina",
+      "name_ru": "Валентина"
+    },
+    "111": {
+      "name_en": "Edith",
+      "name_ru": "Эдит"
+    },
+    "112": {
+      "name_en": "Floryn",
+      "name_ru": "Флорин"
+    },
+    "113": {
+      "name_en": "Yin",
+      "name_ru": "Инь"
+    },
+    "114": {
+      "name_en": "Melissa",
+      "name_ru": "Мелисса"
+    },
+    "115": {
+      "name_en": "Xavier",
+      "name_ru": "Ксавьер"
+    },
+    "116": {
+      "name_en": "Julian",
+      "name_ru": "Джулиан"
+    },
+    "117": {
+      "name_en": "Fredrinn",
+      "name_ru": "Фредрин"
+    },
+    "118": {
+      "name_en": "Joy",
+      "name_ru": "Джой"
+    },
+    "119": {
+      "name_en": "Novaria",
+      "name_ru": "Новария"
+    },
+    "12": {
+      "name_en": "Bruno",
+      "name_ru": "Бруно"
+    },
+    "120": {
+      "name_en": "Arlott",
+      "name_ru": "Арлотт"
+    },
+    "121": {
+      "name_en": "Ixia",
+      "name_ru": "Иксия"
+    },
+    "122": {
+      "name_en": "Nolan",
+      "name_ru": "Нолан"
+    },
+    "123": {
+      "name_en": "Cici",
+      "name_ru": "Чичи"
+    },
+    "124": {
+      "name_en": "Chip",
+      "name_ru": "Чип"
+    },
+    "125": {
+      "name_en": "Zhuxin",
+      "name_ru": "Чжусинь"
+    },
+    "126": {
+      "name_en": "Suyou",
+      "name_ru": "Су Ё"
+    },
+    "127": {
+      "name_en": "Lukas",
+      "name_ru": "Лукас"
+    },
+    "128": {
+      "name_en": "Kalea",
+      "name_ru": "Калеа"
+    },
+    "129": {
+      "name_en": "Zetian",
+      "name_ru": "Цзэтянь"
+    },
+    "13": {
+      "name_en": "Clint",
+      "name_ru": "Клинт"
+    },
+    "130": {
+      "name_en": "Obsidia",
+      "name_ru": "Обсидия"
+    },
+    "131": {
+      "name_en": "Sora",
+      "name_ru": "Сора"
+    },
+    "132": {
+      "name_en": "Marcel",
+      "name_ru": "Марсель"
+    },
+    "133": {
+      "name_en": "Hirara",
+      "name_ru": "Хирара"
+    },
+    "14": {
+      "name_en": "Rafaela",
+      "name_ru": "Рафаэль"
+    },
+    "15": {
+      "name_en": "Eudora",
+      "name_ru": "Эйдора"
+    },
+    "16": {
+      "name_en": "Zilong",
+      "name_ru": "Зилонг"
+    },
+    "17": {
+      "name_en": "Fanny",
+      "name_ru": "Фанни"
+    },
+    "18": {
+      "name_en": "Layla",
+      "name_ru": "Лейла"
+    },
+    "19": {
+      "name_en": "Minotaur",
+      "name_ru": "Минотавр"
+    },
+    "2": {
+      "name_en": "Balmond",
+      "name_ru": "Бальмонд"
+    },
+    "20": {
+      "name_en": "Lolita",
+      "name_ru": "Лолита"
+    },
+    "21": {
+      "name_en": "Hayabusa",
+      "name_ru": "Хаябуса"
+    },
+    "22": {
+      "name_en": "Freya",
+      "name_ru": "Фрейя"
+    },
+    "23": {
+      "name_en": "Gord",
+      "name_ru": "Горд"
+    },
+    "24": {
+      "name_en": "Natalia",
+      "name_ru": "Наталья"
+    },
+    "25": {
+      "name_en": "Kagura",
+      "name_ru": "Кагура"
+    },
+    "26": {
+      "name_en": "Chou",
+      "name_ru": "Чу"
+    },
+    "27": {
+      "name_en": "Sun",
+      "name_ru": "Сан"
+    },
+    "28": {
+      "name_en": "Alpha",
+      "name_ru": "Альфа"
+    },
+    "29": {
+      "name_en": "Ruby",
+      "name_ru": "Руби"
+    },
+    "3": {
+      "name_en": "Saber",
+      "name_ru": "Сабер"
+    },
+    "30": {
+      "name_en": "Yi Sun-shin",
+      "name_ru": "Ли Сун-Син"
+    },
+    "31": {
+      "name_en": "Moskov",
+      "name_ru": "Москов"
+    },
+    "32": {
+      "name_en": "Johnson",
+      "name_ru": "Джонсон"
+    },
+    "33": {
+      "name_en": "Cyclops",
+      "name_ru": "Циклоп"
+    },
+    "34": {
+      "name_en": "Estes",
+      "name_ru": "Эстес"
+    },
+    "35": {
+      "name_en": "Hilda",
+      "name_ru": "Хильда"
+    },
+    "36": {
+      "name_en": "Aurora",
+      "name_ru": "Аврора"
+    },
+    "37": {
+      "name_en": "Lapu-Lapu",
+      "name_ru": "Лапу-Лапу"
+    },
+    "38": {
+      "name_en": "Vexana",
+      "name_ru": "Вексана"
+    },
+    "39": {
+      "name_en": "Roger",
+      "name_ru": "Роджер"
+    },
+    "4": {
+      "name_en": "Alice",
+      "name_ru": "Алиса"
+    },
+    "40": {
+      "name_en": "Karrie",
+      "name_ru": "Кэрри"
+    },
+    "41": {
+      "name_en": "Gatotkaca",
+      "name_ru": "Гатоткача"
+    },
+    "42": {
+      "name_en": "Harley",
+      "name_ru": "Харли"
+    },
+    "43": {
+      "name_en": "Irithel",
+      "name_ru": "Иритель"
+    },
+    "44": {
+      "name_en": "Grock",
+      "name_ru": "Грок"
+    },
+    "45": {
+      "name_en": "Argus",
+      "name_ru": "Аргус"
+    },
+    "46": {
+      "name_en": "Odette",
+      "name_ru": "Одетта"
+    },
+    "47": {
+      "name_en": "Lancelot",
+      "name_ru": "Ланселот"
+    },
+    "48": {
+      "name_en": "Diggie",
+      "name_ru": "Дигги"
+    },
+    "49": {
+      "name_en": "Hylos",
+      "name_ru": "Хилос"
+    },
+    "5": {
+      "name_en": "Nana",
+      "name_ru": "Нана"
+    },
+    "50": {
+      "name_en": "Zhask",
+      "name_ru": "Заск"
+    },
+    "51": {
+      "name_en": "Helcurt",
+      "name_ru": "Хелкарт"
+    },
+    "52": {
+      "name_en": "Pharsa",
+      "name_ru": "Фаша"
+    },
+    "53": {
+      "name_en": "Lesley",
+      "name_ru": "Лесли"
+    },
+    "54": {
+      "name_en": "Jawhead",
+      "name_ru": "Кусака"
+    },
+    "55": {
+      "name_en": "Angela",
+      "name_ru": "Ангела"
+    },
+    "56": {
+      "name_en": "Gusion",
+      "name_ru": "Госсен"
+    },
+    "57": {
+      "name_en": "Valir",
+      "name_ru": "Валир"
+    },
+    "58": {
+      "name_en": "Martis",
+      "name_ru": "Мартис"
+    },
+    "59": {
+      "name_en": "Uranus",
+      "name_ru": "Уранус"
+    },
+    "6": {
+      "name_en": "Tigreal",
+      "name_ru": "Тигрил"
+    },
+    "60": {
+      "name_en": "Hanabi",
+      "name_ru": "Ханаби"
+    },
+    "61": {
+      "name_en": "Chang'e",
+      "name_ru": "Чан'Э"
+    },
+    "62": {
+      "name_en": "Kaja",
+      "name_ru": "Кайя"
+    },
+    "63": {
+      "name_en": "Selena",
+      "name_ru": "Селена"
+    },
+    "64": {
+      "name_en": "Aldous",
+      "name_ru": "Алдос"
+    },
+    "65": {
+      "name_en": "Claude",
+      "name_ru": "Клауд"
+    },
+    "66": {
+      "name_en": "Vale",
+      "name_ru": "Вэйл"
+    },
+    "67": {
+      "name_en": "Leomord",
+      "name_ru": "Леоморд"
+    },
+    "68": {
+      "name_en": "Lunox",
+      "name_ru": "Люнокс"
+    },
+    "69": {
+      "name_en": "Hanzo",
+      "name_ru": "Ханзо"
+    },
+    "7": {
+      "name_en": "Alucard",
+      "name_ru": "Алукард"
+    },
+    "70": {
+      "name_en": "Belerick",
+      "name_ru": "Белерик"
+    },
+    "71": {
+      "name_en": "Kimmy",
+      "name_ru": "Кимми"
+    },
+    "72": {
+      "name_en": "Thamuz",
+      "name_ru": "Тамуз"
+    },
+    "73": {
+      "name_en": "Harith",
+      "name_ru": "Харит"
+    },
+    "74": {
+      "name_en": "Minsitthar",
+      "name_ru": "Минситтар"
+    },
+    "75": {
+      "name_en": "Kadita",
+      "name_ru": "Кадита"
+    },
+    "76": {
+      "name_en": "Faramis",
+      "name_ru": "Фарамис"
+    },
+    "77": {
+      "name_en": "Badang",
+      "name_ru": "Баданг"
+    },
+    "78": {
+      "name_en": "Khufra",
+      "name_ru": "Хуфра"
+    },
+    "79": {
+      "name_en": "Granger",
+      "name_ru": "Грейнджер"
+    },
+    "8": {
+      "name_en": "Karina",
+      "name_ru": "Карина"
+    },
+    "80": {
+      "name_en": "Guinevere",
+      "name_ru": "Гвиневра"
+    },
+    "81": {
+      "name_en": "Esmeralda",
+      "name_ru": "Эсмеральда"
+    },
+    "82": {
+      "name_en": "Terizla",
+      "name_ru": "Тэризла"
+    },
+    "83": {
+      "name_en": "X.Borg",
+      "name_ru": "Икс.Борг"
+    },
+    "84": {
+      "name_en": "Ling",
+      "name_ru": "Линг"
+    },
+    "85": {
+      "name_en": "Dyrroth",
+      "name_ru": "Дариус"
+    },
+    "86": {
+      "name_en": "Lylia",
+      "name_ru": "Лилия"
+    },
+    "87": {
+      "name_en": "Baxia",
+      "name_ru": "Баксий"
+    },
+    "88": {
+      "name_en": "Masha",
+      "name_ru": "Маша"
+    },
+    "89": {
+      "name_en": "Wanwan",
+      "name_ru": "Ванван"
+    },
+    "9": {
+      "name_en": "Akai",
+      "name_ru": "Акай"
+    },
+    "90": {
+      "name_en": "Silvanna",
+      "name_ru": "Сильвана"
+    },
+    "91": {
+      "name_en": "Cecilion",
+      "name_ru": "Сесилион"
+    },
+    "92": {
+      "name_en": "Carmilla",
+      "name_ru": "Кармилла"
+    },
+    "93": {
+      "name_en": "Atlas",
+      "name_ru": "Атлас"
+    },
+    "94": {
+      "name_en": "Popol and Kupa",
+      "name_ru": "Пополь и Купа"
+    },
+    "95": {
+      "name_en": "Yu Zhong",
+      "name_ru": "Чонг"
+    },
+    "96": {
+      "name_en": "Luo Yi",
+      "name_ru": "Ло Йи"
+    },
+    "97": {
+      "name_en": "Benedetta",
+      "name_ru": "Бенедетта"
+    },
+    "98": {
+      "name_en": "Khaleed",
+      "name_ru": "Халид"
+    },
+    "99": {
+      "name_en": "Barats",
+      "name_ru": "Бартс"
+    },
+    "dori": {
+      "name_en": "Dori",
+      "name_ru": "Дори"
+    }
+  },
+  "items": {
+    "Antique Cuirass": {
+      "effect_ru": "",
+      "name_ru": "Древняя кираса"
+    },
+    "Arcane Boots": {
+      "effect_ru": "",
+      "name_ru": "Сапоги заклинателя"
+    },
+    "Athena's Shield": {
+      "effect_ru": "",
+      "name_ru": "Щит Афины"
+    },
+    "Berserker's Fury": {
+      "effect_ru": "",
+      "name_ru": "Ярость берсерка"
+    },
+    "Blade Armor": {
+      "effect_ru": "",
+      "name_ru": "Броня с лезвиями"
+    },
+    "Blade of Despair": {
+      "effect_ru": "",
+      "name_ru": "Клинок отчаяния"
+    },
+    "Blade of the Heptaseas": {
+      "effect_ru": "",
+      "name_ru": "Клинок семи морей"
+    },
+    "Blood Wings": {
+      "effect_ru": "",
+      "name_ru": "Кровавые крылья"
+    },
+    "Brute Force Breastplate": {
+      "effect_ru": "",
+      "name_ru": "Кираса грубой силы"
+    },
+    "Chastise Pauldron": {
+      "effect_ru": "",
+      "name_ru": "Карающий наплечник"
+    },
+    "Clock of Destiny": {
+      "effect_ru": "",
+      "name_ru": "Часы судьбы"
+    },
+    "Concentrated Energy": {
+      "effect_ru": "",
+      "name_ru": "Концентрированная энергия"
+    },
+    "Corrosion Scythe": {
+      "effect_ru": "",
+      "name_ru": "Коса коррозии"
+    },
+    "Cursed Helmet": {
+      "effect_ru": "",
+      "name_ru": "Проклятый шлем"
+    },
+    "Demon Hunter Sword": {
+      "effect_ru": "",
+      "name_ru": "Меч охотника на демонов"
+    },
+    "Demon Shoes": {
+      "effect_ru": "",
+      "name_ru": "Демонические ботинки"
+    },
+    "Divine Glaive": {
+      "effect_ru": "",
+      "name_ru": "Божественная глефа"
+    },
+    "Dominance Ice": {
+      "effect_ru": "",
+      "name_ru": "Господство льда"
+    },
+    "Enchanted Talisman": {
+      "effect_ru": "",
+      "name_ru": "Зачарованный талисман"
+    },
+    "Endless Battle": {
+      "effect_ru": "",
+      "name_ru": "Бесконечная битва"
+    },
+    "Feather of Heaven": {
+      "effect_ru": "",
+      "name_ru": "Небесное перо"
+    },
+    "Flask of the Oasis": {
+      "effect_ru": "",
+      "name_ru": "Фляга оазиса"
+    },
+    "Fleeting Time": {
+      "effect_ru": "",
+      "name_ru": "Мимолётное время"
+    },
+    "Flower of Hope": {
+      "effect_ru": "",
+      "name_ru": "Цветок надежды"
+    },
+    "Genius Wand": {
+      "effect_ru": "",
+      "name_ru": "Гениальный жезл"
+    },
+    "Glowing Wand": {
+      "effect_ru": "",
+      "name_ru": "Светящийся жезл"
+    },
+    "Golden Staff": {
+      "effect_ru": "",
+      "name_ru": "Золотой посох"
+    },
+    "Great Dragon Spear": {
+      "effect_ru": "",
+      "name_ru": "Копьё великого дракона"
+    },
+    "Guardian Helmet": {
+      "effect_ru": "",
+      "name_ru": "Шлем стража"
+    },
+    "Haas' Claws": {
+      "effect_ru": "",
+      "name_ru": "Когти Хааса"
+    },
+    "Holy Crystal": {
+      "effect_ru": "",
+      "name_ru": "Священный кристалл"
+    },
+    "Hunter Strike": {
+      "effect_ru": "",
+      "name_ru": "Удар охотника"
+    },
+    "Ice Queen Wand": {
+      "effect_ru": "",
+      "name_ru": "Жезл ледяной королевы"
+    },
+    "Immortality": {
+      "effect_ru": "",
+      "name_ru": "Бессмертие"
+    },
+    "Lantern of Hope": {
+      "effect_ru": "",
+      "name_ru": "Фонарь надежды"
+    },
+    "Lightning Truncheon": {
+      "effect_ru": "",
+      "name_ru": "Жезл молний"
+    },
+    "Magic Shoes": {
+      "effect_ru": "",
+      "name_ru": "Магические ботинки"
+    },
+    "Malefic Gun": {
+      "effect_ru": "",
+      "name_ru": "Зловещее ружьё"
+    },
+    "Malefic Roar": {
+      "effect_ru": "",
+      "name_ru": "Зловещий рёв"
+    },
+    "Oracle": {
+      "effect_ru": "",
+      "name_ru": "Оракул"
+    },
+    "Queen's Wings": {
+      "effect_ru": "",
+      "name_ru": "Крылья королевы"
+    },
+    "Radiant Armor": {
+      "effect_ru": "",
+      "name_ru": "Сияющая броня"
+    },
+    "Rapid Boots": {
+      "effect_ru": "",
+      "name_ru": "Сапоги стремительности"
+    },
+    "Rose Gold Meteor": {
+      "effect_ru": "",
+      "name_ru": "Метеор из розового золота"
+    },
+    "Sea Halberd": {
+      "effect_ru": "",
+      "name_ru": "Морская алебарда"
+    },
+    "Sky Piercer": {
+      "effect_ru": "",
+      "name_ru": "Небесный пронзатель"
+    },
+    "Starlium Scythe": {
+      "effect_ru": "",
+      "name_ru": "Коса Старлиума"
+    },
+    "Swift Boots": {
+      "effect_ru": "",
+      "name_ru": "Сапоги скорости"
+    },
+    "Thunder Belt": {
+      "effect_ru": "",
+      "name_ru": "Громовой пояс"
+    },
+    "Tough Boots": {
+      "effect_ru": "",
+      "name_ru": "Прочные сапоги"
+    },
+    "War Axe": {
+      "effect_ru": "",
+      "name_ru": "Топор войны"
+    },
+    "Warrior Boots": {
+      "effect_ru": "",
+      "name_ru": "Сапоги воина"
+    },
+    "Wind of Nature": {
+      "effect_ru": "",
+      "name_ru": "Ветер природы"
+    },
+    "Windtalker": {
+      "effect_ru": "",
+      "name_ru": "Говорящий с ветром"
+    },
+    "Winter Crown": {
+      "effect_ru": "",
+      "name_ru": "Зимняя корона"
+    },
+    "Wishing Lantern": {
+      "effect_ru": "",
+      "name_ru": "Фонарь желаний"
+    }
+  }
+}
