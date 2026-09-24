@@ -1187,8 +1187,7 @@ class MobileAssistant:
 
 
 async def main(page: ft.Page):
-    app = MobileAssistant(page)
-    await app.start()
+    MobileAssistant(page)
 
 
 if __name__ == "__main__":
