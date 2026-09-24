@@ -1141,6 +1141,16 @@ class MobileAssistant:
             valid_ids = set(self.snapshot.get("champions_by_id", {}))
             self.enemy_ids = [cid if cid in valid_ids else None for cid in self.enemy_ids]
             errors = list(summary.get("errors") or [])
+            try:
+                log_dir = RUNTIME_DIR / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                warning_log = log_dir / "android-update-warnings.log"
+                if errors:
+                    warning_log.write_text("\n".join(f"{i}. {err}" for i, err in enumerate(errors, 1)), encoding="utf-8")
+                elif warning_log.exists():
+                    warning_log.unlink()
+            except Exception:
+                pass
             self.recalculate(preserve_selection=True, update_page=False)
             # The database can gain new heroes, so refresh menu options once,
             # but keep the existing page and controls mounted to avoid a flash.
@@ -1157,7 +1167,8 @@ class MobileAssistant:
             if summary.get("patch"):
                 msg += f" {self.t('patch')}: {summary['patch']}."
             if errors:
-                msg += f" ({len(errors)} source warnings)"
+                suffix = "предупреждений" if self.lang == "ru" else "warnings"
+                msg += f" ({len(errors)} {suffix})"
             self.status_text.value = msg
             self.status_text.color = P["success"]
         except Exception as exc:
