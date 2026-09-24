@@ -348,11 +348,18 @@ def parse_mlbbdex_items(payload: dict) -> list[dict]:
 
 
 def parse_mlbbdex_rankings(payload: dict) -> list[dict]:
-    rows = _json_data(payload) or []
-    if isinstance(rows, dict):
-        rows = list(rows.values())
+    data = _json_data(payload) or []
+    measured_at = ""
+    if isinstance(data, dict):
+        measured_at = clean(str(data.get("measuredAt") or data.get("measured_at") or ""))
+        rows = data.get("heroes") or data.get("rankings") or data.get("records") or []
+        if isinstance(rows, dict):
+            rows = list(rows.values())
+    else:
+        rows = data
+
     out: list[dict] = []
-    for row in rows:
+    for row in rows or []:
         if not isinstance(row, dict):
             continue
         name = clean(str(row.get("name") or row.get("hero") or row.get("hero_name") or ""))
@@ -369,7 +376,7 @@ def parse_mlbbdex_rankings(payload: dict) -> list[dict]:
             "pick_rate": _pct(row.get("pickRate") if "pickRate" in row else row.get("pick_rate")),
             "ban_rate": _pct(row.get("banRate") if "banRate" in row else row.get("ban_rate")),
             "tier": tier,
-            "date": clean(str(row.get("date") or row.get("recordedAt") or row.get("updated_at") or "")),
+            "date": clean(str(row.get("date") or row.get("recordedAt") or row.get("updated_at") or measured_at)),
         })
     return out
 
