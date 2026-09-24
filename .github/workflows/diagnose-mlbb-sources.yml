@@ -1,0 +1,43 @@
+name: Diagnose MLBB Sources
+
+on:
+  push:
+    paths:
+      - ".github/workflows/diagnose-mlbb-sources.yml"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check current MLBB update sources
+        shell: bash
+        run: |
+          python - <<'PY'
+          import requests, json
+          urls = [
+              ("Rone heroes EN", "https://arena.rone.dev/api/heroes/heroes?size=300&index=1&lang=en"),
+              ("Rone heroes RU", "https://arena.rone.dev/api/heroes/heroes?size=300&index=1&lang=ru"),
+              ("Rone patch", "https://arena.rone.dev/api/academy/meta/version"),
+              ("Rone rank", "https://arena.rone.dev/api/heroes/heroes/rank?days=7&rank=all&size=300&index=1&lang=en"),
+              ("MLBBDex heroes", "https://mlbbdex.com/api/v1/heroes"),
+              ("MLBBDex rankings", "https://mlbbdex.com/api/v1/rankings"),
+              ("MLBBDex items", "https://mlbbdex.com/api/v1/items"),
+              ("Rone equipment EN", "https://arena.rone.dev/api/academy/equipment/expanded?size=300&index=1&lang=en"),
+              ("Rone equipment RU", "https://arena.rone.dev/api/academy/equipment/expanded?size=300&index=1&lang=ru"),
+              ("Rone recommended", "https://arena.rone.dev/api/academy/recommended?size=300&index=1&order=desc&lang=en"),
+              ("Insight counters", "https://raw.githubusercontent.com/Rafael-VH/Insight-Data-MLBB/main/heroes/hero_counters.json"),
+              ("Insight builds", "https://raw.githubusercontent.com/Rafael-VH/Insight-Data-MLBB/main/guides/guide_builds.json"),
+          ]
+          headers={"User-Agent":"MobileLegendsCounterAssistant/1.0 (+personal offline tool; respectful updater)","Accept-Language":"en-US,en;q=0.9"}
+          for name,url in urls:
+              try:
+                  r=requests.get(url,headers=headers,timeout=20)
+                  ct=r.headers.get("content-type","")
+                  print(f"=== {name} ===")
+                  print("status:",r.status_code,"content-type:",ct,"bytes:",len(r.content))
+                  print("final-url:",r.url)
+                  print("preview:",r.text[:300].replace("\n"," "))
+              except Exception as e:
+                  print(f"=== {name} ===")
+                  print("ERROR:",repr(e))
+          PY
