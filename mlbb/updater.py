@@ -556,23 +556,30 @@ def update_all(
     except Exception as exc:
         summary["errors"].append(f"Patch version: {exc}")
 
-    # 2) Stats: Rone 7-day all-rank dataset, with MLBBDex as fallback.
+    # 2) Stats + meta tier.
+    # Rone remains the freshest 7-day source for win/pick/ban. MLBBDex is fetched
+    # independently because its public rankings endpoint also publishes the
+    # calculated S+/S/A/B/C/D tier and the measurement date.
     emit(update_text("loading_stats", lang))
     stat_rows: list[dict] = []
+    dex_stats: list[dict] = []
     try:
         payload = net.get(f"{RONE_HERO_RANK}?days=7&rank=all&size=300&index=1&lang=en").json()
         stat_rows = parse_rone_rank_payload(payload)
     except Exception as exc:
         summary["errors"].append(f"Rone rank stats: {exc}")
+
+    try:
+        dex_stats = fetch_mlbbdex_rankings(net)
+    except Exception as exc:
+        summary["errors"].append(f"MLBBDex rankings/tier: {exc}")
+
     if not stat_rows:
-        try:
-            dex_stats = fetch_mlbbdex_rankings(net)
-            for row in dex_stats:
-                cid = resolve(row.get("id") or row.get("name"))
-                if cid:
-                    stat_rows.append({"champion_id": cid, **row})
-        except Exception as exc:
-            summary["errors"].append(f"MLBBDex rankings: {exc}")
+        for row in dex_stats:
+            cid = resolve(row.get("id") or row.get("name"))
+            if cid:
+                stat_rows.append({"champion_id": cid, **row})
+
     stored_stats = 0
     for row in stat_rows:
         cid = resolve(row.get("champion_id") or row.get("id") or row.get("name"))
@@ -584,6 +591,34 @@ def update_all(
             db.upsert_stat(cid, str(lane).casefold(), "all", row.get("win_rate"), row.get("pick_rate"), row.get("ban_rate"), str(row.get("date") or ""))
             stored_stats += 1
     summary["stats"] = stored_stats
+
+    stored_tiers = 0
+    tier_dates: list[str] = []
+    for row in dex_stats:
+        cid = resolve(row.get("id") or row.get("name"))
+        champ = next((c for c in champs if c["id"] == cid), None) if cid else None
+        tier = str(row.get("tier") or "").strip().upper()
+        if not cid or not champ or tier not in {"S+", "S", "A", "B", "C", "D"}:
+            continue
+        tier_date = str(row.get("date") or "")
+        if tier_date:
+            tier_dates.append(tier_date)
+        lanes = list(champ.get("lanes") or []) or [""]
+        for lane in lanes:
+            db.upsert_stat_tier(
+                cid,
+                str(lane).casefold(),
+                "all",
+                tier,
+                tier_date,
+                "MLBBDex /api/v1/rankings",
+            )
+            stored_tiers += 1
+    summary["tiers"] = stored_tiers
+    if stored_tiers:
+        db.set_meta("tier_source", "MLBBDex /api/v1/rankings")
+        if tier_dates:
+            db.set_meta("tier_date", max(tier_dates))
 
     # 3) Matchups: current Rone relations + static detailed fallback + live Academy hints.
     emit(update_text("loading_matchups", lang))
