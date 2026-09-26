@@ -736,7 +736,10 @@ class MobileAssistant:
             cid = str(champ.get("id") or "")
             try:
                 self.pick_builds[cid] = engine.recommend_build(
-                    champ.get("name") or champ.get("id"), enemies, snapshot=self.snapshot
+                    champ.get("name") or champ.get("id"),
+                    enemies,
+                    role_ru=self.role,
+                    snapshot=self.snapshot,
                 )
             except Exception:
                 self.pick_builds[cid] = {"champion": champ, "ordered": [], "base": [], "situational": [], "reasons": {}}
@@ -762,7 +765,10 @@ class MobileAssistant:
             return
         try:
             self.current_build = engine.recommend_build(
-                champ.get("name") or champ.get("id"), self.selected_enemies(), snapshot=self.snapshot
+                champ.get("name") or champ.get("id"),
+                self.selected_enemies(),
+                role_ru=self.role,
+                snapshot=self.snapshot,
             )
             self.pick_builds[self.selected_pick_id] = self.current_build
         except Exception:
