@@ -721,6 +721,87 @@ def _item_card_for_link(a):
     return a.parent if a.parent is not None else a
 
 
+def _raw_img_src(img) -> str:
+    if img is None:
+        return ""
+    return str(img.get("src") or img.get("data-src") or img.get("data-lazy-src") or "").strip()
+
+
+def _is_equip_icon_url(value: str) -> bool:
+    text = str(value or "").casefold()
+    return "equipicons" in text or "/assets/img/items/" in text
+
+
+def _trusted_item_card_image(card, detail_url: str, slug_key: str = ""):
+    """Return an image only when it is demonstrably tied to this item card.
+
+    The old code used card.find("img"), which can select recipe/similar-item
+    artwork from the surrounding card. That caused valid item names to receive
+    somebody else's icon. We now accept only an image inside the exact item's
+    detail link or one whose alt text matches the item slug.
+    """
+    wanted_url = str(detail_url or "").rstrip("/")
+    for link in card.find_all("a", href=True):
+        linked = urljoin(WR_POCKET_ITEMS, str(link.get("href") or "")).rstrip("/")
+        if linked != wanted_url:
+            continue
+        img = link.find("img")
+        if img is not None and _raw_img_src(img):
+            return img
+
+    wanted = str(slug_key or "")
+    if wanted:
+        for img in card.find_all("img"):
+            alt = clean_item_name(img.get("alt", ""))
+            if alt and slugish(alt) == wanted and _raw_img_src(img):
+                return img
+    return None
+
+
+def _main_item_image(soup, item_name: str = ""):
+    """Pick the primary item portrait from a WR Pocket detail page.
+
+    Detail pages place the main item image before the H1 title, while recipe
+    component images appear much later under Recipe. Prefer an exact alt match;
+    otherwise choose the last EquipIcons image before H1. This keeps recipe
+    icons from being mistaken for the finished item.
+    """
+    wanted = slugish(clean_item_name(item_name)) if item_name else ""
+    images = list(soup.find_all("img"))
+    if wanted:
+        for img in images:
+            alt = clean_item_name(img.get("alt", ""))
+            if alt and slugish(alt) == wanted and _raw_img_src(img):
+                return img
+
+    h1 = soup.find("h1")
+    if h1 is not None:
+        preceding = []
+        for img in h1.find_all_previous("img"):
+            raw = _raw_img_src(img)
+            if raw and _is_equip_icon_url(raw):
+                preceding.append(img)
+        if preceding:
+            # find_all_previous() is nearest-first.
+            return preceding[0]
+
+        for node in h1.find_all_next():
+            if getattr(node, "name", None) in {"h2", "h3"}:
+                title = clean(node.get_text(" ", strip=True)).casefold()
+                if title == "recipe":
+                    break
+            if getattr(node, "name", None) == "img":
+                raw = _raw_img_src(node)
+                if raw and _is_equip_icon_url(raw):
+                    return node
+
+    for img in images:
+        raw = _raw_img_src(img)
+        if raw and "equipicons" in raw.casefold():
+            return img
+    return None
+
+
 def _item_section_lines(card, start_label: str, stop_labels: set[str]) -> list[str]:
     """Extract a textual section from one WR Pocket item card.
 
@@ -966,7 +1047,7 @@ def parse_wrpocket_item_dataset_html(html: str, wanted_names: Iterable[str] | No
                 candidate = clean_item_name(tag.get_text(" ", strip=True))
                 if candidate and len(candidate) <= 80 and not _is_generic_item_link_text(candidate):
                     candidates.append(candidate)
-        img = card.find("img")
+        img = _trusted_item_card_image(card, detail_url, slug_key)
         if img:
             candidate = clean_item_name(img.get("alt", ""))
             if candidate and len(candidate) <= 80:
@@ -1037,18 +1118,9 @@ def parse_wrpocket_item_detail_html(html: str, url: str = "", name_hint: str = "
     effect_en = _best_item_effect(soup)
 
     icon_url = ""
-    images = soup.find_all("img")
-    chosen = None
-    wanted = slugish(name) if name else ""
-    for img in images:
-        raw = img.get("src") or img.get("data-src") or img.get("data-lazy-src") or ""
-        alt = clean_item_name(img.get("alt", ""))
-        if "EquipIcons" in raw or (wanted and alt and slugish(alt) == wanted):
-            chosen = img
-            if "EquipIcons" in raw:
-                break
+    chosen = _main_item_image(soup, name)
     if chosen is not None:
-        raw = chosen.get("src") or chosen.get("data-src") or chosen.get("data-lazy-src") or ""
+        raw = _raw_img_src(chosen)
         if raw:
             icon_url = urljoin(url or WR_POCKET_ITEMS, raw)
 
@@ -1156,6 +1228,46 @@ class ItemDatasetFetch:
     dataset_hash: str = ""
 
 
+def verify_wrpocket_item_icons(
+    net: Net,
+    records: Iterable[dict],
+    progress: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """Verify every final-item icon against its own WR Pocket detail page.
+
+    The catalog index is useful for names/stats/categories, but its surrounding
+    DOM may expose unrelated recipe/similar-item images. For final build icons we
+    therefore trust the item's own detail page and preserve the old URL only when
+    verification fails.
+    """
+    rows = [dict(row) for row in records]
+    targets = [row for row in rows if is_finished_item_tier(str(row.get("tier") or "")) and row.get("detail_url")]
+    total = len(targets)
+    for idx, row in enumerate(targets, 1):
+        if progress:
+            progress(f"Wild Rift Pocket icons: {idx}/{total} — {row.get('name') or ''}")
+        try:
+            detail_name, icon_url = _fetch_wrpocket_item_detail(net, str(row.get("detail_url") or ""))
+        except Exception:
+            continue
+        expected = slugish(canonical_item_name(str(row.get("name") or "")))
+        actual = slugish(canonical_item_name(detail_name))
+        if expected and actual and expected != actual:
+            continue
+        if not icon_url:
+            continue
+        row["icon_url"] = icon_url
+        row["data_hash"] = _item_dataset_hash(
+            str(row.get("name") or ""),
+            int(row.get("price") or 0),
+            list(row.get("stats") or []),
+            str(row.get("effect_en") or ""),
+            icon_url,
+            str(row.get("detail_url") or ""),
+        )
+    return rows
+
+
 def fetch_wrpocket_item_dataset(
     net: Net, wanted_names: Iterable[str] | None = None, conditional_headers: dict | None = None,
 ) -> ItemDatasetFetch:
@@ -1179,23 +1291,10 @@ def _fetch_wrpocket_item_detail(net: Net, url: str) -> tuple[str, str]:
     soup = BeautifulSoup(net.get(url).text, "html.parser")
     h1 = soup.find("h1")
     name = clean(h1.get_text(" ", strip=True)) if h1 else ""
-    images = soup.find_all("img")
-    chosen = None
-    for img in images:
-        raw = img.get("src") or img.get("data-src") or img.get("data-lazy-src") or ""
-        if "EquipIcons" in raw or "equipicons" in raw.casefold():
-            chosen = img
-            break
-    if chosen is None and name:
-        wanted = slugish(name)
-        for img in images:
-            alt = clean(img.get("alt", ""))
-            if alt and slugish(alt) == wanted:
-                chosen = img
-                break
+    chosen = _main_item_image(soup, name)
     icon_url = ""
     if chosen is not None:
-        raw = chosen.get("src") or chosen.get("data-src") or chosen.get("data-lazy-src") or ""
+        raw = _raw_img_src(chosen)
         if raw:
             icon_url = urljoin(url, raw)
     return name, icon_url
