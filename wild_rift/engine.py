@@ -70,6 +70,24 @@ ITEM_TAGS = {
     "Void Staff": {"anti_magic_resist", "magic"},
     "Cryptbloom": {"anti_magic_resist", "magic"},
     "Divine Sunderer": {"anti_tank", "physical", "fighter"},
+    "Dead Man's Plate": {"anti_physical", "defense", "tank"},
+    "Abyssal Mask": {"anti_magic", "defense", "tank"},
+    "Mantle of the Twelfth Hour": {"anti_burst", "defense", "tank"},
+    "Iceborn Gauntlet": {"anti_physical", "defense", "tank"},
+    "Sunfire Aegis": {"anti_physical", "defense", "tank"},
+    "Warmog's Armor": {"defense", "tank"},
+    "Amaranth's Twinguard": {"anti_burst", "defense", "tank"},
+    "Unending Despair": {"defense", "tank"},
+    "Heartsteel": {"defense", "tank"},
+    "Radiant Virtue": {"support", "defense", "tank"},
+    "Knight's Vow": {"support", "defense"},
+    "Redemption": {"support", "heal"},
+    "Harmonic Echo": {"support", "heal"},
+    "Ardent Censer": {"support"},
+    "Staff of Flowing Water": {"support"},
+    "Shurelya's Battlesong": {"support"},
+    "Mikael's Blessing": {"support", "anti_cc"},
+    "Imperial Mandate": {"support"},
 }
 
 # Source names vary slightly by apostrophe/case.
@@ -460,47 +478,304 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
     )
     return out[:limit]
 
-def _generic_threat_tags(enemy: dict) -> set[str]:
-    roles = {str(x).casefold() for x in enemy.get("roles", [])}
-    typ = str(enemy.get("damage_type", "")).casefold()
-    tags = set()
+BUILD_NEED_TAGS = {
+    "anti_heal", "anti_shield", "anti_crit", "anti_attack_speed",
+    "anti_physical", "anti_magic", "anti_cc", "anti_burst",
+    "anti_tank", "anti_armor", "anti_magic_resist", "anti_auto",
+}
+CORE_SITUATIONAL_TAGS = {
+    "anti_heal", "anti_shield", "anti_crit", "anti_attack_speed",
+    "anti_magic", "anti_physical", "anti_cc", "anti_burst",
+}
+
+
+def _item_record(item_name: str, snapshot: dict | None = None) -> dict | None:
+    if snapshot is not None:
+        items = snapshot.get("items", {})
+        row = items.get(item_name)
+        if row is not None:
+            return row
+        wanted = norm_item(item_name)
+        return next((value for key, value in items.items() if norm_item(key) == wanted), None)
+    return db.get_item(item_name)
+
+
+def _item_category(item_name: str, snapshot: dict | None = None) -> str:
+    row = _item_record(item_name, snapshot) or {}
+    return str(row.get("category") or "").strip()
+
+
+def _semantic_pool_category(row: dict, snapshot: dict | None = None) -> str:
+    """Normalize WR Pocket's item groups into build roles.
+
+    WR Pocket is an excellent *pool* source, but its page groups are not a
+    six-item purchase order. Some utility items (for example Redemption) can
+    also be listed under Magic. Semantic tags keep those items in the support
+    branch without modifying the source database.
+    """
+    name = str(row.get("item_name") or row.get("name") or "")
+    tags = tags_for(name)
+    if "boots" in tags or is_boot_item(name, row.get("category") or ""):
+        return "Boots"
+    if "support" in tags:
+        return "Support"
+    category = str(row.get("category") or "").strip()
+    if not category:
+        category = _item_category(name, snapshot)
+    return category or "Other"
+
+
+def _pool_category_counts(pool: list[dict], snapshot: dict | None = None) -> Counter:
+    return Counter(_semantic_pool_category(row, snapshot) for row in pool)
+
+
+def _primary_offense_category(champ: dict, pool: list[dict], role_ru: str, snapshot: dict | None = None) -> str:
+    counts = _pool_category_counts(pool, snapshot)
+    roles = {str(x).casefold() for x in champ.get("roles", [])}
+    physical = int(counts.get("Physical", 0))
+    magic = int(counts.get("Magic", 0))
+
+    if not physical:
+        return "Magic" if magic else ""
+    if not magic:
+        return "Physical"
+
+    physical_score = physical
+    magic_score = magic
     if "marksman" in roles:
-        tags |= {"anti_physical", "anti_crit", "anti_auto"}
+        physical_score += 5
+    if "fighter" in roles:
+        physical_score += 2
+    if "assassin" in roles:
+        physical_score += 2
+    if "mage" in roles:
+        magic_score += 5
+    if role_ru == "ADC":
+        physical_score += 3
+    if role_ru == "Мид" and "mage" in roles:
+        magic_score += 2
+
+    return "Physical" if physical_score >= magic_score else "Magic"
+
+
+def _build_profile(champ: dict, pool: list[dict], role_ru: str, snapshot: dict | None = None) -> dict:
+    return {
+        "roles": {str(x).casefold() for x in champ.get("roles", [])},
+        "lanes": {str(x).casefold() for x in champ.get("lanes", [])},
+        "counts": _pool_category_counts(pool, snapshot),
+        "offense": _primary_offense_category(champ, pool, role_ru, snapshot),
+    }
+
+
+def _core_category_quotas(champ: dict, pool: list[dict], role_ru: str, snapshot: dict | None = None) -> tuple[list[tuple[str, int]], dict]:
+    """Choose five non-boot slots without treating Build Trends as a ready build."""
+    profile = _build_profile(champ, pool, role_ru, snapshot)
+    roles = profile["roles"]
+    lanes = profile["lanes"]
+    counts = profile["counts"]
+    offense = profile["offense"]
+    quotas: list[tuple[str, int]] = []
+
+    def add(category: str, count: int) -> None:
+        if not category or count <= 0:
+            return
+        available = int(counts.get(category, 0))
+        if available:
+            quotas.append((category, min(count, available)))
+
+    if role_ru == "Саппорт":
+        if "assassin" in roles or "marksman" in roles:
+            defense_slots = min(1, int(counts.get("Defense", 0)))
+            add(offense, 5 - defense_slots)
+            add("Defense", defense_slots)
+        elif "tank" in roles or (
+            int(counts.get("Defense", 0)) > max(int(counts.get("Magic", 0)), int(counts.get("Support", 0)))
+            and "mage" not in roles
+        ):
+            support_slots = min(2, int(counts.get("Support", 0)))
+            defense_slots = min(5 - support_slots, int(counts.get("Defense", 0)))
+            add("Defense", defense_slots)
+            add("Support", support_slots)
+            add(offense, 5 - sum(value for _category, value in quotas))
+        else:
+            flex_lane = bool(lanes & {"mid", "top", "jungle", "ad", "adc"})
+            support_count = int(counts.get("Support", 0))
+            magic_count = int(counts.get("Magic", 0))
+            if support_count >= 4 and not flex_lane and support_count >= magic_count:
+                add("Support", 5)
+            elif support_count >= 3:
+                support_slots = 2 if magic_count >= support_count * 2 else 3
+                add("Support", support_slots)
+                add(offense, 5 - sum(value for _category, value in quotas))
+            else:
+                add(offense, 5)
+                add("Support", 5 - sum(value for _category, value in quotas))
+    else:
+        if "tank" in roles:
+            defense_slots = min(3, int(counts.get("Defense", 0)))
+            add(offense, 5 - defense_slots)
+            add("Defense", defense_slots)
+        elif "fighter" in roles:
+            defense_slots = min(2, int(counts.get("Defense", 0)))
+            add(offense, 5 - defense_slots)
+            add("Defense", defense_slots)
+        else:
+            add(offense, 5)
+            add("Defense", 5 - sum(value for _category, value in quotas))
+
+    return quotas, profile
+
+
+def _core_item_penalty(item_name: str) -> int:
+    return 1 if tags_for(item_name) & CORE_SITUATIONAL_TAGS else 0
+
+
+def _core_build(champ: dict, pool: list[dict], role_ru: str, snapshot: dict | None = None) -> list[str]:
+    quotas, profile = _core_category_quotas(champ, pool, role_ru, snapshot)
+    grouped: dict[str, list[dict]] = defaultdict(list)
+
+    for row in pool:
+        category = _semantic_pool_category(row, snapshot)
+        if category != "Boots":
+            grouped[category].append(row)
+
+    for rows in grouped.values():
+        rows.sort(
+            key=lambda row: (
+                _core_item_penalty(str(row.get("item_name") or "")),
+                int(row.get("priority") or 999),
+                str(row.get("item_name") or ""),
+            )
+        )
+
+    picked: list[str] = []
+    for category, amount in quotas:
+        for row in grouped.get(category, [])[:amount]:
+            name = str(row.get("item_name") or "")
+            if name and name not in picked:
+                picked.append(name)
+
+    preferred_categories = [category for category, _amount in quotas]
+    for category in (profile.get("offense"), "Support", "Defense", "Physical", "Magic", "Other"):
+        if category and category not in preferred_categories:
+            preferred_categories.append(category)
+
+    fallback: list[tuple[int, int, int, str]] = []
+    for category_index, category in enumerate(preferred_categories):
+        for row in grouped.get(category, []):
+            name = str(row.get("item_name") or "")
+            if not name:
+                continue
+            fallback.append(
+                (
+                    _core_item_penalty(name),
+                    category_index,
+                    int(row.get("priority") or 999),
+                    name,
+                )
+            )
+
+    for _penalty, _category_index, _priority, name in sorted(fallback):
+        if len(picked) >= 5:
+            break
+        if name not in picked:
+            picked.append(name)
+
+    boots = [row for row in pool if _semantic_pool_category(row, snapshot) == "Boots"]
+    boots.sort(key=lambda row: int(row.get("priority") or 999))
+    if boots:
+        boot_name = str(boots[0].get("item_name") or "")
+        if boot_name:
+            picked.append(boot_name)
+
+    return picked
+
+
+def _direct_need_tags(direct_items: list[dict]) -> set[str]:
+    """Extract the shared mechanic behind a generic enemy counter-item list."""
+    if not direct_items:
+        return set()
+
+    counts: Counter = Counter()
+    for row in direct_items:
+        for tag in tags_for(str(row.get("item_name") or "")) & BUILD_NEED_TAGS:
+            counts[tag] += 1
+
+    threshold = 1 if len(direct_items) == 1 else max(2, (len(direct_items) + 3) // 4)
+    return {tag for tag, amount in counts.items() if amount >= threshold}
+
+
+def _generic_threat_tags(enemy: dict, snapshot: dict | None = None) -> set[str]:
+    """Low-weight fallback based on the enemy's own current build pool.
+
+    champions.damage_type is intentionally ignored: the upstream field currently
+    contains resource types such as Mana/Energy rather than reliable damage type.
+    """
+    roles = {str(x).casefold() for x in enemy.get("roles", [])}
+    pool = _item_pool(str(enemy.get("id") or ""), snapshot)
+    counts = _pool_category_counts(pool, snapshot)
+    physical = int(counts.get("Physical", 0))
+    magic = int(counts.get("Magic", 0))
+    tags: set[str] = set()
+
+    if "marksman" in roles and "mage" in roles:
+        tags |= {"anti_physical", "anti_magic"}
+    elif physical and not magic:
+        tags.add("anti_physical")
+    elif magic and not physical:
+        tags.add("anti_magic")
+    elif physical and magic:
+        if physical >= magic * 2:
+            tags.add("anti_physical")
+        elif magic >= physical * 2:
+            tags.add("anti_magic")
+        else:
+            tags |= {"anti_physical", "anti_magic"}
+
+    if "marksman" in roles:
+        tags |= {"anti_crit", "anti_auto"}
     if "assassin" in roles:
         tags.add("anti_burst")
-    if "mage" in roles or "ap" in typ or "magic" in typ:
-        tags.add("anti_magic")
     if "tank" in roles:
         tags.add("anti_tank")
-    if "support" in roles:
-        tags.add("anti_cc")
-    if "fighter" in roles and "ap" not in typ and "magic" not in typ:
-        tags.add("anti_physical")
     return tags
 
 
-def _compatible(item: str, pool_names: set[str], cand_arch: set[str], has_pool: bool) -> bool:
-    n = norm_item(item)
-    if n in pool_names:
+def _compatible(item: str, champ: dict, pool: list[dict], role_ru: str, snapshot: dict | None = None) -> bool:
+    """Allow situational items only when they still fit the selected champion."""
+    pool_names = {norm_item(str(row.get("item_name") or "")) for row in pool}
+    if norm_item(item) in pool_names:
         return True
+
+    category = _item_category(item, snapshot)
     tags = tags_for(item)
-    if not has_pool:
-        if "magic" in tags and "magic" not in cand_arch and "mage" not in cand_arch:
-            return False
-        if {"marksman", "assassin", "fighter"} & tags and not ({"marksman", "assassin", "fighter"} & cand_arch):
-            return False
+    profile = _build_profile(champ, pool, role_ru, snapshot)
+    roles = profile["roles"]
+    counts = profile["counts"]
+
+    if category in {"Physical", "Magic"}:
+        return False
+    if category == "Boots" or "boots" in tags or "universal" in tags:
         return True
-    # With a normal build pool present, defensive/boot answers may always leave
-    # the pool. Offensive situational items may do so only when they match the
-    # champion archetype.
-    if tags & {"boots", "universal", "defense"}:
-        return True
-    if "magic" in tags and ({"magic", "mage"} & cand_arch):
-        return True
-    if "physical" in tags and ({"marksman", "fighter", "assassin", "physical"} & cand_arch):
-        return True
+    if category == "Defense":
+        return (
+            "tank" in roles
+            or (("fighter" in roles or role_ru == "Саппорт") and int(counts.get("Defense", 0)) >= 3)
+        )
+    if category == "Support":
+        return role_ru == "Саппорт" and "support" in roles
     return False
 
+
+def _default_build_role(champ: dict) -> str:
+    for role in CANONICAL_ROLES:
+        if lane_ok(champ, role):
+            return role
+    return ""
+
+
+def _adaptation_severity(edge: float) -> float:
+    return 1.0 + 0.5 * max(0.0, min(3.0, -float(edge)))
 
 
 def enforce_single_boot_rule(base: list[str], situational: list[str], adaptation_scores=None) -> tuple[list[str], list[str]]:
@@ -508,196 +783,161 @@ def enforce_single_boot_rule(base: list[str], situational: list[str], adaptation
     base = list(dict.fromkeys(base or []))
     situational = list(dict.fromkeys(situational or []))
     scores = adaptation_scores or {}
-    situational_boots = [name for name in situational if is_boot_item(name)]
-    base_boots = [name for name in base if is_boot_item(name)]
-    if not situational_boots and len(base_boots) <= 1:
+    boot_names = [name for name in [*base, *situational] if is_boot_item(name)]
+    if len(boot_names) <= 1:
         return base, situational
 
-    chosen = ""
-    chosen_from_situational = False
+    situational_boots = [name for name in situational if is_boot_item(name)]
     if situational_boots:
-        indexed = {name: index for index, name in enumerate(situational_boots)}
-        def score(name: str) -> tuple[float, int]:
-            try:
-                value = float(scores.get(name, 0.0))
-            except (TypeError, ValueError):
-                value = 0.0
-            return value, -indexed[name]
-        chosen = max(situational_boots, key=score)
-        chosen_from_situational = True
-    elif base_boots:
-        chosen = base_boots[0]
+        chosen = max(situational_boots, key=lambda name: float(scores.get(name, 0.0) or 0.0))
+    else:
+        chosen = next(name for name in base if is_boot_item(name))
 
     base_out = [name for name in base if not is_boot_item(name)]
     situational_out = [name for name in situational if not is_boot_item(name)]
-    if chosen:
-        if chosen_from_situational:
-            situational_out.insert(0, chosen)
-        else:
-            base_out.append(chosen)
+    if chosen in situational:
+        situational_out.append(chosen)
+    else:
+        base_out.append(chosen)
     return base_out, situational_out
 
 
-
 def order_build_items(base: list[str], situational: list[str], pool: list[dict], adaptation_scores) -> list[str]:
-    """Return a practical purchase-priority order.
+    """Keep the coherent core and replace only low-priority tail slots."""
+    scores = adaptation_scores or {}
+    final = list(dict.fromkeys(base or []))
 
-    Build Trends priority is the baseline.  Situational pressure may move an item
-    earlier, but weak generic relevance should not completely erase the
-    champion's normal core order.  Direct counter-items receive large scores in
-    ``recommend_build`` and therefore can become first purchases when needed.
-    """
-    candidates = list(dict.fromkeys(list(base or []) + list(situational or [])))
-    if not candidates:
-        return []
-
-    priority_by_norm: dict[str, int] = {}
-    for row in pool or []:
-        name = str(row.get("item_name") or "")
-        if not name:
+    for item in situational or []:
+        if item in final:
             continue
-        try:
-            pr = int(row.get("priority") or 999)
-        except (TypeError, ValueError):
-            pr = 999
-        priority_by_norm[norm_item(name)] = pr
-
-    fallback_priority = max([*priority_by_norm.values(), len(priority_by_norm), 1]) + 4
-    original_index = {norm_item(name): idx for idx, name in enumerate(candidates)}
-
-    def urgency_for(name: str) -> float:
-        try:
-            return max(0.0, float((adaptation_scores or {}).get(name, 0.0)))
-        except (TypeError, ValueError):
-            return 0.0
-
-    def key(name: str):
-        src = priority_by_norm.get(norm_item(name), fallback_priority)
-        urgency = min(6.0, urgency_for(name))
-        # Six priority places per urgency point is strong enough for a real
-        # counter item to jump ahead, while small generic relevance stays near
-        # the original Build Trends order.
-        effective = float(src) - urgency * 6.0
-        return (effective, src, original_index.get(norm_item(name), 999))
-
-    # Keep the Wild Rift desktop invariant: engine-level output is already a
-    # real six-slot recommendation; the mobile UI only fills rare shortfalls.
-    return sorted(candidates, key=key)[:6]
-
-def recommend_build(champion_name: str, enemies: list[tuple[str, str]], snapshot: dict | None = None) -> dict:
-    champ = _find_champ(champion_name, snapshot)
-    if not champ:
-        raise ValueError("Чемпион не найден в локальной базе")
-    enemy_objs = [(_find_champ(name, snapshot), role) for name, role in enemies]
-    enemy_objs = [(e, r) for e, r in enemy_objs if e]
-    pool = _item_pool(champ["id"], snapshot)
-    pool_names = {norm_item(x["item_name"]) for x in pool}
-    has_pool = bool(pool)
-    arch = archetype(champ)
-
-    # Skeleton: first trend items, but avoid blindly taking 5 boots/duplicates.
-    base = []
-    boots = []
-    for p in pool:
-        name = p["item_name"]
-        cat = (p.get("category") or "").casefold()
-        if is_boot_item(name, cat):
-            boots.append(name)
-        elif name not in base:
-            base.append(name)
-    base = base[:5]
-    if boots:
-        base.append(boots[0])
-
-    reasons = defaultdict(list)
-    reason_details = defaultdict(list)
-    scores = Counter()
-    threat_enemies = []
-    neutral_enemies = []
-
-    for enemy, erole in enemy_objs:
-        edge = _matchup_score(champ["id"], enemy["id"], "", snapshot)
-        if edge < 0:
-            threat_enemies.append(enemy["name"])
-        else:
-            neutral_enemies.append(enemy["name"])
-        direct = _counter_items(enemy["id"], snapshot)
-        severity = 2.0 if edge < 0 else 1.0
-        for ci in direct:
-            item = ci["item_name"]
-            if _compatible(item, pool_names, arch, has_pool):
-                scores[item] += 2.5 * severity
-                reasons[item].append(f"против {enemy['name']}")
-                reason_details[item].append({"kind": "direct", "enemy": enemy["name"]})
-
-        generic_tags = _generic_threat_tags(enemy)
-        for p in pool:
-            item = p["item_name"]
-            itags = tags_for(item)
-            hit = generic_tags & itags
-            if hit:
-                scores[item] += 0.45 * severity * len(hit)
-                if "anti_magic" in hit:
-                    reasons[item].append(f"магический урон/контроль от {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_magic", "enemy": enemy["name"]})
-                if "anti_physical" in hit or "anti_auto" in hit:
-                    reasons[item].append(f"физический урон/автоатаки {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_physical", "enemy": enemy["name"]})
-                if "anti_crit" in hit:
-                    reasons[item].append(f"критический урон {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_crit", "enemy": enemy["name"]})
-                if "anti_burst" in hit:
-                    reasons[item].append(f"взрывной урон {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_burst", "enemy": enemy["name"]})
-                if "anti_tank" in hit:
-                    reasons[item].append(f"прочность {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_tank", "enemy": enemy["name"]})
-                if "anti_cc" in hit:
-                    reasons[item].append(f"контроль {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_cc", "enemy": enemy["name"]})
-
-    situational = []
-    for item, score in scores.most_common():
-        if item in situational:
+        if is_boot_item(item):
+            replaced = False
+            for index, current in enumerate(final):
+                if is_boot_item(current):
+                    final[index] = item
+                    replaced = True
+                    break
+            if not replaced and len(final) < 6:
+                final.append(item)
             continue
-        # Don't flood the build: 2 adaptations is usually enough; 3 only if there are multiple threats.
-        situational.append(item)
-        if len(situational) >= (3 if len(enemy_objs) >= 4 else 2):
-            break
 
-    # If no matchup pressure was detected, preserve champion identity and maximize normal pool.
-    neutral_mode = not threat_enemies and not situational
-    if neutral_mode:
-        situational = base[:2]
-        for i in situational:
-            reasons[i].append("нейтральный матчап: оставляем сильный предмет из обычного пула чемпиона")
-            reason_details[i].append({"kind": "core", "enemy": ""})
+        non_boot_indexes = [index for index, current in enumerate(final) if not is_boot_item(current)]
+        if not non_boot_indexes:
+            continue
+        replaceable = non_boot_indexes[2:] or non_boot_indexes[-1:]
+        replace_index = min(
+            replaceable,
+            key=lambda index: (float(scores.get(final[index], 0.0) or 0.0), -index),
+        )
+        final[replace_index] = item
 
-    base, situational = enforce_single_boot_rule(base, situational, scores)
-    ordered = order_build_items(base, situational, pool, scores)
-
-    # Defensive invariant: even future source changes cannot expose two boot items.
+    out: list[str] = []
     seen_boot = False
-    filtered_ordered = []
-    for item in ordered:
+    for item in final:
+        if item in out:
+            continue
         if is_boot_item(item):
             if seen_boot:
                 continue
             seen_boot = True
-        filtered_ordered.append(item)
-    ordered = filtered_ordered
+        out.append(item)
+        if len(out) >= 6:
+            break
+    return out
+
+
+def recommend_build(
+    champion_name: str,
+    enemies: list[tuple[str, str]],
+    role_ru: str = "",
+    snapshot: dict | None = None,
+) -> dict:
+    """Build a champion-compatible six-slot core and adapt it to the enemy draft."""
+    champ = _find_champ(champion_name, snapshot)
+    if not champ:
+        raise ValueError("Чемпион не найден в локальной базе")
+
+    effective_role = role_ru if role_ru in CANONICAL_ROLES else _default_build_role(champ)
+    enemy_objs = [(_find_champ(name, snapshot), role) for name, role in enemies]
+    enemy_objs = [(enemy, enemy_role) for enemy, enemy_role in enemy_objs if enemy]
+
+    pool = _item_pool(champ["id"], snapshot)
+    pool_names = {norm_item(str(row.get("item_name") or "")) for row in pool}
+    base = _core_build(champ, pool, effective_role, snapshot)
+
+    reasons = defaultdict(list)
+    reason_details = defaultdict(list)
+    scores: Counter = Counter()
+    threat_enemies: list[str] = []
+    neutral_enemies: list[str] = []
+
+    for item in base:
+        reasons[item].append("базовый предмет из актуального пула сборок героя")
+        reason_details[item].append({"kind": "core", "enemy": ""})
+
+    for enemy, _enemy_role in enemy_objs:
+        edge = float(_matchup_score(champ["id"], enemy["id"], effective_role, snapshot))
+        severity = _adaptation_severity(edge)
+        if edge < 0:
+            threat_enemies.append(enemy["name"])
+        else:
+            neutral_enemies.append(enemy["name"])
+
+        direct = _counter_items(enemy["id"], snapshot)
+        need_tags = _direct_need_tags(direct)
+
+        for row in direct:
+            item = str(row.get("item_name") or "")
+            if not item or not _compatible(item, champ, pool, effective_role, snapshot):
+                continue
+            source_fit = 1.0 if norm_item(item) in pool_names else 0.65
+            scores[item] += 3.0 * severity * source_fit
+            reasons[item].append(f"против {enemy['name']}")
+            reason_details[item].append({"kind": "direct", "enemy": enemy["name"]})
+
+        for row in pool:
+            item = str(row.get("item_name") or "")
+            hits = tags_for(item) & need_tags
+            if hits:
+                scores[item] += 1.5 * severity * len(hits)
+                for tag in sorted(hits):
+                    reasons[item].append(f"{tag} против {enemy['name']}")
+                    reason_details[item].append({"kind": tag, "enemy": enemy["name"]})
+
+        generic_tags = _generic_threat_tags(enemy, snapshot)
+        for row in pool:
+            item = str(row.get("item_name") or "")
+            hits = tags_for(item) & generic_tags
+            if not hits:
+                continue
+            scores[item] += 0.55 * severity * len(hits)
+            for tag in sorted(hits):
+                reason_details[item].append({"kind": tag, "enemy": enemy["name"]})
+
+    max_adaptations = 3 if len(enemy_objs) >= 4 else 2
+    ranked_adaptations = [
+        (item, float(score))
+        for item, score in scores.most_common()
+        if float(score) >= 2.5
+    ][:max_adaptations]
+    situational = [item for item, _score in ranked_adaptations]
+
+    base, situational = enforce_single_boot_rule(base, situational, scores)
+    ordered = order_build_items(base, situational, pool, scores)
 
     return {
         "champion": champ,
+        "role": effective_role,
         "base": base,
         "situational": situational,
         "ordered": ordered,
-        "reasons": {k: list(dict.fromkeys(v)) for k, v in reasons.items()},
+        "reasons": {key: list(dict.fromkeys(values)) for key, values in reasons.items()},
         "reason_details": {
-            k: list({(d.get("kind", ""), d.get("enemy", "")): d for d in v}.values())
-            for k, v in reason_details.items()
+            key: list({(detail.get("kind", ""), detail.get("enemy", "")): detail for detail in values}.values())
+            for key, values in reason_details.items()
         },
         "threat_enemies": threat_enemies,
         "neutral_enemies": neutral_enemies,
         "pool_size": len(pool),
     }
+
