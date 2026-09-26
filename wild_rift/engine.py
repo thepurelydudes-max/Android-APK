@@ -846,6 +846,23 @@ def order_build_items(base: list[str], situational: list[str], pool: list[dict],
     return out
 
 
+def _finished_only(names: list[str], snapshot: dict | None = None) -> list[str]:
+    """Hard final-build gate: recipe components can never reach the UI.
+
+    item_pools and counter_items are already filtered to WR Pocket tier=Upgraded,
+    but keep this independent last line of defense in the engine so a future
+    parser/source regression cannot surface Basic, Mid-tier or Starter items as
+    a finished six-slot recommendation.
+    """
+    out: list[str] = []
+    for name in names or []:
+        if name in out:
+            continue
+        if _finished_item(name, snapshot):
+            out.append(name)
+    return out
+
+
 def recommend_build(
     champion_name: str,
     enemies: list[tuple[str, str]],
@@ -863,7 +880,7 @@ def recommend_build(
 
     pool = _item_pool(champ["id"], snapshot)
     pool_names = {norm_item(str(row.get("item_name") or "")) for row in pool}
-    base = _core_build(champ, pool, effective_role, snapshot)
+    base = _finished_only(_core_build(champ, pool, effective_role, snapshot), snapshot)
 
     reasons = defaultdict(list)
     reason_details = defaultdict(list)
@@ -920,10 +937,12 @@ def recommend_build(
         for item, score in scores.most_common()
         if float(score) >= 2.5
     ][:max_adaptations]
-    situational = [item for item, _score in ranked_adaptations]
+    situational = _finished_only([item for item, _score in ranked_adaptations], snapshot)
 
     base, situational = enforce_single_boot_rule(base, situational, scores)
-    ordered = order_build_items(base, situational, pool, scores)
+    base = _finished_only(base, snapshot)
+    situational = _finished_only(situational, snapshot)
+    ordered = _finished_only(order_build_items(base, situational, pool, scores), snapshot)
 
     return {
         "champion": champ,
