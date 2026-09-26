@@ -10,14 +10,14 @@ from media_cache import BRAND_DIR, CHAMPION_DIR, ITEM_DIR, cache_brand_logo, ens
 from sources import (
     DDRAGON_CHAMPION_ICON, Net, fetch_champions_locale, fetch_counter_item_pages,
     fetch_ddragon_item_ru_map, fetch_ddragon_version, fetch_stats, fetch_wrpocket_item_pools,
-    fetch_wrpocket_item_dataset, fetch_wrpocket_item_detail_dataset,
+    fetch_wrpocket_item_dataset, fetch_wrpocket_item_detail_dataset, verify_wrpocket_item_icons,
     item_detail_fallback_names, fetch_current_patch_info, item_name_ru,
     parse_wildriftcore_matchups, parse_wildriftcore_tiers, slugish, clean_item_name, clean_wrpocket_item_stats,
     clean_wrpocket_item_effect, _item_dataset_hash, canonical_item_name, is_finished_item_tier,
 )
 
 
-ITEM_DATA_SCHEMA_VERSION = "3"
+ITEM_DATA_SCHEMA_VERSION = "4"
 
 
 class UpdateCancelled(RuntimeError):
@@ -493,6 +493,12 @@ def update_all(
                 _check_cancel(cancel_check)
 
         parsed_rows = list(dataset.rows or []) if dataset.status_code != 304 else []
+        if parsed_rows:
+            # Item-card DOM can contain recipe/similar-item art. Verify the
+            # icon for every finished item against that item's own detail page
+            # before writing URLs or refreshing the media cache.
+            parsed_rows = verify_wrpocket_item_icons(net, parsed_rows, emit)
+            _check_cancel(cancel_check)
         if dataset.status_code != 304:
             detail_rows: list[dict] = []
             # Apply every valid catalog row we could parse.  Do not reject the
