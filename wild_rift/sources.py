@@ -907,13 +907,18 @@ def parse_wildriftcore_build_page(
             )
             role_items = sorted(set(role_items), key=len, reverse=True)
             opp_priority = 100
-            for raw in segment[opponent_start:]:
-                line = clean(raw)
-                if not line or "›" not in line:
+            opp_lines = [clean(x) for x in segment[opponent_start:] if clean(x)]
+            parsed_pairs: list[tuple[str, str]] = []
+            for line_idx, line in enumerate(opp_lines):
+                if "›" in line and line != "›":
+                    enemy_name, right = [clean(x) for x in line.split("›", 1)]
+                    if enemy_name and right:
+                        parsed_pairs.append((enemy_name, right))
                     continue
-                enemy_name, right = [clean(x) for x in line.split("›", 1)]
-                if not enemy_name or not right:
-                    continue
+                if line == "›" and line_idx > 0 and line_idx + 1 < len(opp_lines):
+                    parsed_pairs.append((opp_lines[line_idx - 1], opp_lines[line_idx + 1]))
+
+            for enemy_name, right in parsed_pairs:
                 chosen = ""
                 reason = ""
                 for candidate in role_items:
@@ -921,6 +926,10 @@ def parse_wildriftcore_build_page(
                         chosen = candidate
                         reason = clean(right[len(candidate):])
                         break
+                if not chosen:
+                    exact = lookup.get(slugish(right))
+                    if exact:
+                        chosen = exact
                 if not chosen:
                     continue
                 situational.append({
