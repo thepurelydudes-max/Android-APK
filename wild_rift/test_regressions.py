@@ -308,6 +308,61 @@ Magic damage dominates the enemy draft.
             )
         )
 
+    def test_single_role_reader_parses_three_variants_with_example_drafts(self):
+        text = """Title: Ahri Wild Rift Best Build Guide (Patch 7.3)
+
+Markdown Content:
+Best Ahri build (Mid Lane): Infinity Orb › Rabadon's Deathcap › Void Staff › Stormsurge › Hextech Rocketbelt, boots Boots of Mana, keystone Electrocute.
+
+### Standard — AP burst
+[Infinity Orb](https://wildriftcore.com/en/items/infinity-orb/)›[Rabadon's Deathcap](https://wildriftcore.com/en/items/rabadons-deathcap/)›[Void Staff](https://wildriftcore.com/en/items/void-staff/)›[Stormsurge](https://wildriftcore.com/en/items/stormsurge/)›[Hextech Rocketbelt](https://wildriftcore.com/en/items/hextech-rocketbelt/)
+When to pick it
+Balanced draft, no strong signal
+Example enemy draft
+![Image: Ryze](https://example.invalid/ryze.png) ![Image: Master Yi](https://example.invalid/masteryi.png) ![Image: Lucian](https://example.invalid/lucian.png) ![Image: Kai'Sa](https://example.invalid/kaisa.png) ![Image: Lulu](https://example.invalid/lulu.png)
+Nothing dominates on the other side: the standard build maximizes your damage.
+Open this draft in the tool →
+
+### Safety — Zhonya
+[Zhonya's Hourglass](https://wildriftcore.com/en/items/zhonyas-hourglass/)›[Rabadon's Deathcap](https://wildriftcore.com/en/items/rabadons-deathcap/)›[Void Staff](https://wildriftcore.com/en/items/void-staff/)›[Hextech Rocketbelt](https://wildriftcore.com/en/items/hextech-rocketbelt/)›[Infinity Orb](https://wildriftcore.com/en/items/infinity-orb/)
+When to pick it
+2+ dive threats 2+ burst champions
+Example enemy draft
+![Image: Fiora](https://example.invalid/fiora.png) ![Image: Lee Sin](https://example.invalid/leesin.png) ![Image: Aurelion Sol](https://example.invalid/asol.png) ![Image: Kai'Sa](https://example.invalid/kaisa.png) ![Image: Lulu](https://example.invalid/lulu.png)
+Dive threat: Fiora, Lee Sin.
+Open this draft in the tool →
+
+### Anti-resist
+[Void Staff](https://wildriftcore.com/en/items/void-staff/)›[Rabadon's Deathcap](https://wildriftcore.com/en/items/rabadons-deathcap/)›[Infinity Orb](https://wildriftcore.com/en/items/infinity-orb/)›[Stormsurge](https://wildriftcore.com/en/items/stormsurge/)›[Hextech Rocketbelt](https://wildriftcore.com/en/items/hextech-rocketbelt/)
+When to pick it
+2+ enemy tanks
+Example enemy draft
+![Image: Darius](https://example.invalid/darius.png) ![Image: Master Yi](https://example.invalid/masteryi.png) ![Image: Cho'Gath](https://example.invalid/chogath.png) ![Image: Kai'Sa](https://example.invalid/kaisa.png) ![Image: Nautilus](https://example.invalid/nautilus.png)
+Against 3 tank(s): Darius, Cho'Gath, Nautilus.
+Open this draft in the tool →
+
+### Situational adaptations
+**Zhonya's Hourglass**_Against AD burst (assassins, Zed, Rengar…)_
+
+### Adaptations by opponent
+[**Irelia**](https://wildriftcore.com/en/champions/irelia/)›[Zhonya's Hourglass](https://wildriftcore.com/en/items/zhonyas-hourglass/)_Physical damage_
+"""
+        known = [
+            "Infinity Orb", "Rabadon's Deathcap", "Void Staff", "Stormsurge",
+            "Hextech Rocketbelt", "Boots of Mana", "Zhonya's Hourglass",
+        ]
+        payload = sources.parse_wildriftcore_build_page(text, "Ahri", known)
+        self.assertEqual(len(payload["variants"]), 3)
+        safety = next(row for row in payload["variants"] if row["name"] == "Safety — Zhonya")
+        self.assertEqual(safety["trigger"], "2+ dive threats 2+ burst champions")
+        self.assertEqual(safety["example_enemies"][:2], ["Fiora", "Lee Sin"])
+        self.assertIn("Dive threat: Fiora, Lee Sin.", safety["example_text"])
+        irelia_rows = [
+            row for row in payload["situational"]
+            if "Opponent: Irelia" in str(row.get("trigger") or "")
+        ]
+        self.assertTrue(irelia_rows)
+
     def test_variant_selector_prefers_ad_variant_for_physical_team(self):
         rows = [
             {
