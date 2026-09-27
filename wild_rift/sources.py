@@ -1521,12 +1521,17 @@ def fetch_wrpocket_item_pools(net: Net, resolve: Callable[[str], str | None], pr
         if url in visited:
             continue
         visited.add(url)
-        champ_guess = text or url.rstrip("/").split("/")[-1].replace("-", " ")
-        cid = resolve(champ_guess) or resolve(url.rstrip("/").split("/")[-1].replace("-", " "))
+        slug_guess = url.rstrip("/").split("/")[-1].replace("-", " ")
+        champ_guess = text or slug_guess
+        cid = resolve(champ_guess) or resolve(slug_guess)
         if not cid:
             continue
         if progress:
-            progress(f"Wild Rift Pocket: {idx}/{len(filtered)} — {champ_guess}")
+            # Never expose the raw WR Pocket card text in the UI. Champion cards
+            # can include tier/score decorations and occasionally mojibake from
+            # icon glyphs (for example "S â… 21.0 Zyra"). The resolved champion
+            # id is canonical and contains only the actual champion name.
+            progress(f"Wild Rift Pocket: {idx}/{len(filtered)} — {cid}")
         psoup = BeautifulSoup(net.get(url).text, "html.parser")
         heading = None
         for h in psoup.find_all(["h2", "h3", "h4"]):
