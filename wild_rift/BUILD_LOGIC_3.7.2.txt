@@ -1,0 +1,28 @@
+Wild Rift Counter Assistant 3.7.2
+====================================
+
+Stable Android update identity
+------------------------------
+- Root cause of "new APK is incompatible with the installed version" confirmed
+  by comparing real APK signing certificates:
+  3.6.9 and 3.7.0 were signed by different certificates.
+- Flet was falling back to a per-runner debug signing key because no persistent
+  Android keystore was configured in GitHub Actions.
+- The Wild Rift workflow now refuses to build without a persistent release key
+  stored in GitHub Actions secrets.
+- Package identity is explicitly pinned to com.flet.wild_rift, matching the
+  previous Flet default derived from org=com.flet + project=wild_rift.
+- VERSION.txt now becomes the real Android versionName.
+- GITHUB_RUN_NUMBER becomes the monotonically increasing Android versionCode.
+- The workflow verifies the finished APK certificate with apksigner and fails if
+  it does not match the configured keystore fingerprint.
+- Added create_android_signing_key.ps1 for one-time local key generation and
+  clipboard-safe Base64 transfer into GitHub Secrets.
+- Signing key files are excluded by .gitignore.
+
+Migration note
+--------------
+Existing pre-3.7.2 APKs cannot be upgraded in place because the ephemeral private
+keys that signed them were discarded with their GitHub runners. One final
+uninstall/reinstall is unavoidable when moving to the persistent key. Every
+subsequent APK signed with that same key can update in place.
