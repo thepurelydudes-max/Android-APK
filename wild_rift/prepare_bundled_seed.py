@@ -55,6 +55,19 @@ def _audit() -> dict:
                 "ORDER BY champion_id,role,priority,variant_name"
             ).fetchall()
         ]
+        situational_rows = [
+            dict(row) for row in con.execute(
+                "SELECT champion_id,role,item_name FROM role_build_situational "
+                "WHERE source='wildriftcore.com' ORDER BY champion_id,role,priority"
+            ).fetchall()
+        ]
+        opponent_rows = [
+            dict(row) for row in con.execute(
+                "SELECT champion_id,role,enemy_name,item_name "
+                "FROM role_build_opponent_adaptations "
+                "WHERE source='wildriftcore.com' ORDER BY champion_id,role,priority"
+            ).fetchall()
+        ]
         build_cache_rows = int(con.execute(
             "SELECT COUNT(*) FROM build_page_cache "
             "WHERE source='wildriftcore.com'"
@@ -113,6 +126,20 @@ def _audit() -> dict:
         for cid, role in role_build_keys
         if variant_counts.get((cid, role), 0) < 3
     )
+    situational_keys = {
+        (str(row.get("champion_id") or ""), str(row.get("role") or ""))
+        for row in situational_rows
+    }
+    opponent_keys = {
+        (str(row.get("champion_id") or ""), str(row.get("role") or ""))
+        for row in opponent_rows
+    }
+    roles_without_situational = sorted(
+        f"{cid}:{role}" for cid, role in (role_build_keys - situational_keys)
+    )
+    roles_without_opponent_adaptations = sorted(
+        f"{cid}:{role}" for cid, role in (role_build_keys - opponent_keys)
+    )
 
     incomplete_role_builds = []
     for row in role_build_rows:
@@ -158,10 +185,14 @@ def _audit() -> dict:
         "items_missing": missing_items,
         "wrc_role_builds": len(role_build_rows),
         "wrc_role_variants": len(role_variant_rows),
+        "wrc_situational": len(situational_rows),
+        "wrc_opponent_adaptations": len(opponent_rows),
         "wrc_build_cache_pages": build_cache_rows,
         "champions_without_role_build": champions_without_role_build,
         "roles_without_variants": roles_without_variants,
         "roles_with_incomplete_variant_count": roles_with_incomplete_variant_count,
+        "roles_without_situational": roles_without_situational,
+        "roles_without_opponent_adaptations": roles_without_opponent_adaptations,
         "incomplete_role_builds": incomplete_role_builds,
         "incomplete_variants": incomplete_variants,
         "data_gaps": data_gaps,
@@ -250,6 +281,8 @@ def main() -> int:
     print(
         f"WildRiftCore: {audit['wrc_role_builds']} role builds, "
         f"{audit['wrc_role_variants']} variants, "
+        f"{audit['wrc_situational']} situational, "
+        f"{audit['wrc_opponent_adaptations']} opponent adaptations, "
         f"{audit['wrc_build_cache_pages']} cached champion pages",
         flush=True,
     )
@@ -257,6 +290,8 @@ def main() -> int:
         "champions_without_role_build",
         "roles_without_variants",
         "roles_with_incomplete_variant_count",
+        "roles_without_situational",
+        "roles_without_opponent_adaptations",
         "incomplete_role_builds",
         "incomplete_variants",
     ):
@@ -307,6 +342,8 @@ def main() -> int:
     variant_gaps = (
         audit["roles_without_variants"]
         + audit["roles_with_incomplete_variant_count"]
+        + audit["roles_without_situational"]
+        + audit["roles_without_opponent_adaptations"]
         + audit["incomplete_variants"]
     )
     if audit["incomplete_role_builds"] or variant_gaps:
