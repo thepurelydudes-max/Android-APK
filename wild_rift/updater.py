@@ -16,7 +16,7 @@ from sources import (
     fetch_wildriftcore_item_metadata,
     slugish, clean_item_name, clean_wrpocket_item_stats,
     clean_wrpocket_item_effect, _item_dataset_hash, canonical_item_name, is_finished_item_tier,
-    canonical_completed_item_name, trusted_item_icon_urls,
+    trusted_item_icon_urls,
 )
 
 
@@ -720,21 +720,38 @@ def update_all(
         # Fetch only those missing names from their own WRC item pages so the
         # source-approved build remains complete and keeps a verified icon.
         role_item_names: set[str] = set()
+        source_boot_names: set[str] = set()
         for _cid, _role, build_items, boot_name, _patch, _url in role_builds:
             role_item_names.update(
-                canonical_completed_item_name(x)
-                for x in build_items if canonical_completed_item_name(x)
+                canonical_item_name(x)
+                for x in build_items if canonical_item_name(x)
             )
-            if canonical_completed_item_name(boot_name):
-                role_item_names.add(canonical_completed_item_name(boot_name))
+            boot = canonical_item_name(boot_name)
+            if boot:
+                role_item_names.add(boot)
+                source_boot_names.add(boot)
         role_item_names.update(
-            canonical_completed_item_name(row[2])
-            for row in role_situational if canonical_completed_item_name(row[2])
+            canonical_item_name(row[2])
+            for row in role_situational if canonical_item_name(row[2])
         )
-        role_item_names.update(
-            canonical_completed_item_name(row[2])
-            for row in role_boots if canonical_completed_item_name(row[2])
-        )
+        for row in role_boots:
+            boot = canonical_item_name(row[2])
+            if boot:
+                role_item_names.add(boot)
+                source_boot_names.add(boot)
+
+        # The current role-build source is authoritative that these are usable
+        # boots in the current patch. Older WR Pocket catalog snapshots may mark
+        # names such as Mercury's Treads / Plated Steelcaps as intermediate.
+        # Promote only source-declared boot slots, never arbitrary catalog items.
+        for boot in sorted(source_boot_names):
+            urls = trusted_item_icon_urls(boot)
+            db.upsert_item(
+                boot, "Boots", "wildriftcore.com",
+                name_ru=item_name_ru(boot, pc_ru),
+                icon_url=(urls[0] if urls else ""),
+                tier="Upgraded",
+            )
         existing_names = {canonical_item_name(name) for name in db.get_item_names()}
         missing_role_items = sorted(name for name in role_item_names if name and name not in existing_names)
         if missing_role_items:
@@ -782,6 +799,12 @@ def update_all(
                 )
             items = _catalog_finished_items()
             known_items = [x[0] for x in items]
+
+        # Re-read after role-source enrichment/promotions so newly current boots
+        # (for example Mercury's Treads) are included in media caching and
+        # counter-item matching immediately in this same update.
+        items = _catalog_finished_items()
+        known_items = [x[0] for x in items]
 
         if role_build_errors:
             detail = "; ".join(role_build_errors[:3])
