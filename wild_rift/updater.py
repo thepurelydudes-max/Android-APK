@@ -8,7 +8,7 @@ import db
 from localization import COMMON_CHAMPION_ALIASES
 from media_cache import BRAND_DIR, CHAMPION_DIR, ITEM_DIR, cache_brand_logo, ensure_cache_dirs, safe_name, sync_cached_image
 from sources import (
-    DDRAGON_CHAMPION_ICON, Net, fetch_champions_locale, fetch_counter_item_pages,
+    DDRAGON_CHAMPION_ICON, Net, fetch_champions_locale, fetch_wildriftmeta_champion_roster, fetch_counter_item_pages,
     fetch_ddragon_item_ru_map, fetch_ddragon_version, fetch_stats, fetch_wrpocket_item_pools,
     fetch_wrpocket_item_dataset, fetch_wrpocket_item_detail_dataset,
     item_detail_fallback_names, fetch_current_patch_info, item_name_ru,
@@ -359,24 +359,50 @@ def _cache_media(
         _check_cancel(cancel_check)
         target = CHAMPION_DIR / f"{safe_name(c['id'])}.png"
         existing = db.champion_by_name_or_id(c["id"])
-        url = (DDRAGON_CHAMPION_ICON.format(version=version, champion_id=c["id"])
-               if version else (existing or {}).get("icon_url", ""))
-        if not url:
-            champion_media_issues.append(f"Portrait {c['id']}: no download URL")
-            continue
-        record = _seed_media_record(f"champion:{c['id']}", url, existing, target, previous_patch, current_patch)
-        try:
-            result = sync_cached_image(
-                net, url, target, record, current_patch=current_patch, previous_patch=previous_patch,
-            )
-            if result.status in {"failed", "stale_kept"}:
-                champion_media_issues.append(f"Portrait {c['id']}: {result.status}")
-            _store_media_result(f"champion:{c['id']}", result)
+        candidates: list[str] = []
+        if version:
+            candidates.append(DDRAGON_CHAMPION_ICON.format(version=version, champion_id=c["id"]))
+        stored_url = str((existing or {}).get("icon_url") or c.get("icon_url") or "")
+        if stored_url and stored_url not in candidates:
+            candidates.append(stored_url)
+        # Generic WildRiftMeta fallback for WR-exclusive champions absent from
+        # PC Data Dragon. Prefer the exact profile URL-derived icon when the
+        # roster supplement provided one.
+        if not stored_url:
+            slug = re.sub(r"[^a-z0-9]+", "-", str(c.get("name") or c["id"]).casefold()).strip("-")
+            if slug:
+                candidates.append(
+                    f"https://www.wildriftmeta.com/assets/champion/icon/champion-{slug}-icon.png"
+                )
+
+        asset_key = f"champion:{c['id']}"
+        chosen = None
+        last_status = "failed"
+        for url in candidates:
+            record = _seed_media_record(asset_key, url, existing, target, previous_patch, current_patch)
+            try:
+                result = sync_cached_image(
+                    net, url, target, record,
+                    current_patch=current_patch, previous_patch=previous_patch,
+                    force_refresh=False,
+                )
+            except Exception as exc:
+                last_status = str(exc)
+                continue
+            last_status = result.status
+            if result.status in {"failed", "stale_kept", "missing_url"}:
+                continue
             if result.path:
-                db.update_champion_media(c["id"], result.source_url or url, _portable_path(result.path))
-                champ_count += 1
-        except Exception as exc:
-            champion_media_issues.append(f"Portrait {c['id']}: {exc}")
+                chosen = (url, result)
+                break
+
+        if chosen is None:
+            champion_media_issues.append(f"Portrait {c['id']}: {last_status}")
+        else:
+            url, result = chosen
+            _store_media_result(asset_key, result)
+            db.update_champion_media(c["id"], result.source_url or url, _portable_path(result.path))
+            champ_count += 1
         progress(update_text("cache_champions", lang, current=idx, total=len(champs)))
 
     progress(update_text("cache_items", lang, current=0, total=len(items)))
@@ -514,10 +540,35 @@ def update_all(
         ru_champs = []
         summary["errors"].append(f"RU champions: {e}")
     champs = merge_champion_locales(en_champs, ru_champs)
+
+    # Supplement only genuinely missing identities from the current live roster.
+    # The structured ry2x metadata remains authoritative for all champions it
+    # already knows. This currently recovers Norra, whose WR profile exists in
+    # patch 7.3 while the merged feed can lag behind.
+    try:
+        roster_rows = fetch_wildriftmeta_champion_roster(net)
+        known = {slugish(str(c.get("id") or "")) for c in champs}
+        known |= {slugish(str(c.get("name") or "")) for c in champs}
+        for row in roster_rows:
+            key = slugish(str(row.get("id") or row.get("name") or ""))
+            if not key or key in known:
+                continue
+            champs.append(row)
+            known.add(key)
+    except Exception as e:
+        # Roster supplement is non-destructive; the primary structured feed is
+        # still usable when the supplementary site is temporarily unavailable.
+        summary["errors"].append(f"Champion roster supplement: {e}")
+
     now = datetime.now().astimezone()
     now_iso = now.isoformat()
     for c in champs:
-        db.upsert_champion(c["id"], c["name"], c["roles"], c["lanes"], c["damage_type"], "ry2x/WildRift-Merged-Champion-Data", now_iso, name_ru=c.get("name_ru", ""))
+        source = "wildriftmeta.com:roster" if c.get("profile_slug") else "ry2x/WildRift-Merged-Champion-Data"
+        db.upsert_champion(
+            c["id"], c["name"], c["roles"], c["lanes"], c["damage_type"],
+            source, now_iso, name_ru=c.get("name_ru", ""),
+            icon_url=c.get("icon_url", ""),
+        )
         extras = COMMON_CHAMPION_ALIASES.get(c["id"], ())
         if extras:
             db.replace_champion_aliases(c["id"], extras)
