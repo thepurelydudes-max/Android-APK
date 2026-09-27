@@ -446,14 +446,35 @@ class MobileAssistant:
             controls.append(box)
         return ft.Row(spacing=5, controls=controls)
 
-    def champion_options(self) -> list[ft.DropdownOption]:
-        """Return deliberately lightweight dropdown options for Android.
+    def _dropdown_avatar(self, champ: dict | None, size: int = 28) -> ft.Control:
+        """One lightweight cached portrait for a dropdown row.
 
-        Five selectors each contain the full champion roster. Putting a nested
-        portrait Container/Image and a per-option ButtonStyle into every entry
-        created ~700 image/control subtrees that Flutter had to keep attached
-        while *any* part of the page updated. The selected champion already has
-        a full-size portrait beside the field, so the menu only needs the name.
+        Keep the visual hero cue without restoring the old nested
+        Container -> Row -> Image tree and per-option ButtonStyle. Dropdown
+        portraits never fetch remote URLs directly: if a portrait is not in the
+        verified local cache, render a small neutral fallback icon instead.
+        """
+        local = self._cached_local_media_src(champ)
+        if local:
+            return ft.Image(
+                src=local,
+                width=size,
+                height=size,
+                fit=ft.BoxFit.COVER,
+            )
+        return ft.Icon(
+            ft.Icons.PERSON_OUTLINE,
+            size=max(18, size - 6),
+            color=P["muted"],
+        )
+
+    def champion_options(self) -> list[ft.DropdownOption]:
+        """Enemy selector options with lightweight cached champion portraits.
+
+        Five selectors still contain the full roster, so keep each option to a
+        single Image/Icon plus text. This restores the portraits removed during
+        the 3.7.0 performance pass without bringing back the old nested avatar
+        containers and per-row styles that caused large Flutter diff trees.
         """
         champions = sorted(
             self.snapshot.get("champions", []),
@@ -463,6 +484,7 @@ class MobileAssistant:
             ft.DropdownOption(
                 key=str(champ["id"]),
                 text=self.champ_name(champ),
+                leading_icon=self._dropdown_avatar(champ, 28),
             )
             for champ in champions
         ]
