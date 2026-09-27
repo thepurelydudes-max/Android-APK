@@ -253,6 +253,28 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
             "https://www.wildriftmeta.com/assets/item/icon/item-randuins-omen-icon.png",
         )
 
+    def test_live_roster_supplement_can_add_norra_identity(self):
+        html = (
+            '<html><body>'
+            '<a href="/champions/ahri/">Ahri</a>'
+            '<a href="/champions/norra/">Norra</a>'
+            '<a href="/champions/zyra/">Zyra</a>'
+            '</body></html>'
+        )
+
+        class Response:
+            text = html
+
+        class FakeNet:
+            def get(self, _url, *args, **kwargs):
+                return Response()
+
+        rows = sources.fetch_wildriftmeta_champion_roster(FakeNet())
+        by_id = {row["id"]: row for row in rows}
+        self.assertIn("Norra", by_id)
+        self.assertEqual(by_id["Norra"]["name"], "Norra")
+        self.assertTrue(by_id["Norra"]["icon_url"].endswith("champion-norra-icon.png"))
+
     def test_profile_url_uses_exact_id_not_contaminated_display_name(self):
         # Reproduce the real warning: a future/unknown /norra profile must never
         # collapse into Zyra even if some upstream display-name field is wrong.
