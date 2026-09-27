@@ -229,19 +229,100 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
             self.assertEqual(urls[0], url)
             self.assertNotIn("wrpocket.app", " ".join(urls))
 
-    def test_legacy_boot_names_normalize_to_completed_boots(self):
+    def test_current_patch_boot_names_keep_their_identity(self):
         self.assertEqual(
             sources.canonical_completed_item_name("Mercury's Treads"),
-            "Chainlaced Crushers",
+            "Mercury's Treads",
         )
         self.assertEqual(
             sources.canonical_completed_item_name("Plated Steelcaps"),
-            "Armored Advance",
+            "Plated Steelcaps",
         )
         self.assertEqual(
-            sources.canonical_completed_item_name("Berserker's Greaves"),
-            "Gunmetal Greaves",
+            sources.canonical_completed_item_name("Boots of Mana"),
+            "Boots of Mana",
         )
+
+    def test_possessive_item_asset_slug_does_not_insert_fake_hyphen(self):
+        self.assertEqual(
+            sources.trusted_item_icon_urls("Mercury's Treads")[0],
+            "https://www.wildriftmeta.com/assets/item/icon/item-mercurys-treads-icon.png",
+        )
+        self.assertEqual(
+            sources.trusted_item_icon_urls("Randuin's Omen")[0],
+            "https://www.wildriftmeta.com/assets/item/icon/item-randuins-omen-icon.png",
+        )
+
+    def test_profile_url_uses_exact_id_not_contaminated_display_name(self):
+        # Reproduce the real warning: a future/unknown /norra profile must never
+        # collapse into Zyra even if some upstream display-name field is wrong.
+        champions = [{
+            "id": "Zyra", "name": "Zyra", "name_ru": "Norra",
+            "roles": ["mage", "support"], "lanes": ["mid", "support"],
+            "damage_type": "Mana",
+        }]
+        resolver = updater.build_resolver(champions)
+        self.assertEqual(resolver("Norra"), "Zyra")  # loose text resolver may see the bad label
+        self.assertIsNone(resolver.exact_id("norra"))
+        self.assertEqual(resolver.exact_id("zyra"), "Zyra")
+
+        index_html = (
+            '<a href="/en/champions/norra">Norra</a>'
+            '<a href="/en/champions/zyra">Zyra</a>'
+        )
+        page = (
+            '<h2>Items</h2><h4>Magic</h4>'
+            '<a href="/en/items/morellonomicon">Morellonomicon</a>'
+            '<h2>Runes</h2>'
+        )
+
+        class Response:
+            def __init__(self, text):
+                self.text = text
+
+        class FakeNet:
+            def get(self, url, *args, **kwargs):
+                if url.rstrip("/") == sources.WR_POCKET_CHAMPS.rstrip("/"):
+                    return Response(index_html)
+                return Response(page)
+
+        progress = []
+        rows = sources.fetch_wrpocket_item_pools(FakeNet(), resolver, progress.append)
+        self.assertEqual({row[0] for row in rows}, {"Zyra"})
+        self.assertIn("неизвестный профиль norra", "\n".join(progress))
+
+    def test_wildriftcounter_retries_remote_disconnect(self):
+        original_sleep = sources.time.sleep
+        sources.time.sleep = lambda _seconds: None
+        try:
+            class Response:
+                status_code = 200
+                headers = {}
+                text = "<html></html>"
+                def raise_for_status(self):
+                    return None
+
+            class Session:
+                def __init__(self):
+                    self.calls = 0
+                def get(self, *_args, **_kwargs):
+                    self.calls += 1
+                    if self.calls == 1:
+                        raise sources.requests.ConnectionError("remote closed")
+                    return Response()
+
+            class FakeNet:
+                timeout = 1
+                _wildriftcounter_last_request = 0.0
+                _wildriftcounter_gap = 0.0
+                s = Session()
+
+            net = FakeNet()
+            response = sources._wildriftcounter_get(net, "https://wildriftcounter.com/champions/")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(net.s.calls, 2)
+        finally:
+            sources.time.sleep = original_sleep
 
     def test_tier_integrity_detects_a_resolved_champion_without_tier_row(self):
         names = [f"Hero{i}" for i in range(12)]
