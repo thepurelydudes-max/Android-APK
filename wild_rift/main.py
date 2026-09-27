@@ -235,6 +235,30 @@ class MobileAssistant:
         url = str(record.get("icon_url") or "")
         return url or fallback
 
+    def item_image_content(self, record: dict | None, size: int) -> ft.Control:
+        """Render only a successfully cached item icon.
+
+        Never use the app logo as an item fallback and never reach around a
+        failed cache entry to a remote URL that may be stale/wrong. If an icon
+        was not verified and cached, show a neutral missing-image marker.
+        """
+        value = str((record or {}).get("icon_path") or "")
+        if value:
+            p = resolve_media_path(value)
+            if p.is_file():
+                return ft.Image(src=str(p), width=size, height=size, fit=ft.BoxFit.COVER)
+        return ft.Container(
+            width=size,
+            height=size,
+            alignment=ft.Alignment.CENTER,
+            bgcolor=P["bg"],
+            content=ft.Icon(
+                ft.Icons.IMAGE_NOT_SUPPORTED_OUTLINED,
+                size=max(14, int(size * 0.46)),
+                color=P["muted"],
+            ),
+        )
+
     def avatar_content(self, champ: dict | None, size: int = 48) -> ft.Control:
         """Desktop-like avatar content: '?' while empty, portrait after selection.
 
@@ -820,7 +844,7 @@ class MobileAssistant:
                     border_radius=5,
                     border=ft.Border.all(1, P["border"]),
                     clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                    content=ft.Image(src=self.image_src(item), fit=ft.BoxFit.COVER),
+                    content=self.item_image_content(item, 29),
                     tooltip=self.item_name(name),
                 )
             )
@@ -907,7 +931,7 @@ class MobileAssistant:
                         height=52,
                         border_radius=7,
                         clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                        content=ft.Image(src=self.image_src(row), fit=ft.BoxFit.COVER),
+                        content=self.item_image_content(row, 52),
                     ),
                     ft.Text(self.item_name(canonical), size=9, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
                 ],
