@@ -87,6 +87,7 @@ class Net:
         self._dns_failure_events = 0
         self._wildriftcore_last_request = 0.0
         self._wildriftcore_gap = 1.35
+        self._wildriftcore_reader_only = False
         self._wildriftcounter_last_request = 0.0
         self._wildriftcounter_gap = 0.85
         # Jina Reader is used only when WildRiftCore's Cloudflare challenge
@@ -293,6 +294,10 @@ def _wildriftcore_build_text(
     runners and some Android/VPN routes. A normal direct response is always
     preferred; only an HTTP/network failure falls back to Jina's public reader.
     """
+    if bool(getattr(net, "_wildriftcore_reader_only", False)):
+        response = _jina_reader_get(net, url, progress)
+        return response.text or "", "reader"
+
     direct_error: Exception | None = None
     try:
         response = _wildriftcore_get(net, url, progress, WR_CORE_HTML_HEADERS)
@@ -308,6 +313,9 @@ def _wildriftcore_build_text(
     except Exception as exc:
         direct_error = exc
 
+    # One Cloudflare/DNS failure is enough evidence for this update run. Do not
+    # spend several seconds retrying the blocked host for every champion.
+    net._wildriftcore_reader_only = True
     if progress:
         progress(
             "WildRiftCore: прямой доступ заблокирован, использую резервный reader…"
