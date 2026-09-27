@@ -1043,6 +1043,8 @@ def update_all(
         )
         summary["role_builds"] = len(role_builds)
         summary["role_build_variants"] = len(role_variants)
+        lane_updates = db.merge_champion_lanes_from_role_builds("wildriftcore.com")
+        summary["wrc_lane_updates"] = int(lane_updates)
         summary["wrc_build_profiles_total"] = int(
             role_build_coverage.get("profiles_total") or 0
         )
