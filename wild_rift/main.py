@@ -1106,7 +1106,39 @@ class MobileAssistant:
             if summary.get("patch"):
                 msg += f" {self.t('patch')}: {summary['patch']}."
             if errors:
-                msg += f" ({len(errors)} {self.t('update_warnings')})"
+                # A bare number such as "5 warnings" is not actionable. Show
+                # the affected update subsystems directly in the status line;
+                # the full multi-line details still go to update-warnings.log.
+                labels: list[str] = []
+                label_map = (
+                    ("RU champions", "RU champions"),
+                    ("Patch version", "patch"),
+                    ("Stats API", "stats"),
+                    ("WildRiftCore tiers", "tiers"),
+                    ("WildRiftCore matchups", "matchups"),
+                    ("Item localization", "item locale"),
+                    ("WR Pocket item catalog", "item catalog"),
+                    ("RU item names", "item RU"),
+                    ("Wild Rift Pocket", "WR Pocket"),
+                    ("WR Pocket exact item icons", "item icons"),
+                    ("WildRiftCore item metadata", "item metadata"),
+                    ("WildRiftCore builds", "role builds"),
+                    ("WildRiftCounter items", "counter items"),
+                    ("Champion media cache", "champion images"),
+                    ("Item media cache", "item images"),
+                )
+                for value in errors:
+                    first_line = str(value or "").splitlines()[0].strip()
+                    label = next(
+                        (short for prefix, short in label_map if first_line.startswith(prefix)),
+                        first_line.split(":", 1)[0][:28] or "update",
+                    )
+                    if label not in labels:
+                        labels.append(label)
+                shown = ", ".join(labels[:5])
+                if len(labels) > 5:
+                    shown += ", …"
+                msg += f" ({len(errors)} {self.t('update_warnings')}: {shown})"
                 try:
                     log_dir = RUNTIME_DIR / "logs"
                     log_dir.mkdir(parents=True, exist_ok=True)
