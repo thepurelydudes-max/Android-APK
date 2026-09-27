@@ -702,6 +702,34 @@ def _looks_like_boot_name(name: str) -> bool:
     ))
 
 
+BOOT_UPGRADE_MAP = {
+    "boots of mana": "Spellslinger's Shoes",
+    "mercury's treads": "Chainlaced Crushers",
+    "mercurys treads": "Chainlaced Crushers",
+    "plated steelcaps": "Armored Advance",
+    "boots of dynamism": "Armorcrusher Boots",
+    "berserker's greaves": "Gunmetal Greaves",
+    "berserkers greaves": "Gunmetal Greaves",
+    "ionian boots of lucidity": "Crimson Lucidity",
+    "gluttonous greaves": "Immortal Boots",
+    "sorcerer's shoes": "Spellslinger's Shoes",
+    "sorcerers shoes": "Spellslinger's Shoes",
+}
+
+
+def _upgrade_boot_name(value: str, lookup: dict[str, str]) -> str:
+    """Convert a WRC mid-tier/legacy boot to the current completed boot item.
+
+    WildRiftCore often names the 1200g boot in its current build sentence, while
+    this assistant intentionally displays only completed/upgraded items. WR
+    Pocket exposes the exact 7.2+ upgrade chain, so keep the source choice but
+    show its completed form rather than inventing a different boot.
+    """
+    cleaned = clean_item_name(value)
+    mapped = BOOT_UPGRADE_MAP.get(cleaned.casefold(), cleaned)
+    return _canonical_known_item(mapped, lookup)
+
+
 def parse_wildriftcore_build_page(
     html: str,
     champion_id: str,
@@ -747,7 +775,7 @@ def parse_wildriftcore_build_page(
             item = _canonical_known_item(raw, lookup)
             if item and item not in items:
                 items.append(item)
-        boot = _canonical_known_item(m.group(3), lookup)
+        boot = _upgrade_boot_name(m.group(3), lookup)
         if len(items) < 3:
             continue
         seen_roles.add(role)
@@ -773,7 +801,7 @@ def parse_wildriftcore_build_page(
                 item = _canonical_known_item(raw, lookup)
                 if item and item not in items:
                     items.append(item)
-            boot = _canonical_known_item(m.group(3), lookup)
+            boot = _upgrade_boot_name(m.group(3), lookup)
             if len(items) >= 3:
                 seen_roles.add(role)
                 builds.append({"role": role, "items": items[:5], "boot": boot})
@@ -861,8 +889,8 @@ def parse_wildriftcore_build_page(
             if folded.startswith(("alternative", "vs ", "against ")):
                 pending_reason = line
                 continue
-            item = lookup.get(slugish(line))
-            if item and _looks_like_boot_name(item):
+            item = _upgrade_boot_name(line, lookup)
+            if item and slugish(item) in {slugish(x) for x in lookup.values()} and _looks_like_boot_name(item):
                 historical_boots.append((item, pending_reason))
                 pending_reason = ""
 
