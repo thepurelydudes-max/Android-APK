@@ -828,32 +828,16 @@ def _looks_like_boot_name(name: str) -> bool:
     ))
 
 
-BOOT_UPGRADE_MAP = {
-    "boots of mana": "Spellslinger's Shoes",
-    "mercury's treads": "Chainlaced Crushers",
-    "mercurys treads": "Chainlaced Crushers",
-    "plated steelcaps": "Armored Advance",
-    "boots of dynamism": "Armorcrusher Boots",
-    "berserker's greaves": "Gunmetal Greaves",
-    "berserkers greaves": "Gunmetal Greaves",
-    "ionian boots of lucidity": "Crimson Lucidity",
-    "gluttonous greaves": "Immortal Boots",
-    "sorcerer's shoes": "Spellslinger's Shoes",
-    "sorcerers shoes": "Spellslinger's Shoes",
-}
+# Kept as a compatibility symbol for older code/tests. Patch 7.3 sources such
+# as WildRiftMeta/WildRiftCore publish Mercury's Treads, Plated Steelcaps,
+# Boots of Mana, etc. as the actual current boots. Do not rewrite those names
+# into historical upgrade names.
+BOOT_UPGRADE_MAP: dict[str, str] = {}
 
 
 def _upgrade_boot_name(value: str, lookup: dict[str, str]) -> str:
-    """Convert a WRC mid-tier/legacy boot to the current completed boot item.
-
-    WildRiftCore often names the 1200g boot in its current build sentence, while
-    this assistant intentionally displays only completed/upgraded items. WR
-    Pocket exposes the exact 7.2+ upgrade chain, so keep the source choice but
-    show its completed form rather than inventing a different boot.
-    """
-    cleaned = clean_item_name(value)
-    mapped = BOOT_UPGRADE_MAP.get(cleaned.casefold(), cleaned)
-    return _canonical_known_item(mapped, lookup)
+    """Canonicalise a source-provided boot without changing its identity."""
+    return _canonical_known_item(clean_item_name(value), lookup)
 
 
 def parse_wildriftcore_build_page(
@@ -2446,20 +2430,19 @@ def canonical_item_name(name: str) -> str:
 
 
 def canonical_completed_item_name(name: str) -> str:
-    """Normalize legacy/mid-tier boot names to the completed item shown by WRCA.
-
-    WildRiftCore can still phrase a build with Mercury's Treads, Plated
-    Steelcaps, etc. The assistant intentionally displays completed/upgraded
-    items, so those source names must never be seeded as fake Upgraded rows.
-    """
-    canonical = canonical_item_name(name)
-    mapped = BOOT_UPGRADE_MAP.get(clean_item_name(canonical).casefold(), canonical)
-    return canonical_item_name(mapped)
+    """Backward-compatible alias: current patch boot names are already final."""
+    return canonical_item_name(name)
 
 
 def _public_item_asset_slug(name: str) -> str:
-    """Stable web/CDN slug from an English canonical item name."""
-    value = unicodedata.normalize("NFKD", canonical_item_name(name))
+    """Stable WildRiftMeta/RiftGG asset slug from a canonical item name.
+
+    Possessive apostrophes are removed, not converted into separators:
+    "Mercury's Treads" -> "mercurys-treads",
+    "Randuin's Omen" -> "randuins-omen".
+    """
+    value = canonical_item_name(name).replace("’", "").replace("'", "")
+    value = unicodedata.normalize("NFKD", value)
     value = value.encode("ascii", "ignore").decode("ascii").casefold()
     return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
 
