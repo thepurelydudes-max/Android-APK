@@ -916,6 +916,30 @@ def migrate_item_aliases(aliases: dict[str, str]) -> None:
                         ),
                     )
 
+            # Complete WRC variants also store item names as JSON.
+            for row in con.execute(
+                """SELECT champion_id,role,variant_name,source,items_json
+                   FROM role_build_variants"""
+            ).fetchall():
+                try:
+                    items = json.loads(row["items_json"] or "[]")
+                except Exception:
+                    items = []
+                replaced = [
+                    canonical if str(item) == alias else str(item)
+                    for item in items
+                ]
+                if replaced != [str(item) for item in items]:
+                    con.execute(
+                        """UPDATE role_build_variants SET items_json=?
+                           WHERE champion_id=? AND role=? AND variant_name=? AND source=?""",
+                        (
+                            json.dumps(list(dict.fromkeys(replaced)), ensure_ascii=False),
+                            row["champion_id"], row["role"],
+                            row["variant_name"], row["source"],
+                        ),
+                    )
+
             old_key = f"item:{alias}"
             new_key = f"item:{canonical}"
             old_media = con.execute(
