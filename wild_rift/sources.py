@@ -270,9 +270,10 @@ def fetch_wildriftmeta_champion_roster(net: Net) -> list[dict]:
         if not key or key in seen:
             continue
         label = clean(a.get_text(" ", strip=True))
-        # Navigation/card anchors may include decorations; a short plain label
-        # is preferred, otherwise the URL slug remains the identity.
-        name = label if label and len(label) <= 40 else slug.replace("-", " ").title()
+        # Only trust link text when it describes exactly the same identity as
+        # the URL slug. Card text may contain tier/win-rate decorations.
+        fallback_name = slug.replace("-", " ").title()
+        name = label if label and slugish(label) == key else fallback_name
         name = clean(name)
         if not name:
             continue
