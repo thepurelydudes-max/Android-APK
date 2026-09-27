@@ -1820,7 +1820,7 @@ def fetch_wildriftcore_role_builds(
     list[tuple[str, str, list[str], str, str, str]],
     list[tuple[str, str, str, str, int]],
     list[tuple[str, str, str, str, int]],
-    list[tuple[str, str, str, str, int]],
+    list[tuple[str, str, str, str, str, int]],
     list[tuple[str, str, str, list[str], str, int, list[str], str, str, str]],
     list[str],
     dict,
@@ -1864,22 +1864,58 @@ def fetch_wildriftcore_role_builds(
         if payload and str(payload.get("schema_version") or "") != WRC_BUILD_SCHEMA_VERSION:
             payload = None
         if payload:
-            # A page is usable when its authoritative Standard role builds are
-            # complete. WildRiftCore's public reader exposes full variant item
-            # lists for some champions (for example Malphite), while other
-            # pages expose only variant names/triggers (for example Aatrox).
-            # Missing optional variants must never invalidate a perfectly good
-            # 5-item + boot Standard build.
+            # Schema v5 cache is accepted only when every role contains the
+            # complete adaptive source model used by the recommendation engine:
+            # Standard core, three variants + When/Example, generic situational
+            # rules, and exact Adaptations by opponent.
             cached_builds = list(payload.get("builds", []) or [])
-            if (
-                not cached_builds
-                or any(
-                    not str(row.get("role") or "").strip()
-                    or len([x for x in (row.get("items") or []) if str(x).strip()]) != 5
-                    or not str(row.get("boot") or "").strip()
-                    for row in cached_builds
-                )
-            ):
+            build_roles = {
+                str(row.get("role") or "").strip()
+                for row in cached_builds
+                if str(row.get("role") or "").strip()
+            }
+            variants_by_role: dict[str, list[dict]] = {}
+            for row in (payload.get("variants", []) or []):
+                role_key = str(row.get("role") or "").strip()
+                if role_key:
+                    variants_by_role.setdefault(role_key, []).append(row)
+            situational_roles = {
+                str(row.get("role") or "").strip()
+                for row in (payload.get("situational", []) or [])
+                if str(row.get("role") or "").strip()
+            }
+            opponent_roles = {
+                str(row.get("role") or "").strip()
+                for row in (payload.get("opponent_adaptations", []) or [])
+                if str(row.get("role") or "").strip()
+            }
+            cache_complete = bool(cached_builds) and all(
+                str(row.get("role") or "").strip()
+                and len([x for x in (row.get("items") or []) if str(x).strip()]) == 5
+                and str(row.get("boot") or "").strip()
+                for row in cached_builds
+            )
+            if cache_complete:
+                for role_key in build_roles:
+                    rows = variants_by_role.get(role_key, [])
+                    if (
+                        len(rows) < 3
+                        or role_key not in situational_roles
+                        or role_key not in opponent_roles
+                    ):
+                        cache_complete = False
+                        break
+                    for row in rows[:3]:
+                        if (
+                            len([x for x in (row.get("items") or []) if str(x).strip()]) != 5
+                            or not str(row.get("trigger") or "").strip()
+                            or not list(row.get("example_enemies") or [])
+                        ):
+                            cache_complete = False
+                            break
+                    if not cache_complete:
+                        break
+            if not cache_complete:
                 payload = None
         if payload:
             reused += 1
@@ -1933,9 +1969,28 @@ def fetch_wildriftcore_role_builds(
                                 return False
                     return bool(build_roles)
 
+                def _complete_adaptation_rules(value: dict) -> bool:
+                    build_roles = {
+                        str(row.get("role") or "").strip()
+                        for row in (value.get("builds", []) or [])
+                        if str(row.get("role") or "").strip()
+                    }
+                    situational_roles = {
+                        str(row.get("role") or "").strip()
+                        for row in (value.get("situational", []) or [])
+                        if str(row.get("role") or "").strip()
+                    }
+                    opponent_roles = {
+                        str(row.get("role") or "").strip()
+                        for row in (value.get("opponent_adaptations", []) or [])
+                        if str(row.get("role") or "").strip()
+                    }
+                    return bool(build_roles) and build_roles <= situational_roles and build_roles <= opponent_roles
+
                 if transport != "reader" and (
                     not _complete_standard_builds(payload)
                     or not _complete_variant_rules(payload)
+                    or not _complete_adaptation_rules(payload)
                 ):
                     reader_response = _jina_reader_get(net, build_url, progress)
                     payload = parse_wildriftcore_build_page(
@@ -1958,6 +2013,11 @@ def fetch_wildriftcore_role_builds(
                     raise RuntimeError(
                         "неполные WRC варианты: нужны 3 полные сборки с "
                         "When to pick it и Example enemy draft для каждой роли"
+                    )
+                if not _complete_adaptation_rules(payload):
+                    raise RuntimeError(
+                        "неполные WRC adaptations: нужны Situational adaptations "
+                        "и Adaptations by opponent для каждой роли"
                     )
 
                 payload["schema_version"] = WRC_BUILD_SCHEMA_VERSION
@@ -2068,7 +2128,8 @@ def fetch_wildriftcore_role_builds(
     if progress:
         progress(
             f"WildRiftCore builds: покрытие {success}/{total} страниц, "
-            f"{len(builds_out)} ролей, {len(variants_out)} вариантов."
+            f"{len(builds_out)} ролей, {len(variants_out)} вариантов, "
+            f"{len(opponent_out)} opponent-adaptations."
         )
     return (
         builds_out, sit_out, boots_out, opponent_out,
