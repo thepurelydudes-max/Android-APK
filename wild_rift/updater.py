@@ -12,7 +12,8 @@ from sources import (
     fetch_ddragon_item_ru_map, fetch_ddragon_version, fetch_stats, fetch_wrpocket_item_pools,
     fetch_wrpocket_item_dataset, fetch_wrpocket_item_detail_dataset, verify_wrpocket_item_icons,
     item_detail_fallback_names, fetch_current_patch_info, item_name_ru,
-    parse_wildriftcore_matchups, parse_wildriftcore_tiers, slugish, clean_item_name, clean_wrpocket_item_stats,
+    parse_wildriftcore_matchups, parse_wildriftcore_tiers, fetch_wildriftcore_role_builds,
+    slugish, clean_item_name, clean_wrpocket_item_stats,
     clean_wrpocket_item_effect, _item_dataset_hash, canonical_item_name, is_finished_item_tier,
 )
 
@@ -32,25 +33,27 @@ def _check_cancel(cancel_check: Callable[[], bool] | None) -> None:
 
 UPDATE_TEXT = {
     "ru": {
-        "loading_champions": "1/7 Загружаю чемпионов EN/RU…",
-        "loading_stats": "2/7 Загружаю актуальные win/pick/ban…",
-        "loading_tiers": "3/7 Загружаю тиры чемпионов WildRiftCore…",
-        "loading_matchups": "4/7 Загружаю матрицу контрпиков…",
-        "loading_items": "5/7 Загружаю предметы и русские названия…",
-        "loading_counter_items": "6/7 Загружаю предметы-контрмеры…",
-        "caching_media": "7/7 Кэширую портреты и иконки…",
+        "loading_champions": "1/8 Загружаю чемпионов EN/RU…",
+        "loading_stats": "2/8 Загружаю актуальные win/pick/ban…",
+        "loading_tiers": "3/8 Загружаю тиры чемпионов WildRiftCore…",
+        "loading_matchups": "4/8 Загружаю матрицу контрпиков…",
+        "loading_items": "5/8 Загружаю предметы и русские названия…",
+        "loading_role_builds": "6/8 Загружаю сборки по чемпиону и роли…",
+        "loading_counter_items": "7/8 Загружаю сигналы контрмер…",
+        "caching_media": "8/8 Кэширую портреты и иконки…",
         "cache_champions": "Кэш портретов: {current}/{total}",
         "cache_items": "Кэш предметов: {current}/{total}",
         "done": "Обновление завершено.",
     },
     "en": {
-        "loading_champions": "1/7 Loading champions EN/RU…",
-        "loading_stats": "2/7 Loading current win/pick/ban…",
-        "loading_tiers": "3/7 Loading WildRiftCore champion tiers…",
-        "loading_matchups": "4/7 Loading counter-pick matrix…",
-        "loading_items": "5/7 Loading items and localized names…",
-        "loading_counter_items": "6/7 Loading counter-items…",
-        "caching_media": "7/7 Caching champion portraits and item icons…",
+        "loading_champions": "1/8 Loading champions EN/RU…",
+        "loading_stats": "2/8 Loading current win/pick/ban…",
+        "loading_tiers": "3/8 Loading WildRiftCore champion tiers…",
+        "loading_matchups": "4/8 Loading counter-pick matrix…",
+        "loading_items": "5/8 Loading items and localized names…",
+        "loading_role_builds": "6/8 Loading champion+role builds…",
+        "loading_counter_items": "7/8 Loading countermeasure signals…",
+        "caching_media": "8/8 Caching champion portraits and item icons…",
         "cache_champions": "Champion portraits: {current}/{total}",
         "cache_items": "Item icons: {current}/{total}",
         "done": "Update complete.",
@@ -319,6 +322,7 @@ def _cache_media(
     item_count = 0
     item_failures = 0
     errors = errors if errors is not None else []
+    progress(update_text("cache_champions", lang, current=0, total=len(champs)))
     for idx, c in enumerate(champs, 1):
         _check_cancel(cancel_check)
         target = CHAMPION_DIR / f"{safe_name(c['id'])}.png"
@@ -341,9 +345,9 @@ def _cache_media(
                 champ_count += 1
         except Exception as exc:
             errors.append(f"Portrait {c['id']}: {exc}")
-        if idx % 20 == 0:
-            progress(update_text("cache_champions", lang, current=idx, total=len(champs)))
+        progress(update_text("cache_champions", lang, current=idx, total=len(champs)))
 
+    progress(update_text("cache_items", lang, current=0, total=len(items)))
     for idx, row in enumerate(items, 1):
         _check_cancel(cancel_check)
         name = row[0]
@@ -394,8 +398,7 @@ def _cache_media(
             if record_url and record_url != icon_url:
                 db.clear_item_icon_path(name)
                 db.delete_media_asset(asset_key)
-        if idx % 30 == 0:
-            progress(update_text("cache_items", lang, current=idx, total=len(items)))
+        progress(update_text("cache_items", lang, current=idx, total=len(items)))
 
     _check_cancel(cancel_check)
     try:
@@ -421,7 +424,7 @@ def update_all(
         raw_progress(message)
 
     net = Net()
-    summary = {"champions": 0, "stats": 0, "tiers": 0, "matchups": 0, "item_pool": 0, "counter_items": 0, "champion_images": 0, "item_images": 0, "item_details_changed": 0, "patch": "", "errors": []}
+    summary = {"champions": 0, "stats": 0, "tiers": 0, "matchups": 0, "item_pool": 0, "role_builds": 0, "counter_items": 0, "champion_images": 0, "item_images": 0, "item_details_changed": 0, "patch": "", "errors": []}
     previous_patch = db.get_meta("patch_version", "")
     current_patch = previous_patch
     force_item_icon_refresh = db.get_meta("item_icon_schema_version", "") != ITEM_ICON_SCHEMA_VERSION
@@ -615,6 +618,29 @@ def update_all(
         summary["errors"].append(f"Wild Rift Pocket: {e}")
         known_items = db.get_item_names()
 
+    emit(update_text("loading_role_builds", lang))
+    try:
+        role_builds, role_situational, role_boots, role_build_errors = fetch_wildriftcore_role_builds(
+            net, resolve, known_items, emit
+        )
+        _check_cancel(cancel_check)
+        db.replace_source_role_builds_partial(
+            "wildriftcore.com", role_builds, role_situational, role_boots
+        )
+        summary["role_builds"] = len(role_builds)
+        if role_build_errors:
+            detail = "; ".join(role_build_errors[:3])
+            summary["errors"].append(
+                f"WildRiftCore builds: {len(role_build_errors)} страниц не обновлены; "
+                f"сохранены предыдущие данные" + (f" ({detail})" if detail else "")
+            )
+    except UpdateCancelled:
+        raise
+    except Exception as e:
+        # Build data is patch-cached and role rows are replaced only partially,
+        # so a temporary source failure must never erase the last known-good core.
+        summary["errors"].append(f"WildRiftCore builds: {e}")
+
     emit(update_text("loading_counter_items", lang))
     try:
         counter_items = fetch_counter_item_pages(net, resolve, known_items, emit)
@@ -649,6 +675,6 @@ def update_all(
     stamp = format_update_timestamp(now)
     db.set_meta("last_update", stamp)
     db.set_meta("last_update_iso", now_iso)
-    db.set_meta("source_note", "Champions/stats: ry2x; tiers/matchups: WildRiftCore; counter-items: WildRiftCounter; item catalog/trends/media: Wild Rift Pocket; RU shared item names: Riot Data Dragon + Wild Rift overrides")
+    db.set_meta("source_note", "Champions/stats: ry2x; tiers/matchups/role-builds: WildRiftCore; counter-signals: WildRiftCounter; item catalog/media: Wild Rift Pocket; RU shared item names: Riot Data Dragon + Wild Rift overrides")
     raw_progress(update_text("done", lang))
     return summary
