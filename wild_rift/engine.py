@@ -1171,6 +1171,18 @@ def _role_boot_rows(champion_id: str, role_ru: str, snapshot: dict | None = None
     return db.get_role_build_boots(champion_id, role_ru)
 
 
+def _role_opponent_adaptation_rows(
+    champion_id: str, role_ru: str, snapshot: dict | None = None,
+) -> list[dict]:
+    if snapshot is not None:
+        return list(
+            snapshot.get("role_opponent_adaptations", {}).get(
+                (champion_id, role_ru), []
+            )
+        )
+    return db.get_role_build_opponent_adaptations(champion_id, role_ru)
+
+
 def _trigger_tags_from_text(value: str) -> set[str]:
     text = str(value or "").casefold()
     tags: set[str] = set()
@@ -1494,6 +1506,9 @@ def recommend_build(
     core, baseline_boot, allowed_situational, allowed_boots, source_row = _approved_role_build(
         champ, effective_role, snapshot
     )
+    allowed_opponent_adaptations = _role_opponent_adaptation_rows(
+        champ["id"], effective_role, snapshot
+    )
 
     # Never let a temporary WildRiftCore parser/cache/network failure erase the
     # working recommendation foundation. A healthy champion+role source still
@@ -1544,9 +1559,53 @@ def recommend_build(
         reason_details[baseline_boot].append({"kind": "core", "enemy": ""})
 
     scored_situational: list[tuple[float, int, str, str, set[str]]] = []
+
+    # Highest authority: WRC's exact "Adaptations by opponent" rows for this
+    # champion+role. These are explicit source recommendations and therefore
+    # outrank inferred mechanic tags and generic situational rules.
+    draft_enemy_keys: dict[str, str] = {}
+    for enemy, _enemy_role in enemy_objs:
+        display = str(enemy.get("name") or enemy.get("id") or "")
+        for value in (enemy.get("id"), enemy.get("name"), enemy.get("name_ru")):
+            key = norm_item(str(value or ""))
+            if key:
+                draft_enemy_keys[key] = display
+
+    exact_adaptation_hits: list[dict] = []
+    for row in allowed_opponent_adaptations:
+        enemy_key = norm_item(
+            str(row.get("enemy_name_norm") or row.get("enemy_name") or "")
+        )
+        matched_enemy = draft_enemy_keys.get(enemy_key)
+        item = str(row.get("item_name") or "")
+        if not matched_enemy or not item:
+            continue
+        reason = str(row.get("reason") or "").strip()
+        trigger = (
+            f"Opponent: {matched_enemy}"
+            + (f"; {reason}" if reason else "")
+        )
+        tags = _trigger_tags_from_text(reason)
+        scored_situational.append((
+            200.0 + float(sum(int(threat_counts.get(tag, 0)) for tag in tags)),
+            -int(row.get("priority") or 999),
+            item,
+            trigger,
+            tags,
+        ))
+        exact_adaptation_hits.append({
+            "enemy": matched_enemy,
+            "item": item,
+            "reason": reason,
+        })
+
     for row in allowed_situational:
         item = str(row.get("item_name") or "")
         trigger = str(row.get("trigger_text") or "")
+        # Exact-opponent rules are now stored structurally above. Ignore their
+        # legacy merged situational copy to avoid double-scoring the same rule.
+        if trigger.casefold().startswith("opponent:") and allowed_opponent_adaptations:
+            continue
         tags = _trigger_tags_from_text(trigger)
         score = _source_item_score(trigger, tags, threat_counts, enemy_objs)
         if score <= 0:
@@ -1659,7 +1718,12 @@ def recommend_build(
         },
         "threat_enemies": list(dict.fromkeys(threat_enemies)),
         "neutral_enemies": neutral_enemies,
-        "pool_size": len(core) + len(allowed_situational) + len(allowed_boots),
+        "pool_size": (
+            len(core)
+            + len(allowed_situational)
+            + len(allowed_opponent_adaptations)
+            + len(allowed_boots)
+        ),
         "source": str((source_row or {}).get("source") or ""),
         "source_url": str((source_row or {}).get("source_url") or ""),
         "source_missing": source_row is None,
@@ -1673,6 +1737,7 @@ def recommend_build(
         "selected_variant_example_text": str(
             (selected_variant or {}).get("example_text") or ""
         ),
+        "exact_opponent_adaptations": exact_adaptation_hits,
         "threat_counts": dict(threat_counts),
     }
 
