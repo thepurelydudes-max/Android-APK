@@ -463,7 +463,18 @@ class MobileAssistant:
                 ft.DropdownOption(
                     key=str(champ["id"]),
                     text=name,
-                    leading_icon=option_avatar,
+                    # Flet's built-in leading_icon slot reserves a noticeably
+                    # wider horizontal gap on current Android. Put the exact same
+                    # framed portrait and label into one Row so the icon-to-name
+                    # spacing is explicit and compact again.
+                    content=ft.Row(
+                        spacing=6,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            option_avatar,
+                            ft.Text(name, color="#FFFFFF"),
+                        ],
+                    ),
                     style=ft.ButtonStyle(
                         color={
                             ft.ControlState.DEFAULT: "#FFFFFF",
