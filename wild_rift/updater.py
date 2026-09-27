@@ -85,20 +85,37 @@ def merge_champion_locales(en_rows: list[dict], ru_rows: list[dict]) -> list[dic
 
 def build_resolver(champs: list[dict]):
     table: dict[str, str] = {}
+    # Profile URLs must be resolved against champion IDs only. Display names can
+    # temporarily be wrong/stale in an upstream locale feed; allowing those names
+    # to define URL identity is exactly how /champions/norra could resolve to Zyra.
+    id_table: dict[str, str] = {}
     manual = {
         "khazix": "Kha'Zix", "kaisa": "Kai'Sa", "kogmaw": "Kog'Maw", "chogath": "Cho'Gath",
-        "drmundo": "DrMundo", "nunuandwillump": "Nunu", "jarvaniv": "JarvanIV", "monkeyking": "Wukong",
+        "drmundo": "DrMundo", "nunuandwillump": "Nunu", "nunuwillump": "Nunu",
+        "jarvaniv": "JarvanIV", "monkeyking": "Wukong",
     }
-    for c in champs:
-        cid = c["id"]
-        for v in (cid, c.get("name", ""), c.get("name_ru", "")):
-            if v:
-                table[slugish(v)] = cid
+    for champ in champs:
+        cid = str(champ["id"])
+        cid_key = slugish(cid)
+        if cid_key:
+            id_table[cid_key] = cid
+        for value in (cid, champ.get("name", ""), champ.get("name_ru", "")):
+            key = slugish(value or "")
+            if key:
+                # Do not let a later locale/display-name collision silently
+                # overwrite an already known identity.
+                table.setdefault(key, cid)
+
+    wanted_by_key = {slugish(str(champ["id"])): str(champ["id"]) for champ in champs}
     for alias, wanted in manual.items():
-        for c in champs:
-            if slugish(c["id"]) == slugish(wanted) or slugish(c.get("name", "")) == slugish(wanted):
-                table[alias] = c["id"]
-                break
+        wanted_cid = wanted_by_key.get(slugish(wanted))
+        if wanted_cid:
+            table.setdefault(alias, wanted_cid)
+            id_table.setdefault(alias, wanted_cid)
+
+    def resolve_exact_id(value: str):
+        key = slugish(value)
+        return id_table.get(key) if key else None
 
     def resolve(value: str):
         key = slugish(value)
@@ -108,6 +125,10 @@ def build_resolver(champs: list[dict]):
             return table[key]
         candidates = [cid for k, cid in table.items() if k.startswith(key) or key.startswith(k)]
         return candidates[0] if len(set(candidates)) == 1 else None
+
+    # Scrapers that already possess a canonical /champions/<slug> URL must use
+    # this strict resolver rather than fuzzy/display-name matching.
+    resolve.exact_id = resolve_exact_id
     return resolve
 
 
