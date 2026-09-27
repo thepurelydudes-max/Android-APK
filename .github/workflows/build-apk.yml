@@ -76,6 +76,39 @@ jobs:
             test -d mlbb/assets || { echo "mlbb/assets is missing."; exit 1; }
           fi
 
+      - name: Prepare stable Wild Rift signing key
+        if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
+        shell: bash
+        env:
+          WR_ANDROID_KEYSTORE_BASE64: ${{ secrets.WR_ANDROID_KEYSTORE_BASE64 }}
+          WR_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.WR_ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${WR_ANDROID_KEYSTORE_BASE64:-}" || -z "${WR_ANDROID_KEYSTORE_PASSWORD:-}" ]]; then
+            echo "::error::Stable Wild Rift signing is not configured."
+            echo "::error::Create repository secrets WR_ANDROID_KEYSTORE_BASE64 and WR_ANDROID_KEYSTORE_PASSWORD."
+            echo "::error::See wild_rift/ANDROID_SIGNING_SETUP_RU.txt."
+            exit 1
+          fi
+
+          KEYSTORE="$RUNNER_TEMP/wr-counter-assistant-release.jks"
+          printf '%s' "$WR_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+
+          keytool -list -v             -keystore "$KEYSTORE"             -storepass "$WR_ANDROID_KEYSTORE_PASSWORD"             -alias farliner >/tmp/wr-key-info.txt
+
+          CERT_SHA256="$(grep -m1 'SHA256:' /tmp/wr-key-info.txt | sed 's/.*SHA256:[[:space:]]*//' | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          if [[ -z "$CERT_SHA256" ]]; then
+            echo "::error::Could not read SHA-256 fingerprint from the configured signing key."
+            exit 1
+          fi
+
+          echo "FLET_ANDROID_SIGNING_KEY_STORE=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "FLET_ANDROID_SIGNING_KEY_ALIAS=farliner" >> "$GITHUB_ENV"
+          echo "FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD=$WR_ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "FLET_ANDROID_SIGNING_KEY_PASSWORD=$WR_ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "WR_SIGNING_CERT_SHA256=$CERT_SHA256" >> "$GITHUB_ENV"
+          echo "Stable Wild Rift signing key loaded. Certificate SHA-256: $CERT_SHA256"
+
       - name: Test Wild Rift recommendation engine
         if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
         shell: bash
@@ -92,11 +125,26 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/apk_output/wild_rift"
+
+          BUILD_VERSION="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/wild_rift/VERSION.txt")"
+          if [[ ! "$BUILD_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::wild_rift/VERSION.txt must contain x.y.z, got: $BUILD_VERSION"
+            exit 1
+          fi
+          BUILD_NUMBER="$GITHUB_RUN_NUMBER"
+          echo "Wild Rift Android identity: com.flet.wild_rift"
+          echo "Wild Rift versionName=$BUILD_VERSION versionCode=$BUILD_NUMBER"
+
           for attempt in 1 2; do
             echo "Wild Rift APK build attempt $attempt/2"
             if flet build apk "$GITHUB_WORKSPACE/wild_rift" \
+              --project "wild_rift" \
               --product "WR Counter Assistant" \
               --artifact "WR_Counter_Assistant" \
+              --org "com.flet" \
+              --bundle-id "com.flet.wild_rift" \
+              --build-version "$BUILD_VERSION" \
+              --build-number "$BUILD_NUMBER" \
               --output "$GITHUB_WORKSPACE/apk_output/wild_rift" \
               --python-version 3.12 \
               --yes \
@@ -112,6 +160,33 @@ jobs:
             mkdir -p "$GITHUB_WORKSPACE/apk_output/wild_rift"
             sleep 10
           done
+
+      - name: Verify Wild Rift APK signing and version
+        if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$GITHUB_WORKSPACE/apk_output/wild_rift/WR_Counter_Assistant.apk"
+          test -f "$APK"
+
+          APKSIGNER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -1)"
+          if [[ -z "$APKSIGNER" ]]; then
+            APKSIGNER="$(find "$HOME/Android/sdk/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -1)"
+          fi
+          if [[ -z "$APKSIGNER" ]]; then
+            echo "::error::apksigner not found after Android build."
+            exit 1
+          fi
+
+          SIGNER_OUTPUT="$("$APKSIGNER" verify --print-certs "$APK")"
+          echo "$SIGNER_OUTPUT"
+          APK_SHA256="$(printf '%s\n' "$SIGNER_OUTPUT" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          if [[ -z "$APK_SHA256" || "$APK_SHA256" != "$WR_SIGNING_CERT_SHA256" ]]; then
+            echo "::error::APK was not signed by the configured persistent Wild Rift key."
+            echo "::error::Expected $WR_SIGNING_CERT_SHA256, got ${APK_SHA256:-<none>}."
+            exit 1
+          fi
+          echo "Verified persistent APK signer: $APK_SHA256"
 
       - name: Build MLBB APK
         if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
