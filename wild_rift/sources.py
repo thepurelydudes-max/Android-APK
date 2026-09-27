@@ -1535,7 +1535,9 @@ def fetch_wildriftcore_role_builds(
     list[tuple[str, str, list[str], str, str, str]],
     list[tuple[str, str, str, str, int]],
     list[tuple[str, str, str, str, int]],
+    list[tuple[str, str, str, list[str], str, int, str, str]],
     list[str],
+    dict,
 ]:
     """Fetch/cache champion+role builds from WildRiftCore.
 
@@ -1558,15 +1560,27 @@ def fetch_wildriftcore_role_builds(
     builds_out: list[tuple[str, str, list[str], str, str, str]] = []
     sit_out: list[tuple[str, str, str, str, int]] = []
     boots_out: list[tuple[str, str, str, str, int]] = []
+    variants_out: list[tuple[str, str, str, list[str], str, int, str, str]] = []
     errors: list[str] = []
     success = 0
     reused = 0
     downloaded = 0
+    reader_pages = 0
+    failed_profiles: list[str] = []
     total = len(profiles)
 
     for idx, (champion_id, profile_url) in enumerate(profiles, 1):
         build_url = profile_url.rstrip("/") + "/builds/"
         payload = cached_pages.get(champion_id)
+        if payload and str(payload.get("schema_version") or "") != WRC_BUILD_SCHEMA_VERSION:
+            payload = None
+        if payload:
+            # Old/incomplete cache rows are never allowed to masquerade as a
+            # full build page after the variant-aware schema migration.
+            build_roles = {str(row.get("role") or "") for row in payload.get("builds", [])}
+            variant_roles = {str(row.get("role") or "") for row in payload.get("variants", [])}
+            if not build_roles or not build_roles.issubset(variant_roles):
+                payload = None
         if payload:
             reused += 1
         else:
@@ -1576,11 +1590,38 @@ def fetch_wildriftcore_role_builds(
                     f"(из кэша {reused}, скачано {downloaded})"
                 )
             try:
-                html = _wildriftcore_get(net, build_url, progress).text
-                payload = parse_wildriftcore_build_page(html, champion_id, known_items)
+                page_text, transport = _wildriftcore_build_text(net, build_url, progress)
+                payload = parse_wildriftcore_build_page(page_text, champion_id, known_items)
+
+                # Complete variants are part of the contract now. Direct HTML
+                # can differ by CDN template, while the reader has a stable
+                # Markdown representation of all Standard/Vs AD/Vs AP blocks.
+                build_roles = {str(row.get("role") or "") for row in payload.get("builds", [])}
+                variant_roles = {str(row.get("role") or "") for row in payload.get("variants", [])}
+                if transport != "reader" and (
+                    not build_roles or not build_roles.issubset(variant_roles)
+                ):
+                    reader_response = _jina_reader_get(net, build_url, progress)
+                    payload = parse_wildriftcore_build_page(
+                        reader_response.text, champion_id, known_items
+                    )
+                    transport = "reader"
+
                 if not payload.get("builds"):
                     raise RuntimeError("не найдена роль-специфичная сборка")
+                build_roles = {str(row.get("role") or "") for row in payload.get("builds", [])}
+                variant_roles = {str(row.get("role") or "") for row in payload.get("variants", [])}
+                missing_variant_roles = sorted(build_roles - variant_roles)
+                if missing_variant_roles:
+                    raise RuntimeError(
+                        "неполные варианты для ролей: " + ", ".join(missing_variant_roles)
+                    )
+
+                payload["schema_version"] = WRC_BUILD_SCHEMA_VERSION
+                payload["_source_url"] = build_url
                 downloaded += 1
+                if transport == "reader":
+                    reader_pages += 1
                 if _db is not None:
                     try:
                         _db.upsert_build_page_cache(
@@ -1589,16 +1630,8 @@ def fetch_wildriftcore_role_builds(
                         cached_pages[champion_id] = dict(payload)
                     except Exception:
                         pass
-            except requests.HTTPError as exc:
-                response = getattr(exc, "response", None)
-                if response is not None and response.status_code == 429:
-                    errors.append(
-                        f"WildRiftCore builds: лимит запросов после {success}/{total} страниц (429)"
-                    )
-                    break
-                errors.append(f"{champion_id}: {exc}")
-                continue
             except Exception as exc:
+                failed_profiles.append(champion_id)
                 errors.append(f"{champion_id}: {exc}")
                 continue
 
@@ -1631,6 +1664,21 @@ def fetch_wildriftcore_role_builds(
                     champion_id, role, item, str(row.get("trigger") or ""),
                     int(row.get("priority") or 999),
                 ))
+        for row in payload.get("variants", []):
+            role = str(row.get("role") or "")
+            name = clean(str(row.get("name") or ""))
+            items = [
+                canonical_item_name(str(item))
+                for item in (row.get("items") or [])
+                if canonical_item_name(str(item))
+            ]
+            trigger = clean(str(row.get("trigger") or ""))
+            priority = int(row.get("priority") or 0)
+            if role and name and len(items) >= 3:
+                variants_out.append((
+                    champion_id, role, name, items[:5], trigger, priority,
+                    cache_patch, source_url,
+                ))
 
     if _db is not None and success == total:
         try:
@@ -1644,7 +1692,25 @@ def fetch_wildriftcore_role_builds(
             "WildRiftCore role builds не удалось загрузить"
             + (f" ({detail})" if detail else "")
         )
-    return builds_out, sit_out, boots_out, errors
+
+    coverage = {
+        "profiles_total": total,
+        "pages_success": success,
+        "pages_cached": reused,
+        "pages_downloaded": downloaded,
+        "reader_pages": reader_pages,
+        "roles_total": len(builds_out),
+        "variants_total": len(variants_out),
+        "situational_total": len(sit_out),
+        "boots_total": len(boots_out),
+        "failed_profiles": failed_profiles,
+    }
+    if progress:
+        progress(
+            f"WildRiftCore builds: покрытие {success}/{total} страниц, "
+            f"{len(builds_out)} ролей, {len(variants_out)} вариантов."
+        )
+    return builds_out, sit_out, boots_out, variants_out, errors, coverage
 
 
 def _wildriftcore_item_slug(name: str) -> str:
