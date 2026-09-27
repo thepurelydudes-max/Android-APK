@@ -714,6 +714,79 @@ def _parse_wildriftcore_counter_page(
     return rows
 
 
+def _parse_wildriftcore_counter_traits(
+    html: str,
+    resolve: Callable[[str], str | None],
+) -> list[tuple[str, str]]:
+    """Extract WRC's own semantic matchup labels as champion traits.
+
+    Counter pages repeatedly describe the champion in each matchup with compact
+    source labels such as "Dueling Sustain", "Mobility Burst", "Poke
+    Positioning" or "Tanks Crowd control". Across the full counter matrix these
+    observations form a patch-native trait profile. "__mention__" records the
+    denominator so confidence can be calculated without hard-coded champion
+    lists.
+    """
+    raw = str(html or "")
+    observations: list[tuple[str, str]] = []
+
+    trait_tokens = {
+        "tank": ("tanks", "tank ", "very durable", "armor stacking"),
+        "duelist": ("dueling", "duelist"),
+        "dive": ("dive", "all-in", "assassin"),
+        "burst": ("burst", "assassin"),
+        "poke": ("poke",),
+        "engage": ("hard engage", " engage", "engage "),
+        "cc": ("crowd control", " cc ", "cc immunity", "anti-dash", "lockdown"),
+        "healing": ("sustain", "healing", "lifesteal", "omnivamp"),
+        "shield": ("shields", "shielding"),
+        "mobility": ("mobility", "highly mobile"),
+        "physical": ("physical damage",),
+        "magic": ("magic damage",),
+    }
+
+    lines = raw.splitlines()
+    heading_re = re.compile(
+        r"^#{3,4}\s+\[([^\]]+)\]\("
+        r"https?://(?:www\.)?wildriftcore\.com/en/champions/[^)]+\)"
+        r"\s*[+\-−]?\d+(?:\.\d+)?\s*$",
+        flags=re.I,
+    )
+    for index, raw_line in enumerate(lines):
+        match = heading_re.match(raw_line.strip())
+        if not match:
+            continue
+        champion_id = resolve(clean(match.group(1)))
+        if not champion_id:
+            continue
+        observations.append((champion_id, "__mention__"))
+
+        descriptor = ""
+        for candidate in lines[index + 1:index + 6]:
+            value = clean(candidate)
+            if not value:
+                continue
+            if value.startswith(("#", "![", "Image:")):
+                continue
+            # The compact descriptor is immediately followed by a build link in
+            # Reader output: "Dueling Sustain[Jax build →](...)".
+            value = re.split(r"\[[^\]]*build\s*→?\]", value, maxsplit=1, flags=re.I)[0]
+            value = clean(value)
+            if value and len(value) <= 140:
+                descriptor = value.casefold()
+            break
+
+        if not descriptor:
+            continue
+        for trait, tokens in trait_tokens.items():
+            if any(token in f" {descriptor} " for token in tokens):
+                observations.append((champion_id, trait))
+
+    # One page is one piece of evidence per champion/trait. Duplicate markup
+    # must not amplify confidence.
+    return list(dict.fromkeys(observations))
+
+
 def parse_wildriftcore_matchups(
     net: Net,
     resolve: Callable[[str], str | None],
@@ -735,12 +808,25 @@ def parse_wildriftcore_matchups(
         import db as _db
         cache_patch = _db.get_meta("patch_version", "") or "unknown"
         cached_pages = _db.get_matchup_page_cache("wildriftcore.com", cache_patch)
+        cached_traits = _db.get_matchup_trait_page_cache(
+            "wildriftcore.com", cache_patch
+        )
     except Exception:
         _db = None
         cache_patch = "unknown"
         cached_pages = {}
+        cached_traits = {}
 
     direct: dict[tuple[str, str, str], float] = {}
+    trait_evidence: Counter = Counter()
+    trait_mentions: Counter = Counter()
+
+    def add_trait_observations(rows: Iterable[tuple[str, str]]) -> None:
+        for champion_id, trait in rows:
+            if trait == "__mention__":
+                trait_mentions[champion_id] += 1
+            else:
+                trait_evidence[(champion_id, trait)] += 1
     errors: list[str] = []
     successful_pages = 0
     reused_pages = 0
@@ -754,6 +840,7 @@ def parse_wildriftcore_matchups(
             reused_pages += 1
             for champion_id, enemy_id, role, score in cached_rows:
                 direct[(champion_id, enemy_id, role)] = score
+            add_trait_observations(cached_traits.get(owner_id) or [])
             if progress:
                 progress(
                     f"WildRiftCore matchups: {idx}/{total} — {owner_id} "
@@ -782,18 +869,22 @@ def parse_wildriftcore_matchups(
                     html = _jina_reader_get(net, counters_url, progress).text
                     transport = "reader"
             page_rows = _parse_wildriftcore_counter_page(html, owner_id, resolve)
+            page_traits = _parse_wildriftcore_counter_traits(html, resolve)
             if page_rows:
                 successful_pages += 1
                 downloaded_pages += 1
                 for champion_id, enemy_id, role, score in page_rows:
                     direct[(champion_id, enemy_id, role)] = score
+                add_trait_observations(page_traits)
                 # Save immediately, not at the end of the 140-page run.
                 if _db is not None:
                     try:
                         _db.upsert_matchup_page_cache(
-                            "wildriftcore.com", cache_patch, owner_id, page_rows, counters_url
+                            "wildriftcore.com", cache_patch, owner_id, page_rows,
+                            counters_url, traits=page_traits,
                         )
                         cached_pages[owner_id] = list(page_rows)
+                        cached_traits[owner_id] = list(page_traits)
                     except Exception:
                         pass
             else:
@@ -829,6 +920,23 @@ def parse_wildriftcore_matchups(
     if _db is not None:
         try:
             _db.prune_matchup_page_cache("wildriftcore.com", cache_patch)
+            # Replace semantic traits only after a complete source pass. A
+            # partial refresh keeps the previous patch's known-good profiles.
+            if successful_pages == total and trait_evidence:
+                trait_rows = []
+                for (champion_id, trait), amount in sorted(
+                    trait_evidence.items()
+                ):
+                    mentions = int(trait_mentions.get(champion_id, 0))
+                    if mentions <= 0:
+                        continue
+                    trait_rows.append((
+                        champion_id, trait, float(amount) / float(mentions),
+                        int(amount), mentions,
+                    ))
+                _db.replace_source_champion_traits(
+                    "wildriftcore.com", trait_rows, cache_patch
+                )
         except Exception:
             pass
 
