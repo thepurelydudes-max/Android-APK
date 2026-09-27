@@ -690,6 +690,13 @@ def _audit_item_icon_integrity() -> tuple[list[str], list[str]]:
         boot = canonical_item_name(str(row.get("boot_name") or ""))
         if boot:
             referenced.add(boot)
+    for rows in (snapshot.get("role_variants", {}) or {}).values():
+        for row in rows:
+            referenced.update(
+                canonical_item_name(str(name or ""))
+                for name in (row.get("items") or [])
+                if canonical_item_name(str(name or ""))
+            )
     for mapping_name in ("role_situational", "role_boots"):
         for rows in (snapshot.get(mapping_name, {}) or {}).values():
             referenced.update(
@@ -726,6 +733,48 @@ def _audit_item_icon_integrity() -> tuple[list[str], list[str]]:
     return missing_catalog, missing_icons
 
 
+def _audit_wrc_build_integrity() -> dict:
+    """Audit source blocks that directly control item recommendations."""
+    snapshot = db.load_runtime_snapshot()
+    champions = snapshot.get("champions", []) or []
+    champion_ids = {str(row.get("id") or "") for row in champions if row.get("id")}
+    role_builds = snapshot.get("role_builds", {}) or {}
+    role_variants = snapshot.get("role_variants", {}) or {}
+
+    build_champions = {cid for cid, _role in role_builds}
+    missing_champions = sorted(champion_ids - build_champions)
+    missing_variant_roles = sorted(
+        f"{cid}:{role}"
+        for cid, role in set(role_builds) - set(role_variants)
+    )
+
+    incomplete_builds: list[str] = []
+    for (cid, role), row in role_builds.items():
+        items = [str(x) for x in (row.get("items") or []) if str(x).strip()]
+        boot = str(row.get("boot_name") or "").strip()
+        if len(items) != 5 or not boot:
+            incomplete_builds.append(f"{cid}:{role}")
+
+    incomplete_variants: list[str] = []
+    for (cid, role), rows in role_variants.items():
+        for row in rows:
+            items = [str(x) for x in (row.get("items") or []) if str(x).strip()]
+            if len(items) != 5:
+                incomplete_variants.append(
+                    f"{cid}:{role}:{row.get('variant_name') or '?'}"
+                )
+
+    return {
+        "champions_total": len(champion_ids),
+        "role_builds": len(role_builds),
+        "variants": sum(len(rows) for rows in role_variants.values()),
+        "missing_champions": missing_champions,
+        "missing_variant_roles": missing_variant_roles,
+        "incomplete_builds": incomplete_builds,
+        "incomplete_variants": incomplete_variants,
+    }
+
+
 def update_all(
     progress: Callable[[str], None] | None = None,
     lang: str = "ru",
@@ -752,7 +801,8 @@ def update_all(
         "champions": 0, "stats": 0, "tiers": 0, "matchups": 0,
         "item_pool": 0, "role_builds": 0, "role_build_variants": 0,
         "wrc_build_profiles_total": 0, "wrc_build_pages_success": 0,
-        "wrc_build_failed_profiles": [], "counter_items": 0,
+        "wrc_build_failed_profiles": [], "wrc_build_integrity": {},
+        "counter_items": 0,
         "champion_images": 0, "item_images": 0, "item_details_changed": 0,
         "patch": "", "errors": [],
     }
@@ -1132,6 +1182,34 @@ def update_all(
         # Build data is patch-cached and role rows are replaced only partially,
         # so a temporary source failure must never erase the last known-good core.
         summary["errors"].append(f"WildRiftCore builds: {e}")
+
+    build_integrity = _audit_wrc_build_integrity()
+    summary["wrc_build_integrity"] = build_integrity
+    build_gap_parts: list[str] = []
+    if build_integrity.get("missing_champions"):
+        names = list(build_integrity["missing_champions"])
+        build_gap_parts.append(
+            f"без сборок {len(names)}: " + ", ".join(names[:12])
+            + ("…" if len(names) > 12 else "")
+        )
+    if build_integrity.get("missing_variant_roles"):
+        names = list(build_integrity["missing_variant_roles"])
+        build_gap_parts.append(
+            f"без вариантов {len(names)}: " + ", ".join(names[:8])
+            + ("…" if len(names) > 8 else "")
+        )
+    incomplete = list(build_integrity.get("incomplete_builds") or []) + list(
+        build_integrity.get("incomplete_variants") or []
+    )
+    if incomplete:
+        build_gap_parts.append(
+            f"неполные блоки {len(incomplete)}: " + ", ".join(incomplete[:8])
+            + ("…" if len(incomplete) > 8 else "")
+        )
+    if build_gap_parts:
+        summary["errors"].append(
+            "WildRiftCore build audit: " + "; ".join(build_gap_parts)
+        )
 
     emit(update_text("loading_counter_items", lang))
     try:
