@@ -1,0 +1,62 @@
+name: Audit WildRiftCore Build Index
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".audit-wrc-index-trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Count WRC build profiles and resolver coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L -sS --max-time 60 \
+            'https://r.jina.ai/https://wildriftcore.com/en/builds/' \
+            -o /tmp/wrc-builds.txt
+          grep -o -E 'https://wildriftcore\.com/en/champions/[^/?#)]+/builds/?' /tmp/wrc-builds.txt \
+            | sed -E 's#https://wildriftcore\.com/en/champions/([^/]+)/builds/?#\1#' \
+            | sort -u > /tmp/slugs.txt
+          echo "WRC_PROFILE_COUNT=$(wc -l < /tmp/slugs.txt)"
+          cat /tmp/slugs.txt
+
+          cd "$GITHUB_WORKSPACE/wild_rift"
+          python - <<'PY'
+          import pathlib
+          import sources
+          import updater
+          from sources import Net
+
+          net = Net()
+          champs = updater.merge_champion_locales(
+              sources.fetch_champions_locale(net, "en_US"),
+              sources.fetch_champions_locale(net, "ru_RU"),
+          )
+          try:
+              champs = updater.merge_champion_roster_supplement(
+                  champs, sources.fetch_wildriftmeta_champion_roster(net)
+              )
+          except Exception:
+              pass
+          resolve = updater.build_resolver(champs)
+          slugs = [x.strip() for x in pathlib.Path("/tmp/slugs.txt").read_text().splitlines() if x.strip()]
+          missing = [slug for slug in slugs if not (resolve(slug) or resolve(slug.replace("-", " ")))]
+          resolved = {
+              (resolve(slug) or resolve(slug.replace("-", " ")))
+              for slug in slugs
+              if (resolve(slug) or resolve(slug.replace("-", " ")))
+          }
+          champ_ids = {str(c["id"]) for c in champs}
+          print(f"ROSTER={len(champ_ids)} RESOLVED_WRC={len(resolved)}")
+          print("UNRESOLVED_WRC=" + ",".join(missing))
+          print("ROSTER_WITHOUT_WRC=" + ",".join(sorted(champ_ids - resolved)))
+          PY
