@@ -1404,7 +1404,12 @@ def parse_wildriftcore_build_page(
                     )
                     if not m:
                         continue
-                    item = lookup.get(slugish(clean_item_name(m.group(1))))
+                    linked_items = item_links(line)
+                    item = (
+                        linked_items[0]
+                        if linked_items
+                        else _canonical_known_item(clean_item_name(m.group(1)), lookup)
+                    )
                     trigger = clean(m.group(2).strip("_*"))
                     if item and trigger:
                         situational.append({
@@ -1466,7 +1471,10 @@ def parse_wildriftcore_build_page(
             if not candidates:
                 candidates = [_upgrade_boot_name(plain, lookup)]
             for item in candidates:
-                if item and slugish(item) in {slugish(x) for x in lookup.values()} and _looks_like_boot_name(item):
+                # The exact role page is authoritative for its own alternative
+                # boots. Do not discard a newly released boot merely because
+                # WR Pocket has not added it to the catalog yet.
+                if item and _looks_like_boot_name(item):
                     historical_boots.append((item, pending_reason))
                     pending_reason = ""
 
@@ -1586,8 +1594,17 @@ def fetch_wildriftcore_role_builds(
             # Old/incomplete cache rows are never allowed to masquerade as a
             # full build page after the variant-aware schema migration.
             build_roles = {str(row.get("role") or "") for row in payload.get("builds", [])}
-            variant_roles = {str(row.get("role") or "") for row in payload.get("variants", [])}
-            if not build_roles or not build_roles.issubset(variant_roles):
+            variant_counts = {
+                role: sum(
+                    1 for row in payload.get("variants", [])
+                    if str(row.get("role") or "") == role
+                )
+                for role in build_roles
+            }
+            if (
+                not build_roles
+                or any(variant_counts.get(role, 0) < 3 for role in build_roles)
+            ):
                 payload = None
         if payload:
             reused += 1
@@ -1605,9 +1622,16 @@ def fetch_wildriftcore_role_builds(
                 # can differ by CDN template, while the reader has a stable
                 # Markdown representation of all Standard/Vs AD/Vs AP blocks.
                 build_roles = {str(row.get("role") or "") for row in payload.get("builds", [])}
-                variant_roles = {str(row.get("role") or "") for row in payload.get("variants", [])}
+                variant_counts = {
+                    role: sum(
+                        1 for row in payload.get("variants", [])
+                        if str(row.get("role") or "") == role
+                    )
+                    for role in build_roles
+                }
                 if transport != "reader" and (
-                    not build_roles or not build_roles.issubset(variant_roles)
+                    not build_roles
+                    or any(variant_counts.get(role, 0) < 3 for role in build_roles)
                 ):
                     reader_response = _jina_reader_get(net, build_url, progress)
                     payload = parse_wildriftcore_build_page(
@@ -1618,12 +1642,23 @@ def fetch_wildriftcore_role_builds(
                 if not payload.get("builds"):
                     raise RuntimeError("не найдена роль-специфичная сборка")
                 build_roles = {str(row.get("role") or "") for row in payload.get("builds", [])}
-                variant_roles = {str(row.get("role") or "") for row in payload.get("variants", [])}
-                missing_variant_roles = sorted(build_roles - variant_roles)
-                if missing_variant_roles:
-                    raise RuntimeError(
-                        "неполные варианты для ролей: " + ", ".join(missing_variant_roles)
+                variant_counts = {
+                    role: sum(
+                        1 for row in payload.get("variants", [])
+                        if str(row.get("role") or "") == role
                     )
+                    for role in build_roles
+                }
+                incomplete_variant_roles = sorted(
+                    role for role in build_roles
+                    if variant_counts.get(role, 0) < 3
+                )
+                if incomplete_variant_roles:
+                    detail = ", ".join(
+                        f"{role}={variant_counts.get(role, 0)}/3"
+                        for role in incomplete_variant_roles
+                    )
+                    raise RuntimeError("неполные варианты для ролей: " + detail)
 
                 payload["schema_version"] = WRC_BUILD_SCHEMA_VERSION
                 payload["_source_url"] = build_url
