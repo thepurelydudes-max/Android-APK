@@ -13,6 +13,7 @@ from sources import (
     fetch_wrpocket_item_dataset, fetch_wrpocket_item_detail_dataset, verify_wrpocket_item_icons,
     item_detail_fallback_names, fetch_current_patch_info, item_name_ru,
     parse_wildriftcore_matchups, parse_wildriftcore_tiers, fetch_wildriftcore_role_builds,
+    fetch_wildriftcore_item_metadata,
     slugish, clean_item_name, clean_wrpocket_item_stats,
     clean_wrpocket_item_effect, _item_dataset_hash, canonical_item_name, is_finished_item_tier,
 )
@@ -628,6 +629,53 @@ def update_all(
             "wildriftcore.com", role_builds, role_situational, role_boots
         )
         summary["role_builds"] = len(role_builds)
+
+        # WildRiftCore can publish a current role item before WR Pocket exposes
+        # it in the local catalog (support gold/new patch items are common).
+        # Fetch only those missing names from their own WRC item pages so the
+        # source-approved build remains complete and keeps a verified icon.
+        role_item_names: set[str] = set()
+        for _cid, _role, build_items, boot_name, _patch, _url in role_builds:
+            role_item_names.update(canonical_item_name(x) for x in build_items if canonical_item_name(x))
+            if canonical_item_name(boot_name):
+                role_item_names.add(canonical_item_name(boot_name))
+        role_item_names.update(canonical_item_name(row[2]) for row in role_situational if canonical_item_name(row[2]))
+        role_item_names.update(canonical_item_name(row[2]) for row in role_boots if canonical_item_name(row[2]))
+        existing_names = {canonical_item_name(name) for name in db.get_item_names()}
+        missing_role_items = sorted(name for name in role_item_names if name and name not in existing_names)
+        if missing_role_items:
+            source_item_rows, source_item_errors = fetch_wildriftcore_item_metadata(
+                net, missing_role_items, emit
+            )
+            _check_cancel(cancel_check)
+            for row in source_item_rows:
+                name = canonical_item_name(row.get("name", ""))
+                if not name:
+                    continue
+                ru_name = item_name_ru(name, pc_ru)
+                db.upsert_item(
+                    name, str(row.get("category") or ""), "wildriftcore.com",
+                    name_ru=ru_name, icon_url=str(row.get("icon_url") or ""), tier="Upgraded",
+                )
+                db.upsert_item_details(
+                    name, price=int(row.get("price") or 0),
+                    stats=list(row.get("stats") or []), effect_en=str(row.get("effect_en") or ""),
+                    data_hash=_item_dataset_hash(
+                        name, int(row.get("price") or 0), list(row.get("stats") or []),
+                        str(row.get("effect_en") or ""), str(row.get("icon_url") or ""),
+                        str(row.get("detail_url") or ""),
+                    ),
+                    data_patch=current_patch, source_url=str(row.get("detail_url") or ""),
+                )
+            if source_item_errors:
+                detail = "; ".join(source_item_errors[:3])
+                summary["errors"].append(
+                    f"WildRiftCore item metadata: {len(source_item_errors)} не загружено"
+                    + (f" ({detail})" if detail else "")
+                )
+            items = _catalog_finished_items()
+            known_items = [x[0] for x in items]
+
         if role_build_errors:
             detail = "; ".join(role_build_errors[:3])
             summary["errors"].append(
