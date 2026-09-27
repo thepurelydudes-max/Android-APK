@@ -43,7 +43,7 @@ WR_COUNTER_CHAMPS = "https://wildriftcounter.com/champions/"
 WR_CORE_CHAMPS = "https://wildriftcore.com/en/champions/"
 WR_CORE_BUILDS = "https://wildriftcore.com/en/builds/"
 JINA_READER_PREFIX = "https://r.jina.ai/"
-WRC_BUILD_SCHEMA_VERSION = "5"
+WRC_BUILD_SCHEMA_VERSION = "6"
 WR_CORE_TIERLISTS = {
     "Барон": "https://wildriftcore.com/en/tierlist/baron-lane/",
     "Лес": "https://wildriftcore.com/en/tierlist/jungle/",
@@ -1638,11 +1638,17 @@ def parse_wildriftcore_build_page(
                             ):
                                 example_text = candidate_plain.strip("_*")
                         break
-                if len(variant_items) >= 3:
+                # WRC's public reader always exposes the three variant names and
+                # "When to pick it" rules, but on many pages it intentionally
+                # omits the five-item variant row and/or Example enemy draft.
+                # Preserve the rule even when the concrete variant core is not
+                # public: [] means "metadata-only", never an invented build.
+                clean_variant_items = variant_items[:5] if len(variant_items) >= 5 else []
+                if variant_name and trigger:
                     variants.append({
                         "role": role,
                         "name": variant_name,
-                        "items": variant_items[:5],
+                        "items": clean_variant_items,
                         "trigger": trigger,
                         "example_enemies": example_enemies[:5],
                         "example_text": example_text,
@@ -1914,10 +1920,10 @@ def fetch_wildriftcore_role_builds(
         if payload and str(payload.get("schema_version") or "") != WRC_BUILD_SCHEMA_VERSION:
             payload = None
         if payload:
-            # Schema v5 cache is accepted only when every role contains the
-            # complete adaptive source model used by the recommendation engine:
-            # Standard core, three variants + When/Example, generic situational
-            # rules, and exact Adaptations by opponent.
+            # Schema v6 accepts WRC's actual public representation. Every role
+            # must have a complete Standard core and three named trigger rules.
+            # Variant item rows/examples and exact opponent adaptations are
+            # optional enrichment because WRC does not expose them on every page.
             cached_builds = list(payload.get("builds", []) or [])
             build_roles = {
                 str(row.get("role") or "").strip()
@@ -1929,16 +1935,6 @@ def fetch_wildriftcore_role_builds(
                 role_key = str(row.get("role") or "").strip()
                 if role_key:
                     variants_by_role.setdefault(role_key, []).append(row)
-            situational_roles = {
-                str(row.get("role") or "").strip()
-                for row in (payload.get("situational", []) or [])
-                if str(row.get("role") or "").strip()
-            }
-            opponent_roles = {
-                str(row.get("role") or "").strip()
-                for row in (payload.get("opponent_adaptations", []) or [])
-                if str(row.get("role") or "").strip()
-            }
             cache_complete = bool(cached_builds) and all(
                 str(row.get("role") or "").strip()
                 and len([x for x in (row.get("items") or []) if str(x).strip()]) == 5
@@ -1948,18 +1944,16 @@ def fetch_wildriftcore_role_builds(
             if cache_complete:
                 for role_key in build_roles:
                     rows = variants_by_role.get(role_key, [])
-                    if (
-                        len(rows) < 3
-                        or role_key not in situational_roles
-                        or role_key not in opponent_roles
-                    ):
+                    if len(rows) < 3:
                         cache_complete = False
                         break
                     for row in rows[:3]:
+                        item_count = len([
+                            x for x in (row.get("items") or []) if str(x).strip()
+                        ])
                         if (
-                            len([x for x in (row.get("items") or []) if str(x).strip()]) != 5
+                            item_count not in {0, 5}
                             or not str(row.get("trigger") or "").strip()
-                            or not list(row.get("example_enemies") or [])
                         ):
                             cache_complete = False
                             break
@@ -1980,11 +1974,9 @@ def fetch_wildriftcore_role_builds(
                 payload = parse_wildriftcore_build_page(page_text, champion_id, known_items)
 
                 # Direct HTML templates may omit source sections that are
-                # present in the public Reader representation. For the local
-                # draft advisor we require not only the Standard core but the
-                # complete three WRC variants with their rule text and example
-                # enemy draft, so retry through Reader whenever any of that is
-                # missing.
+                # present in the public Reader representation. Retry Reader for
+                # missing Standard/variant metadata, but do not require optional
+                # variant item rows/examples or Adaptations by opponent.
                 def _complete_standard_builds(value: dict) -> bool:
                     rows = list(value.get("builds", []) or [])
                     return bool(rows) and all(
@@ -2010,37 +2002,19 @@ def fetch_wildriftcore_role_builds(
                         if len(rows) < 3:
                             return False
                         for row in rows[:3]:
-                            items = [x for x in (row.get("items") or []) if str(x).strip()]
-                            if len(items) != 5:
+                            items = [
+                                x for x in (row.get("items") or [])
+                                if str(x).strip()
+                            ]
+                            if len(items) not in {0, 5}:
                                 return False
                             if not str(row.get("trigger") or "").strip():
                                 return False
-                            if not list(row.get("example_enemies") or []):
-                                return False
                     return bool(build_roles)
-
-                def _complete_adaptation_rules(value: dict) -> bool:
-                    build_roles = {
-                        str(row.get("role") or "").strip()
-                        for row in (value.get("builds", []) or [])
-                        if str(row.get("role") or "").strip()
-                    }
-                    situational_roles = {
-                        str(row.get("role") or "").strip()
-                        for row in (value.get("situational", []) or [])
-                        if str(row.get("role") or "").strip()
-                    }
-                    opponent_roles = {
-                        str(row.get("role") or "").strip()
-                        for row in (value.get("opponent_adaptations", []) or [])
-                        if str(row.get("role") or "").strip()
-                    }
-                    return bool(build_roles) and build_roles <= situational_roles and build_roles <= opponent_roles
 
                 if transport != "reader" and (
                     not _complete_standard_builds(payload)
                     or not _complete_variant_rules(payload)
-                    or not _complete_adaptation_rules(payload)
                 ):
                     reader_response = _jina_reader_get(net, build_url, progress)
                     payload = parse_wildriftcore_build_page(
@@ -2061,13 +2035,9 @@ def fetch_wildriftcore_role_builds(
                     )
                 if not _complete_variant_rules(payload):
                     raise RuntimeError(
-                        "неполные WRC варианты: нужны 3 полные сборки с "
-                        "When to pick it и Example enemy draft для каждой роли"
-                    )
-                if not _complete_adaptation_rules(payload):
-                    raise RuntimeError(
-                        "неполные WRC adaptations: нужны Situational adaptations "
-                        "и Adaptations by opponent для каждой роли"
+                        "неполные WRC варианты: нужны 3 варианта с "
+                        "When to pick it для каждой роли; item rows могут быть "
+                        "0/5, Example draft и opponent adaptations опциональны"
                     )
 
                 payload["schema_version"] = WRC_BUILD_SCHEMA_VERSION
@@ -2143,7 +2113,10 @@ def fetch_wildriftcore_role_builds(
                 if clean(str(enemy))
             ][:5]
             example_text = clean(str(row.get("example_text") or ""))
-            if role and name and len(items) >= 3:
+            if (
+                role and name and trigger
+                and len(items) in {0, 5}
+            ):
                 variants_out.append((
                     champion_id, role, name, items[:5], trigger, priority,
                     example_enemies, example_text, cache_patch, source_url,
