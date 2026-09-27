@@ -697,7 +697,11 @@ def _audit_item_icon_integrity() -> tuple[list[str], list[str]]:
                 for name in (row.get("items") or [])
                 if canonical_item_name(str(name or ""))
             )
-    for mapping_name in ("role_situational", "role_boots"):
+    for mapping_name in (
+        "role_situational",
+        "role_boots",
+        "role_opponent_adaptations",
+    ):
         for rows in (snapshot.get(mapping_name, {}) or {}).values():
             referenced.update(
                 canonical_item_name(str(row.get("item_name") or ""))
