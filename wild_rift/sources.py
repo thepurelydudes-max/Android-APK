@@ -787,26 +787,42 @@ def parse_wildriftcore_build_page(
                 "priority": 0,
             })
 
-    # Some HTML variants split the summary sentence across adjacent text nodes.
-    # Use the flattened page as a fallback only for roles not found above.
-    if len(builds) < 1:
-        flat = clean(" ".join(lines))
-        for m in summary_re.finditer(flat):
-            role = _wildriftcore_role(m.group(1))
-            if not role or role in seen_roles:
+    # Some HTML variants split one role summary across adjacent text nodes.
+    # Always scan the flattened page for roles that were not recovered above.
+    flat = clean(" ".join(lines))
+    for m in summary_re.finditer(flat):
+        role = _wildriftcore_role(m.group(1))
+        if not role or role in seen_roles:
+            continue
+        raw_items = [clean_item_name(x) for x in re.split(r"\s*[›>→]\s*", m.group(2)) if clean_item_name(x)]
+        items = []
+        for raw in raw_items:
+            item = _canonical_known_item(raw, lookup)
+            if item and item not in items:
+                items.append(item)
+        boot = _upgrade_boot_name(m.group(3), lookup)
+        if len(items) >= 3:
+            seen_roles.add(role)
+            builds.append({"role": role, "items": items[:5], "boot": boot})
+            if boot:
+                boots.append({"role": role, "item": boot, "trigger": "standard", "priority": 0})
+
+    # If a summary was found only in flattened text, recover section starts from
+    # the role headings so the role-local situational list still parses correctly.
+    if builds:
+        build_roles = {row["role"] for row in builds}
+        existing_starts = {role for _idx, role in role_starts}
+        for idx, line in enumerate(lines):
+            folded = line.casefold()
+            if "recommended build" not in folded:
                 continue
-            raw_items = [clean_item_name(x) for x in re.split(r"\s*[›>→]\s*", m.group(2)) if clean_item_name(x)]
-            items = []
-            for raw in raw_items:
-                item = _canonical_known_item(raw, lookup)
-                if item and item not in items:
-                    items.append(item)
-            boot = _upgrade_boot_name(m.group(3), lookup)
-            if len(items) >= 3:
-                seen_roles.add(role)
-                builds.append({"role": role, "items": items[:5], "boot": boot})
-                if boot:
-                    boots.append({"role": role, "item": boot, "trigger": "standard", "priority": 0})
+            for role_label in ("baron lane", "top lane", "jungle", "mid lane", "adc", "dragon lane", "support"):
+                if role_label in folded:
+                    role = _wildriftcore_role(role_label)
+                    if role in build_roles and role not in existing_starts:
+                        role_starts.append((idx, role))
+                        existing_starts.add(role)
+                    break
 
     # Parse the role-local "Situational adaptations" section.  We deliberately
     # match only names already known in the finished item catalog.
@@ -834,10 +850,8 @@ def parse_wildriftcore_build_page(
 
         current_item = ""
         priority = 1
-        for raw_line in segment[sec_start + 1:sec_end]:
-            line = clean(raw_line)
-            if not line:
-                continue
+        body = [clean(x) for x in segment[sec_start + 1:sec_end] if clean(x)]
+        for line_idx, line in enumerate(body):
             exact = lookup.get(slugish(line))
             if exact:
                 current_item = exact
@@ -868,6 +882,15 @@ def parse_wildriftcore_build_page(
                 })
                 priority += 1
                 current_item = ""
+                continue
+
+            next_line = body[line_idx + 1] if line_idx + 1 < len(body) else ""
+            if (
+                next_line.casefold().startswith(("against ", "vs "))
+                and len(line) <= 80
+                and not line.casefold().startswith(("when to pick", "example", "adaptations"))
+            ):
+                current_item = canonical_item_name(line)
 
     # Historical "Boots & enchant" is used only to discover champion-approved
     # alternatives.  It never creates a boot that is not already on this page.
@@ -1056,6 +1079,106 @@ def fetch_wildriftcore_role_builds(
             + (f" ({detail})" if detail else "")
         )
     return builds_out, sit_out, boots_out, errors
+
+
+def _wildriftcore_item_slug(name: str) -> str:
+    value = unicodedata.normalize("NFKD", clean_item_name(name)).encode("ascii", "ignore").decode("ascii")
+    value = value.replace("'", "")
+    return re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
+
+
+def parse_wildriftcore_item_page(html: str, url: str = "", name_hint: str = "") -> dict:
+    """Parse a current source-native item that WR Pocket has not catalogued yet."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    h1 = soup.find("h1")
+    name = canonical_item_name(clean_item_name(h1.get_text(" ", strip=True)) if h1 else name_hint)
+    if not name:
+        name = canonical_item_name(name_hint)
+
+    icon_url = ""
+    wanted = slugish(name)
+    for img in soup.find_all("img"):
+        alt = clean_item_name(img.get("alt", ""))
+        raw = str(img.get("src") or img.get("data-src") or img.get("data-lazy-src") or "")
+        if alt and slugish(alt) == wanted and raw:
+            icon_url = urljoin(url or WR_CORE_CHAMPS, raw)
+            break
+
+    text = clean(soup.get_text(" ", strip=True))
+    price = 0
+    m = re.search(r"\bCost:\s*([0-9][0-9,]*)", text, re.I)
+    if m:
+        try:
+            price = int(m.group(1).replace(",", ""))
+        except ValueError:
+            price = 0
+
+    category = ""
+    cm = re.search(r"\bCategory:\s*([A-Za-z][A-Za-z &/-]{1,40}?)(?=\s+Patch:|\s+Timing:|$)", text, re.I)
+    if cm:
+        category = clean(cm.group(1)).title()
+    elif re.search(r"\bSupport\b", text):
+        category = "Support"
+
+    stats: list[str] = []
+    heading = None
+    for node in soup.find_all(["h2", "h3"]):
+        if clean(node.get_text(" ", strip=True)).casefold() == "stats":
+            heading = node
+            break
+    if heading is not None:
+        for node in heading.find_all_next():
+            if node is not heading and getattr(node, "name", None) in {"h2", "h3"}:
+                break
+            if getattr(node, "name", None) == "li":
+                value = clean(node.get_text(" ", strip=True))
+                if value and value not in stats:
+                    stats.append(value)
+
+    effect = ""
+    summary_heading = None
+    for node in soup.find_all(["h2", "h3"]):
+        if clean(node.get_text(" ", strip=True)).casefold() == "strategic summary":
+            summary_heading = node
+            break
+    if summary_heading is not None:
+        paragraph = summary_heading.find_next("p")
+        if paragraph is not None:
+            effect = clean(paragraph.get_text(" ", strip=True))
+
+    return {
+        "name": name, "category": category, "tier": "Upgraded",
+        "icon_url": icon_url, "detail_url": url, "price": price,
+        "stats": stats, "effect_en": effect,
+    }
+
+
+def fetch_wildriftcore_item_metadata(
+    net: Net,
+    item_names: Iterable[str],
+    progress: Callable[[str], None] | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Fetch metadata only for WRC build items absent from the local item catalog."""
+    names = list(dict.fromkeys(canonical_item_name(x) for x in item_names if canonical_item_name(x)))
+    rows: list[dict] = []
+    errors: list[str] = []
+    total = len(names)
+    for idx, name in enumerate(names, 1):
+        slug = _wildriftcore_item_slug(name)
+        if not slug:
+            continue
+        url = urljoin("https://wildriftcore.com/en/items/", slug + "/")
+        if progress:
+            progress(f"WildRiftCore items: {idx}/{total} — {name}")
+        try:
+            html = _wildriftcore_get(net, url, progress).text
+            row = parse_wildriftcore_item_page(html, url, name)
+            if not row.get("name"):
+                raise RuntimeError("item name not found")
+            rows.append(row)
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+    return rows, errors
 
 
 def _links(soup: BeautifulSoup, contains: str, base: str) -> list[tuple[str, str]]:
