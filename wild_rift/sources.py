@@ -1587,6 +1587,20 @@ def parse_wildriftcore_build_page(
                                     and enemy_name not in example_enemies
                                 ):
                                     example_enemies.append(enemy_name)
+                            # Some Reader renders collapse the five portraits
+                            # into one line: "Image: RyzeImageImage: Master Yi…".
+                            for raw_name in re.findall(
+                                r"Image:\s*(.+?)(?=Image(?:Image)?:|$)",
+                                candidate,
+                                flags=re.I,
+                            ):
+                                enemy_name = clean(raw_name)
+                                if (
+                                    enemy_name
+                                    and enemy_name.casefold() != "image"
+                                    and enemy_name not in example_enemies
+                                ):
+                                    example_enemies.append(enemy_name)
                             for slug in re.findall(
                                 r"/en/champions/([^/?#)\s]+)",
                                 candidate,
