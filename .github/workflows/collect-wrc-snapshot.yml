@@ -1,0 +1,49 @@
+name: Collect WildRiftCore Raw Snapshot
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".wrc-snapshot-trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install collector dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "requests>=2.32.0" "beautifulsoup4>=4.12.0" "Pillow>=10.4.0"
+
+      - name: Collect raw WRC snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/wild_rift"
+          python -m py_compile collect_wrc_snapshot.py sources.py
+          python collect_wrc_snapshot.py
+          cat wrc_snapshot/manifest.json
+
+      - name: Upload raw WRC snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: WRC-Raw-Snapshot
+          path: wild_rift/wrc_snapshot/
+          if-no-files-found: error
+          retention-days: 14
