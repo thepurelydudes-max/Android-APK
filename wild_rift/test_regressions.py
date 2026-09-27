@@ -135,6 +135,21 @@ class SeedUpgradeRegressionTests(unittest.TestCase):
             )
 
 
+class ResolverRegressionTests(unittest.TestCase):
+    def test_wukong_profile_resolves_to_monkeyking_canonical_id(self):
+        champs = [{
+            "id": "MonkeyKing",
+            "name": "Wukong",
+            "name_ru": "Вуконг",
+            "roles": ["Fighter"],
+            "lanes": ["top", "jungle"],
+            "damage_type": "Physical",
+        }]
+        resolve = updater.build_resolver(champs)
+        self.assertEqual(resolve("wukong"), "MonkeyKing")
+        self.assertEqual(resolve.exact_id("wukong"), "MonkeyKing")
+
+
 class ChampionIdentityRegressionTests(unittest.TestCase):
     def test_supplement_does_not_duplicate_nunu_and_localizes_norra(self):
         base = [{
