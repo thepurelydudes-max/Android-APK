@@ -16,11 +16,12 @@ from sources import (
     fetch_wildriftcore_item_metadata,
     slugish, clean_item_name, clean_wrpocket_item_stats,
     clean_wrpocket_item_effect, _item_dataset_hash, canonical_item_name, is_finished_item_tier,
+    canonical_completed_item_name, trusted_item_icon_urls,
 )
 
 
 ITEM_DATA_SCHEMA_VERSION = "4"
-ITEM_ICON_SCHEMA_VERSION = "4"
+ITEM_ICON_SCHEMA_VERSION = "5"
 
 
 class UpdateCancelled(RuntimeError):
@@ -579,22 +580,17 @@ def update_all(
 
         parsed_rows = list(dataset.rows or []) if dataset.status_code != 304 else []
         if parsed_rows:
-            # Item-card DOM can contain recipe/similar-item art. The exact icon
-            # authority is the item's own detail page, not the catalog card.
-            parsed_rows = verify_wrpocket_item_icons(net, parsed_rows, emit)
-            _check_cancel(cancel_check)
-            unverified_icons = [
-                row for row in parsed_rows
-                if is_finished_item_tier(str(row.get("tier") or ""))
-                and not bool(row.get("_icon_verified"))
-            ]
-            item_icon_verification_failures += len(unverified_icons)
-            if unverified_icons:
-                names = ", ".join(str(row.get("name") or "?") for row in unverified_icons[:12])
-                summary["errors"].append(
-                    f"WR Pocket exact item icons: {len(unverified_icons)} не подтверждено"
-                    + (f" ({names}{'…' if len(unverified_icons) > 12 else ''})" if names else "")
-                )
+            # WR Pocket remains the data/stat/build-trend source, but no longer
+            # has authority over item artwork. Current WR Pocket detail pages can
+            # expose generic or PC artwork under a valid WR item name (confirmed
+            # for Kaenic Rookern and Sundered Sky). Use name-addressed WR icon
+            # sources instead; the media layer validates the downloaded bytes.
+            for row in parsed_rows:
+                name = canonical_item_name(str(row.get("name") or ""))
+                if not name or not is_finished_item_tier(str(row.get("tier") or "")):
+                    continue
+                urls = trusted_item_icon_urls(name)
+                row["icon_url"] = urls[0] if urls else ""
         if dataset.status_code != 304:
             detail_rows: list[dict] = []
             # Apply every valid catalog row we could parse.  Do not reject the
@@ -623,6 +619,10 @@ def update_all(
                 detail_rows = fetch_wrpocket_item_detail_dataset(net, missing_details, emit)
                 _check_cancel(cancel_check)
                 if detail_rows:
+                    for row in detail_rows:
+                        name = canonical_item_name(str(row.get("name") or ""))
+                        urls = trusted_item_icon_urls(name) if name else []
+                        row["icon_url"] = urls[0] if urls else ""
                     _detail_items, detail_changed = _apply_item_dataset(detail_rows, current_patch, pc_ru)
                     summary["item_details_changed"] += detail_changed
 
@@ -671,11 +671,20 @@ def update_all(
         # source-approved build remains complete and keeps a verified icon.
         role_item_names: set[str] = set()
         for _cid, _role, build_items, boot_name, _patch, _url in role_builds:
-            role_item_names.update(canonical_item_name(x) for x in build_items if canonical_item_name(x))
-            if canonical_item_name(boot_name):
-                role_item_names.add(canonical_item_name(boot_name))
-        role_item_names.update(canonical_item_name(row[2]) for row in role_situational if canonical_item_name(row[2]))
-        role_item_names.update(canonical_item_name(row[2]) for row in role_boots if canonical_item_name(row[2]))
+            role_item_names.update(
+                canonical_completed_item_name(x)
+                for x in build_items if canonical_completed_item_name(x)
+            )
+            if canonical_completed_item_name(boot_name):
+                role_item_names.add(canonical_completed_item_name(boot_name))
+        role_item_names.update(
+            canonical_completed_item_name(row[2])
+            for row in role_situational if canonical_completed_item_name(row[2])
+        )
+        role_item_names.update(
+            canonical_completed_item_name(row[2])
+            for row in role_boots if canonical_completed_item_name(row[2])
+        )
         existing_names = {canonical_item_name(name) for name in db.get_item_names()}
         missing_role_items = sorted(name for name in role_item_names if name and name not in existing_names)
         if missing_role_items:
@@ -697,16 +706,20 @@ def update_all(
                 if not name:
                     continue
                 ru_name = item_name_ru(name, pc_ru)
+                trusted_urls = trusted_item_icon_urls(name)
                 db.upsert_item(
                     name, str(row.get("category") or ""), "wildriftcore.com",
-                    name_ru=ru_name, icon_url=str(row.get("icon_url") or ""), tier="Upgraded",
+                    name_ru=ru_name,
+                    icon_url=(trusted_urls[0] if trusted_urls else ""),
+                    tier="Upgraded",
                 )
                 db.upsert_item_details(
                     name, price=int(row.get("price") or 0),
                     stats=list(row.get("stats") or []), effect_en=str(row.get("effect_en") or ""),
                     data_hash=_item_dataset_hash(
                         name, int(row.get("price") or 0), list(row.get("stats") or []),
-                        str(row.get("effect_en") or ""), str(row.get("icon_url") or ""),
+                        str(row.get("effect_en") or ""),
+                        (trusted_urls[0] if trusted_urls else ""),
                         str(row.get("detail_url") or ""),
                     ),
                     data_patch=current_patch, source_url=str(row.get("detail_url") or ""),
@@ -760,11 +773,7 @@ def update_all(
     )
     summary["champion_images"] = ci
     summary["item_images"] = ii
-    if (
-        force_item_icon_refresh
-        and item_icon_failures == 0
-        and item_icon_verification_failures == 0
-    ):
+    if force_item_icon_refresh and item_icon_failures == 0:
         db.set_meta("item_icon_schema_version", ITEM_ICON_SCHEMA_VERSION)
 
     _check_cancel(cancel_check)
