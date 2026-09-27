@@ -585,7 +585,7 @@ Open this draft in the tool →
             [(cid, "Барон", ["Randuin's Omen", "Thornmail", "Sunfire Aegis"], "Plated Steelcaps", "7.3", "https://example.invalid")],
             [],
             [],
-            [(cid, "Барон", "Vs AD comps", ["Randuin's Omen", "Thornmail", "Sunfire Aegis"], "Mostly physical damage", 1, "7.3", "https://example.invalid")],
+            [(cid, "Барон", "Vs AD comps", ["Randuin's Omen", "Thornmail", "Sunfire Aegis", "Radiant Virtue", "Amaranth's Twinguard"], "Mostly physical damage", 1, "7.3", "https://example.invalid")],
         )
         rows = db.get_role_build_variants(cid, "Барон")
         self.assertEqual(len(rows), 1)
