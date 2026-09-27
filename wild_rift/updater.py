@@ -10,7 +10,7 @@ from media_cache import BRAND_DIR, CHAMPION_DIR, ITEM_DIR, cache_brand_logo, ens
 from sources import (
     DDRAGON_CHAMPION_ICON, Net, fetch_champions_locale, fetch_counter_item_pages,
     fetch_ddragon_item_ru_map, fetch_ddragon_version, fetch_stats, fetch_wrpocket_item_pools,
-    fetch_wrpocket_item_dataset, fetch_wrpocket_item_detail_dataset, verify_wrpocket_item_icons,
+    fetch_wrpocket_item_dataset, fetch_wrpocket_item_detail_dataset,
     item_detail_fallback_names, fetch_current_patch_info, item_name_ru,
     parse_wildriftcore_matchups, parse_wildriftcore_tiers, fetch_wildriftcore_role_builds,
     fetch_wildriftcore_item_metadata,
@@ -480,7 +480,6 @@ def update_all(
     previous_patch = db.get_meta("patch_version", "")
     current_patch = previous_patch
     force_item_icon_refresh = db.get_meta("item_icon_schema_version", "") != ITEM_ICON_SCHEMA_VERSION
-    item_icon_verification_failures = 0
 
     emit(update_text("loading_champions", lang))
     en_champs = fetch_champions_locale(net, "en_US")
