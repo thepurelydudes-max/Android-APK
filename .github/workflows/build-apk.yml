@@ -78,13 +78,26 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/apk_output/wild_rift"
-          flet build apk "$GITHUB_WORKSPACE/wild_rift" \
-            --product "WR Counter Assistant" \
-            --artifact "WR_Counter_Assistant" \
-            --output "$GITHUB_WORKSPACE/apk_output/wild_rift" \
-            --python-version 3.12 \
-            --yes \
-            --verbose
+          for attempt in 1 2; do
+            echo "Wild Rift APK build attempt $attempt/2"
+            if flet build apk "$GITHUB_WORKSPACE/wild_rift" \
+              --product "WR Counter Assistant" \
+              --artifact "WR_Counter_Assistant" \
+              --output "$GITHUB_WORKSPACE/apk_output/wild_rift" \
+              --python-version 3.12 \
+              --yes \
+              --verbose; then
+              break
+            fi
+            if [[ "$attempt" -eq 2 ]]; then
+              echo "Wild Rift APK build failed twice."
+              exit 1
+            fi
+            echo "Transient Android/Flet failure; cleaning build state and retrying once..."
+            rm -rf "$GITHUB_WORKSPACE/wild_rift/build" "$GITHUB_WORKSPACE/apk_output/wild_rift"
+            mkdir -p "$GITHUB_WORKSPACE/apk_output/wild_rift"
+            sleep 10
+          done
 
       - name: Build MLBB APK
         if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
@@ -92,13 +105,26 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/apk_output/mlbb"
-          flet build apk "$GITHUB_WORKSPACE/mlbb" \
-            --product "MLBB Counter Assistant" \
-            --artifact "MLBB_Counter_Assistant" \
-            --output "$GITHUB_WORKSPACE/apk_output/mlbb" \
-            --python-version 3.12 \
-            --yes \
-            --verbose
+          for attempt in 1 2; do
+            echo "MLBB APK build attempt $attempt/2"
+            if flet build apk "$GITHUB_WORKSPACE/mlbb" \
+              --product "MLBB Counter Assistant" \
+              --artifact "MLBB_Counter_Assistant" \
+              --output "$GITHUB_WORKSPACE/apk_output/mlbb" \
+              --python-version 3.12 \
+              --yes \
+              --verbose; then
+              break
+            fi
+            if [[ "$attempt" -eq 2 ]]; then
+              echo "MLBB APK build failed twice."
+              exit 1
+            fi
+            echo "Transient Android/Flet failure; cleaning build state and retrying once..."
+            rm -rf "$GITHUB_WORKSPACE/mlbb/build" "$GITHUB_WORKSPACE/apk_output/mlbb"
+            mkdir -p "$GITHUB_WORKSPACE/apk_output/mlbb"
+            sleep 10
+          done
 
       - name: Show APK files
         shell: bash
