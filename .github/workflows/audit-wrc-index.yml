@@ -30,6 +30,18 @@ jobs:
           echo "WRC_PROFILE_COUNT=$(wc -l < /tmp/slugs.txt)"
           cat /tmp/slugs.txt
 
+          echo "=== SAMPLE AGGREGATE ROWS ==="
+          python - <<'PY'
+          from pathlib import Path
+          lines=Path("/tmp/wrc-builds.txt").read_text(errors="replace").splitlines()
+          for needle in ("malphite","aatrox","ahri","jax"):
+              print("\n###", needle)
+              hits=[i for i,x in enumerate(lines) if needle in x.casefold()]
+              for i in hits[:3]:
+                  for j in range(max(0,i-3),min(len(lines),i+8)):
+                      print(f"{j+1}: {lines[j]}")
+          PY
+
           cd "$GITHUB_WORKSPACE/wild_rift"
           python - <<'PY'
           import pathlib
