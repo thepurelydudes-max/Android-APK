@@ -679,6 +679,357 @@ def parse_wildriftcore_tiers(
     return rows
 
 
+def _known_item_lookup(known_items: Iterable[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw in known_items or []:
+        name = canonical_item_name(str(raw or ""))
+        key = slugish(name)
+        if name and key:
+            out[key] = name
+    return out
+
+
+def _canonical_known_item(value: str, lookup: dict[str, str]) -> str:
+    cleaned = canonical_item_name(clean_item_name(value))
+    return lookup.get(slugish(cleaned), cleaned)
+
+
+def _looks_like_boot_name(name: str) -> bool:
+    text = clean_item_name(name).casefold()
+    return any(token in text for token in (
+        "boots", "treads", "greaves", "shoes", "steelcaps", "advance",
+        "crushers", "lucidity",
+    ))
+
+
+def parse_wildriftcore_build_page(
+    html: str,
+    champion_id: str,
+    known_items: Iterable[str],
+) -> dict:
+    """Parse role-specific standard builds and approved adaptations from one WRC page.
+
+    WildRiftCore publishes a plain-language summary for every supported role:
+    "Best X build (Role): item › item ..., boots Y, keystone Z."  That sentence is
+    the authoritative core.  Situational items are accepted only from the same
+    role section, so the assistant never invents tank/ADC items for a mage merely
+    because a global item happens to counter the enemy.
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    lines = [clean(x) for x in soup.stripped_strings if clean(x)]
+    lookup = _known_item_lookup(known_items)
+    builds: list[dict] = []
+    situational: list[dict] = []
+    boots: list[dict] = []
+
+    summary_re = re.compile(
+        r"Best\s+.+?\s+build\s*\(([^)]+)\):\s*(.+?),\s*boots\s+(.+?),\s*keystone\b",
+        flags=re.I,
+    )
+
+    role_starts: list[tuple[int, str]] = []
+    seen_roles: set[str] = set()
+
+    for idx, line in enumerate(lines):
+        m = summary_re.search(line)
+        if not m:
+            continue
+        role = _wildriftcore_role(m.group(1))
+        if not role or role in seen_roles:
+            continue
+        raw_items = [
+            clean_item_name(x)
+            for x in re.split(r"\s*[›>→]\s*", m.group(2))
+            if clean_item_name(x)
+        ]
+        items = []
+        for raw in raw_items:
+            item = _canonical_known_item(raw, lookup)
+            if item and item not in items:
+                items.append(item)
+        boot = _canonical_known_item(m.group(3), lookup)
+        if len(items) < 3:
+            continue
+        seen_roles.add(role)
+        role_starts.append((idx, role))
+        builds.append({"role": role, "items": items[:5], "boot": boot})
+        if boot:
+            boots.append({
+                "role": role, "item": boot, "trigger": "standard",
+                "priority": 0,
+            })
+
+    # Some HTML variants split the summary sentence across adjacent text nodes.
+    # Use the flattened page as a fallback only for roles not found above.
+    if len(builds) < 1:
+        flat = clean(" ".join(lines))
+        for m in summary_re.finditer(flat):
+            role = _wildriftcore_role(m.group(1))
+            if not role or role in seen_roles:
+                continue
+            raw_items = [clean_item_name(x) for x in re.split(r"\s*[›>→]\s*", m.group(2)) if clean_item_name(x)]
+            items = []
+            for raw in raw_items:
+                item = _canonical_known_item(raw, lookup)
+                if item and item not in items:
+                    items.append(item)
+            boot = _canonical_known_item(m.group(3), lookup)
+            if len(items) >= 3:
+                seen_roles.add(role)
+                builds.append({"role": role, "items": items[:5], "boot": boot})
+                if boot:
+                    boots.append({"role": role, "item": boot, "trigger": "standard", "priority": 0})
+
+    # Parse the role-local "Situational adaptations" section.  We deliberately
+    # match only names already known in the finished item catalog.
+    known_by_length = sorted(lookup.values(), key=len, reverse=True)
+    start_by_role = {role: idx for idx, role in role_starts}
+    ordered_starts = sorted(role_starts)
+
+    for pos, (start_idx, role) in enumerate(ordered_starts):
+        end_idx = ordered_starts[pos + 1][0] if pos + 1 < len(ordered_starts) else len(lines)
+        for j in range(start_idx + 1, end_idx):
+            if lines[j].casefold().startswith("core build") and "historical" in lines[j].casefold():
+                end_idx = j
+                break
+        segment = lines[start_idx:end_idx]
+        try:
+            sec_start = next(i for i, value in enumerate(segment) if value.casefold() == "situational adaptations")
+        except StopIteration:
+            continue
+        sec_end = len(segment)
+        for i in range(sec_start + 1, len(segment)):
+            folded = segment[i].casefold()
+            if folded.startswith("adaptations by opponent") or folded.startswith("power vs."):
+                sec_end = i
+                break
+
+        current_item = ""
+        priority = 1
+        for raw_line in segment[sec_start + 1:sec_end]:
+            line = clean(raw_line)
+            if not line:
+                continue
+            exact = lookup.get(slugish(line))
+            if exact:
+                current_item = exact
+                continue
+
+            inline_item = ""
+            inline_reason = ""
+            for candidate in known_by_length:
+                if line.casefold().startswith(candidate.casefold()):
+                    rest = clean(line[len(candidate):])
+                    if rest.casefold().startswith(("against ", "vs ")):
+                        inline_item = candidate
+                        inline_reason = rest
+                        break
+            if inline_item:
+                situational.append({
+                    "role": role, "item": inline_item, "trigger": inline_reason,
+                    "priority": priority,
+                })
+                priority += 1
+                current_item = ""
+                continue
+
+            if current_item and line.casefold().startswith(("against ", "vs ")):
+                situational.append({
+                    "role": role, "item": current_item, "trigger": line,
+                    "priority": priority,
+                })
+                priority += 1
+                current_item = ""
+
+    # Historical "Boots & enchant" is used only to discover champion-approved
+    # alternatives.  It never creates a boot that is not already on this page.
+    historical_boots: list[tuple[str, str]] = []
+    boot_section = -1
+    for idx, line in enumerate(lines):
+        if line.casefold() in {"boots & enchant", "boots and enchant"}:
+            boot_section = idx
+            break
+    if boot_section >= 0:
+        end = min(len(lines), boot_section + 40)
+        for idx in range(boot_section + 1, end):
+            if lines[idx].casefold().startswith("skill order"):
+                end = idx
+                break
+        pending_reason = ""
+        for line in lines[boot_section + 1:end]:
+            folded = line.casefold()
+            if folded.startswith(("alternative", "vs ", "against ")):
+                pending_reason = line
+                continue
+            item = lookup.get(slugish(line))
+            if item and _looks_like_boot_name(item):
+                historical_boots.append((item, pending_reason))
+                pending_reason = ""
+
+    for build in builds:
+        role = build["role"]
+        baseline = build.get("boot") or ""
+        priority = 10
+        for item, reason in historical_boots:
+            if not item or item == baseline:
+                continue
+            if any(row["role"] == role and row["item"] == item for row in boots):
+                continue
+            boots.append({
+                "role": role, "item": item,
+                "trigger": reason or "alternative",
+                "priority": priority,
+            })
+            priority += 1
+
+    # Deduplicate while preserving source order.
+    dedup_sit: list[dict] = []
+    seen_sit: set[tuple[str, str]] = set()
+    for row in situational:
+        key = (row["role"], row["item"])
+        if key in seen_sit:
+            continue
+        seen_sit.add(key)
+        dedup_sit.append(row)
+
+    dedup_boots: list[dict] = []
+    seen_boots: set[tuple[str, str]] = set()
+    for row in boots:
+        key = (row["role"], row["item"])
+        if key in seen_boots:
+            continue
+        seen_boots.add(key)
+        dedup_boots.append(row)
+
+    return {
+        "champion_id": champion_id,
+        "builds": builds,
+        "situational": dedup_sit,
+        "boots": dedup_boots,
+    }
+
+
+def fetch_wildriftcore_role_builds(
+    net: Net,
+    resolve: Callable[[str], str | None],
+    known_items: Iterable[str],
+    progress: Callable[[str], None] | None = None,
+) -> tuple[
+    list[tuple[str, str, list[str], str, str, str]],
+    list[tuple[str, str, str, str, int]],
+    list[tuple[str, str, str, str, int]],
+    list[str],
+]:
+    """Fetch/cache champion+role builds from WildRiftCore.
+
+    The cache is per patch and per champion.  Partial failures preserve previously
+    stored role builds instead of erasing them.
+    """
+    profiles = _wildriftcore_profile_links(net, resolve, progress)
+    if not profiles:
+        raise RuntimeError("Не найдены страницы сборок WildRiftCore")
+
+    try:
+        import db as _db
+        cache_patch = _db.get_meta("patch_version", "") or "unknown"
+        cached_pages = _db.get_build_page_cache("wildriftcore.com", cache_patch)
+    except Exception:
+        _db = None
+        cache_patch = "unknown"
+        cached_pages = {}
+
+    builds_out: list[tuple[str, str, list[str], str, str, str]] = []
+    sit_out: list[tuple[str, str, str, str, int]] = []
+    boots_out: list[tuple[str, str, str, str, int]] = []
+    errors: list[str] = []
+    success = 0
+    reused = 0
+    downloaded = 0
+    total = len(profiles)
+
+    for idx, (champion_id, profile_url) in enumerate(profiles, 1):
+        build_url = profile_url.rstrip("/") + "/builds/"
+        payload = cached_pages.get(champion_id)
+        if payload:
+            reused += 1
+        else:
+            if progress:
+                progress(
+                    f"WildRiftCore builds: {idx}/{total} — {champion_id} "
+                    f"(из кэша {reused}, скачано {downloaded})"
+                )
+            try:
+                html = _wildriftcore_get(net, build_url, progress).text
+                payload = parse_wildriftcore_build_page(html, champion_id, known_items)
+                if not payload.get("builds"):
+                    raise RuntimeError("не найдена роль-специфичная сборка")
+                downloaded += 1
+                if _db is not None:
+                    try:
+                        _db.upsert_build_page_cache(
+                            "wildriftcore.com", cache_patch, champion_id, payload, build_url
+                        )
+                        cached_pages[champion_id] = dict(payload)
+                    except Exception:
+                        pass
+            except requests.HTTPError as exc:
+                response = getattr(exc, "response", None)
+                if response is not None and response.status_code == 429:
+                    errors.append(
+                        f"WildRiftCore builds: лимит запросов после {success}/{total} страниц (429)"
+                    )
+                    break
+                errors.append(f"{champion_id}: {exc}")
+                continue
+            except Exception as exc:
+                errors.append(f"{champion_id}: {exc}")
+                continue
+
+        if progress:
+            progress(
+                f"WildRiftCore builds: {idx}/{total} — {champion_id} "
+                f"(из кэша {reused}, скачано {downloaded})"
+            )
+        success += 1
+        source_url = str(payload.get("_source_url") or build_url)
+        for row in payload.get("builds", []):
+            role = str(row.get("role") or "")
+            items = [canonical_item_name(x) for x in row.get("items", []) if canonical_item_name(x)]
+            boot = canonical_item_name(str(row.get("boot") or ""))
+            if role and items:
+                builds_out.append((champion_id, role, items[:5], boot, cache_patch, source_url))
+        for row in payload.get("situational", []):
+            role = str(row.get("role") or "")
+            item = canonical_item_name(str(row.get("item") or ""))
+            if role and item:
+                sit_out.append((
+                    champion_id, role, item, str(row.get("trigger") or ""),
+                    int(row.get("priority") or 999),
+                ))
+        for row in payload.get("boots", []):
+            role = str(row.get("role") or "")
+            item = canonical_item_name(str(row.get("item") or ""))
+            if role and item:
+                boots_out.append((
+                    champion_id, role, item, str(row.get("trigger") or ""),
+                    int(row.get("priority") or 999),
+                ))
+
+    if _db is not None and success == total:
+        try:
+            _db.prune_build_page_cache("wildriftcore.com", cache_patch)
+        except Exception:
+            pass
+
+    if not builds_out:
+        detail = "; ".join(errors[:3])
+        raise RuntimeError(
+            "WildRiftCore role builds не удалось загрузить"
+            + (f" ({detail})" if detail else "")
+        )
+    return builds_out, sit_out, boots_out, errors
+
+
 def _links(soup: BeautifulSoup, contains: str, base: str) -> list[tuple[str, str]]:
     seen = set()
     out = []
