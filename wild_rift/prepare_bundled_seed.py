@@ -100,6 +100,18 @@ def _audit() -> dict:
     roles_without_variants = sorted(
         f"{cid}:{role}" for cid, role in (role_build_keys - variant_keys)
     )
+    variant_counts: dict[tuple[str, str], int] = {}
+    for row in role_variant_rows:
+        key = (
+            str(row.get("champion_id") or ""),
+            str(row.get("role") or ""),
+        )
+        variant_counts[key] = variant_counts.get(key, 0) + 1
+    roles_with_incomplete_variant_count = sorted(
+        f"{cid}:{role}={variant_counts.get((cid, role), 0)}/3"
+        for cid, role in role_build_keys
+        if variant_counts.get((cid, role), 0) < 3
+    )
 
     incomplete_role_builds = []
     for row in role_build_rows:
@@ -140,6 +152,7 @@ def _audit() -> dict:
         "wrc_build_cache_pages": build_cache_rows,
         "champions_without_role_build": champions_without_role_build,
         "roles_without_variants": roles_without_variants,
+        "roles_with_incomplete_variant_count": roles_with_incomplete_variant_count,
         "incomplete_role_builds": incomplete_role_builds,
         "incomplete_variants": incomplete_variants,
         "data_gaps": data_gaps,
@@ -234,6 +247,7 @@ def main() -> int:
     for key in (
         "champions_without_role_build",
         "roles_without_variants",
+        "roles_with_incomplete_variant_count",
         "incomplete_role_builds",
         "incomplete_variants",
     ):
@@ -281,6 +295,11 @@ def main() -> int:
         raise RuntimeError(
             "Refusing to package role builds without variants: "
             + ", ".join(audit["roles_without_variants"])
+        )
+    if audit["roles_with_incomplete_variant_count"]:
+        raise RuntimeError(
+            "Refusing to package role builds with incomplete variant sets: "
+            + ", ".join(audit["roles_with_incomplete_variant_count"])
         )
     if audit["incomplete_role_builds"] or audit["incomplete_variants"]:
         raise RuntimeError(
