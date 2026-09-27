@@ -102,6 +102,23 @@ jobs:
           echo '=== fresh Aatrox variant block ==='
           sed -n '24,120p' /tmp/aatrox-fresh.txt
 
+      - name: Probe Jina as Googlebot Garen
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L -sS --max-time 90 \
+            -H 'X-No-Cache: true' \
+            -H 'X-Cache-Tolerance: 0' \
+            -H 'X-Engine: browser' \
+            -H 'X-Timeout: 45' \
+            -H 'X-User-Agent: Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' \
+            'https://r.jina.ai/https://wildriftcore.com/en/champions/garen/builds/' \
+            -o /tmp/garen-googlebot.txt
+          echo "bytes=$(wc -c < /tmp/garen-googlebot.txt)"
+          grep -n -E 'Standard — bruiser|Anti-tank — shred|Sustain — brawler|Example enemy draft|Black Cleaver.*Divine Sunderer' /tmp/garen-googlebot.txt | head -80 || true
+          echo '=== googlebot Garen variant block ==='
+          sed -n '20,115p' /tmp/garen-googlebot.txt
+
       - name: Probe with real headless Chrome
         shell: bash
         run: |
