@@ -483,6 +483,56 @@ def _wildriftcore_champion_slug(href: str) -> str:
     return clean(m.group(1)) if m else ""
 
 
+def _wildriftcore_ranked_section_ids(
+    html: str,
+    resolve: Callable[[str], str | None],
+) -> tuple[set[str], list[str]]:
+    """Return every champion identity advertised inside the ranked tier section.
+
+    This is an integrity guard, not a second tier parser. A role page must not be
+    allowed to replace the database with a partial parse merely because more than
+    ten rows happened to survive a markup change. We compare the tier rows we
+    parsed with the champion profile links actually present in the same ranked
+    section. Any resolvable champion link without a tier row means the refresh is
+    incomplete and the updater must preserve the last known-good role table.
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    start_node = None
+    for node in soup.find_all(["h1", "h2", "h3", "h4", "div", "p"]):
+        text = clean(node.get_text(" ", strip=True))
+        folded = text.casefold()
+        if "champion ranked" in folded and "s+" in folded and "to c" in folded:
+            start_node = node
+            break
+
+    if start_node is None:
+        return set(), []
+
+    resolved: set[str] = set()
+    unresolved: list[str] = []
+    for node in start_node.find_all_next():
+        if not getattr(node, "name", None):
+            continue
+        text = clean(node.get_text(" ", strip=True))
+        folded = text.casefold()
+        if node.name in {"h1", "h2", "h3", "h4"} and (
+            "how do we calculate this tier list" in folded
+            or "now, prepare your next game" in folded
+        ):
+            break
+        if node.name != "a":
+            continue
+        slug = _wildriftcore_champion_slug(str(node.get("href") or ""))
+        if not slug:
+            continue
+        cid = resolve(slug) or resolve(clean(node.get_text(" ", strip=True)))
+        if cid:
+            resolved.add(cid)
+        elif slug not in unresolved:
+            unresolved.append(slug)
+    return resolved, unresolved
+
+
 def _parse_wildriftcore_tier_page(
     html: str,
     role: str,
@@ -638,7 +688,9 @@ def parse_wildriftcore_tiers(
             response = _wildriftcore_get(net, url, progress, headers=WR_CORE_HTML_HEADERS)
             html = response.text
             parsed = _parse_wildriftcore_tier_page(html, role, resolve)
-            # Every role currently contains comfortably more than ten picks.
+            expected_ids, unresolved_slugs = _wildriftcore_ranked_section_ids(html, resolve)
+            parsed_ids = {champion_id for champion_id, _role, _tier in parsed}
+
             # A tiny result means the site returned a shell/challenge or markup
             # changed, so do not overwrite that role with partial data.
             if len(parsed) < 10:
@@ -649,6 +701,22 @@ def parse_wildriftcore_tiers(
                     pass
                 detail = f"; title={title!r}" if title else ""
                 raise RuntimeError(f"найдено только {len(parsed)} tier-строк{detail}")
+
+            # Strong integrity guard: every champion link present in the ranked
+            # section that resolves to our champion database must also have a
+            # parsed tier. Previously ">=10 rows" could declare a half-parsed
+            # page successful and then erase the missing champions' old tiers.
+            missing_ids = sorted(expected_ids - parsed_ids)
+            if unresolved_slugs or missing_ids:
+                details = []
+                if missing_ids:
+                    details.append("без tier: " + ", ".join(missing_ids[:12]))
+                if unresolved_slugs:
+                    details.append("не распознаны URL: " + ", ".join(unresolved_slugs[:12]))
+                raise RuntimeError(
+                    f"неполный tier parse {len(parsed_ids)}/{len(expected_ids) or '?'}; "
+                    + "; ".join(details)
+                )
             rows.extend(parsed)
             succeeded_roles.append(role)
             if progress:
@@ -1792,37 +1860,54 @@ def verify_wrpocket_item_icons(
     records: Iterable[dict],
     progress: Callable[[str], None] | None = None,
 ) -> list[dict]:
-    """Verify every final-item icon against its own WR Pocket detail page.
+    """Resolve final-item icons from the item's own detail page only.
 
-    The catalog index is useful for names/stats/categories, but its surrounding
-    DOM may expose unrelated recipe/similar-item images. For final build icons we
-    therefore trust the item's own detail page and preserve the old URL only when
-    verification fails.
+    The catalog index is allowed to supply names/stats/categories, but never the
+    final icon authority: recipe and "similar item" artwork can sit inside the
+    same surrounding DOM. Each finished item therefore receives an explicit
+    verification marker. If its detail page cannot prove the icon, icon_url is
+    blanked for this refresh so an unverified catalog image cannot overwrite a
+    previously known-good URL in SQLite.
     """
     rows = [dict(row) for row in records]
-    targets = [row for row in rows if is_finished_item_tier(str(row.get("tier") or "")) and row.get("detail_url")]
+    targets = [
+        row for row in rows
+        if is_finished_item_tier(str(row.get("tier") or ""))
+    ]
     total = len(targets)
     for idx, row in enumerate(targets, 1):
+        row["_icon_verified"] = False
+        row["_icon_verification_error"] = ""
+        # Never trust the catalog-card image as the final authority.
+        row["icon_url"] = ""
+        detail_url = str(row.get("detail_url") or "")
         if progress:
             progress(f"Wild Rift Pocket icons: {idx}/{total} — {row.get('name') or ''}")
+        if not detail_url:
+            row["_icon_verification_error"] = "нет detail URL"
+            continue
         try:
-            detail_name, icon_url = _fetch_wrpocket_item_detail(net, str(row.get("detail_url") or ""))
-        except Exception:
+            detail_name, icon_url = _fetch_wrpocket_item_detail(net, detail_url)
+        except Exception as exc:
+            row["_icon_verification_error"] = str(exc)
             continue
         expected = slugish(canonical_item_name(str(row.get("name") or "")))
         actual = slugish(canonical_item_name(detail_name))
         if expected and actual and expected != actual:
+            row["_icon_verification_error"] = f"страница другого предмета: {detail_name}"
             continue
-        if not icon_url:
+        if not icon_url or not _is_equip_icon_url(icon_url):
+            row["_icon_verification_error"] = "точная EquipIcons-ссылка не найдена"
             continue
         row["icon_url"] = icon_url
+        row["_icon_verified"] = True
         row["data_hash"] = _item_dataset_hash(
             str(row.get("name") or ""),
             int(row.get("price") or 0),
             list(row.get("stats") or []),
             str(row.get("effect_en") or ""),
             icon_url,
-            str(row.get("detail_url") or ""),
+            detail_url,
         )
     return rows
 
