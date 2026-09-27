@@ -35,6 +35,22 @@ jobs:
             echo
           done
 
+      - name: Probe Jina Reader fallback
+        shell: bash
+        run: |
+          set -u
+          for url in \
+            'https://r.jina.ai/https://wildriftcore.com/en/champions/malphite/builds/' \
+            'https://r.jina.ai/https://wildriftcore.com/en/builds/'; do
+            echo "=== JINA $url ==="
+            curl -L -sS --max-time 60 -o /tmp/jina.txt -D /tmp/jina.headers \
+              -w 'HTTP=%{http_code} SIZE=%{size_download}\n' "$url" || true
+            head -10 /tmp/jina.headers || true
+            grep -m1 -F 'Best Malphite build' /tmp/jina.txt || true
+            grep -m1 -F 'Malphite Baron Lane' /tmp/jina.txt || true
+            head -12 /tmp/jina.txt || true
+          done
+
       - name: Probe with real headless Chrome
         shell: bash
         run: |
