@@ -1191,6 +1191,25 @@ def _trigger_is_active(trigger_text: str, tags: set[str], threat_counts: Counter
     if not tags:
         return False
     folded = str(trigger_text or "").casefold()
+
+    # Preserve compound source rules. "Against AD burst" is not the same as
+    # "against physical damage": both the damage type and a burst/assassin
+    # signal must be present. The previous any-tag rule could activate Mantle
+    # simply because a team had several AD champions.
+    if "burst" in folded and "anti_burst" in tags:
+        if int(threat_counts.get("anti_burst", 0)) <= 0:
+            return False
+        if (
+            ("ad burst" in folded or "physical burst" in folded)
+            and int(threat_counts.get("anti_physical", 0)) <= 0
+        ):
+            return False
+        if (
+            ("ap burst" in folded or "magic burst" in folded)
+            and int(threat_counts.get("anti_magic", 0)) <= 0
+        ):
+            return False
+
     if "2+" in folded or "two or more" in folded or "multiple" in folded:
         return max((int(threat_counts.get(tag, 0)) for tag in tags), default=0) >= 2
     return any(int(threat_counts.get(tag, 0)) > 0 for tag in tags)
