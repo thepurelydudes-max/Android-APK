@@ -1466,6 +1466,7 @@ class MobileAssistant:
                     ("WR Pocket exact item icons", "item icons"),
                     ("WildRiftCore item metadata", "item metadata"),
                     ("WildRiftCore builds", "role builds"),
+                    ("WildRiftCore build audit", "role build audit"),
                     ("WildRiftCounter items", "counter items"),
                     ("Champion media cache", "champion images"),
                     ("Item media cache", "item images"),
