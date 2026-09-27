@@ -1008,6 +1008,75 @@ def _role_build_row(champion_id: str, role_ru: str, snapshot: dict | None = None
     return db.get_role_build(champion_id, role_ru)
 
 
+def _role_variant_rows(champion_id: str, role_ru: str, snapshot: dict | None = None) -> list[dict]:
+    if snapshot is not None:
+        return list(snapshot.get("role_variants", {}).get((champion_id, role_ru), []))
+    return db.get_role_build_variants(champion_id, role_ru)
+
+
+def _variant_tags(name: str, trigger: str) -> set[str]:
+    text = f"{name} {trigger}".casefold()
+    tags = _trigger_tags_from_text(text)
+    if any(token in text for token in ("vs ad", "physical damage", "physical comp", "ad comp")):
+        tags.add("anti_physical")
+    if any(token in text for token in ("vs ap", "magic damage", "magical damage", "ap comp")):
+        tags.add("anti_magic")
+    return tags
+
+
+def _select_role_variant(
+    rows: list[dict], threat_counts: Counter,
+) -> dict | None:
+    """Choose one complete WRC variant from the enemy draft.
+
+    Standard is the safe fallback. Resistance variants require a real team-level
+    signal (normally 3+ enemies), preventing one physical/magic champion from
+    replacing the entire five-item source build.
+    """
+    if not rows:
+        return None
+    standard = next(
+        (row for row in rows if str(row.get("variant_name") or "").casefold().startswith("standard")),
+        rows[0],
+    )
+    best: tuple[float, int, dict] | None = None
+    physical = int(threat_counts.get("anti_physical", 0))
+    magic = int(threat_counts.get("anti_magic", 0))
+
+    for row in rows:
+        name = str(row.get("variant_name") or "")
+        trigger = str(row.get("trigger_text") or "")
+        tags = _variant_tags(name, trigger)
+        if not tags:
+            continue
+
+        score = 0.0
+        if "anti_physical" in tags:
+            if physical < 3 or physical <= magic:
+                continue
+            score += 10.0 + physical * 2.0 - magic
+        if "anti_magic" in tags:
+            if magic < 3 or magic <= physical:
+                continue
+            score += 10.0 + magic * 2.0 - physical
+
+        other = tags - {"anti_physical", "anti_magic"}
+        if other:
+            matched = sum(int(threat_counts.get(tag, 0)) for tag in other)
+            if matched < 2:
+                continue
+            score += float(matched)
+
+        if score <= 0:
+            continue
+        priority = -int(row.get("priority") or 999)
+        candidate = (score, priority, row)
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+
+    return best[2] if best is not None else standard
+
+
 def _role_situational_rows(champion_id: str, role_ru: str, snapshot: dict | None = None) -> list[dict]:
     if snapshot is not None:
         return list(snapshot.get("role_situational", {}).get((champion_id, role_ru), []))
@@ -1332,14 +1401,39 @@ def recommend_build(
     threat_enemies: list[str] = []
     neutral_enemies: list[str] = []
 
+    threat_counts, enemies_by_tag = _enemy_threat_profile(enemy_objs, snapshot)
+
+    # WRC publishes complete source-defined variants (Standard / Vs AD / Vs AP
+    # and champion-specific alternatives). Select the whole coherent variant
+    # first; only then apply individual situational replacements.
+    variant_rows = _role_variant_rows(champ["id"], effective_role, snapshot)
+    selected_variant = _select_role_variant(variant_rows, threat_counts)
+    selected_variant_name = ""
+    if selected_variant:
+        variant_items = _finished_only(
+            [str(x) for x in (selected_variant.get("items") or [])],
+            snapshot,
+        )
+        if len(variant_items) >= 3:
+            core = variant_items[:5]
+            selected_variant_name = str(
+                selected_variant.get("variant_name") or ""
+            ).strip()
+
+    core_reason = (
+        f"WildRiftCore: вариант {selected_variant_name} для роли {effective_role}"
+        if selected_variant_name
+        else f"WildRiftCore: стандартное ядро для роли {effective_role}"
+    )
     for item in core:
-        reasons[item].append(f"WildRiftCore: стандартное ядро для роли {effective_role}")
-        reason_details[item].append({"kind": "core", "enemy": ""})
+        reasons[item].append(core_reason)
+        reason_details[item].append({
+            "kind": "variant" if selected_variant_name else "core",
+            "enemy": "",
+        })
     if baseline_boot:
         reasons[baseline_boot].append(f"WildRiftCore: базовые ботинки для роли {effective_role}")
         reason_details[baseline_boot].append({"kind": "core", "enemy": ""})
-
-    threat_counts, enemies_by_tag = _enemy_threat_profile(enemy_objs, snapshot)
 
     scored_situational: list[tuple[float, int, str, str, set[str]]] = []
     for row in allowed_situational:
@@ -1461,6 +1555,7 @@ def recommend_build(
         "source": str((source_row or {}).get("source") or ""),
         "source_url": str((source_row or {}).get("source_url") or ""),
         "source_missing": source_row is None,
+        "selected_variant": selected_variant_name,
         "threat_counts": dict(threat_counts),
     }
 
