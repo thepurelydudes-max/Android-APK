@@ -478,19 +478,19 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             "enemy_roles": {enemy["id"]: inferred_role for enemy, inferred_role in enemy_objs},
         })
 
-    # A hard-losing lane is a categorical counter-pick failure.  Safe candidates
-    # are therefore ranked first; inside each bucket the normalized final score
-    # decides.  Remaining fields are deterministic tie-breakers only.
+    # The visible overall score is the single ranking authority. Matchups,
+    # coverage, tier and win rate already contribute to that score above; putting
+    # any one of those signals in front of it would silently create a second
+    # ranking system (and can show a lower-score champion above a higher-score
+    # champion). Everything after score is only a deterministic tie-breaker.
     out.sort(
         key=lambda x: (
-            not x.get("lane_hard_loss", False),
-            x.get("mirror_bucket", 1),
-            float(x.get("mirror_edge") or 0.0),
             x["score"],
             x["matchup_score"],
             x["coverage_count"],
             TIER_ORDER.get(x.get("tier", ""), 0),
             x["winrate_score"],
+            not x.get("lane_hard_loss", False),
             x["positive_strength"],
             -x["negative_strength"],
         ),
@@ -1154,6 +1154,117 @@ def _approved_role_build(
     return core, baseline_boot, situational, boots, row
 
 
+def _fallback_pool_build(
+    champ: dict,
+    enemy_objs: list[tuple[dict, str]],
+    effective_role: str,
+    snapshot: dict | None = None,
+) -> dict:
+    """Restore the proven item-pool builder when role-build data is unavailable.
+
+    WildRiftCore champion+role builds remain the preferred source. This fallback
+    is deliberately narrow: it uses only this champion's existing WR Pocket item
+    pool plus the already-known counter signals. It never searches the global
+    shop, so a temporary parser/rate-limit failure cannot produce six blank slots
+    and cannot turn a mage/ADC into an unrelated defensive build.
+    """
+    pool = _item_pool(champ["id"], snapshot)
+    pool_names = {norm_item(str(row.get("item_name") or "")) for row in pool}
+    base = _finished_only(_core_build(champ, pool, effective_role, snapshot), snapshot)
+
+    reasons = defaultdict(list)
+    reason_details = defaultdict(list)
+    scores: Counter = Counter()
+    threat_enemies: list[str] = []
+    neutral_enemies: list[str] = []
+
+    for item in base:
+        reasons[item].append("резервное ядро из актуального пула предметов героя")
+        reason_details[item].append({"kind": "core", "enemy": ""})
+
+    for enemy, _enemy_role in enemy_objs:
+        edge = float(_matchup_score(champ["id"], enemy["id"], effective_role, snapshot))
+        severity = _adaptation_severity(edge)
+        if edge < 0:
+            threat_enemies.append(enemy["name"])
+        else:
+            neutral_enemies.append(enemy["name"])
+
+        direct = _counter_items(enemy["id"], snapshot)
+        need_tags = _direct_need_tags(direct)
+
+        for row in direct:
+            item = str(row.get("item_name") or "")
+            if not item or not _compatible(item, champ, pool, effective_role, snapshot):
+                continue
+            source_fit = 1.0 if norm_item(item) in pool_names else 0.65
+            scores[item] += 3.0 * severity * source_fit
+            reasons[item].append(f"против {enemy['name']}")
+            reason_details[item].append({"kind": "direct", "enemy": enemy["name"]})
+
+        for row in pool:
+            item = str(row.get("item_name") or "")
+            hits = tags_for(item) & need_tags
+            if hits:
+                scores[item] += 1.5 * severity * len(hits)
+                for tag in sorted(hits):
+                    reasons[item].append(f"{tag} против {enemy['name']}")
+                    reason_details[item].append({"kind": tag, "enemy": enemy["name"]})
+
+        # This is the same restrained adaptation layer that existed before the
+        # role-build rewrite. It only promotes items already approved for the
+        # champion by the pool and therefore behaves like a practical
+        # matchup-aware build assistant rather than a global-shop generator.
+        generic_tags = _generic_threat_tags(enemy, snapshot)
+        for row in pool:
+            item = str(row.get("item_name") or "")
+            hits = tags_for(item) & generic_tags
+            if not hits:
+                continue
+            scores[item] += 0.55 * severity * len(hits)
+            for tag in sorted(hits):
+                reason_details[item].append({"kind": tag, "enemy": enemy["name"]})
+
+    max_adaptations = 3 if len(enemy_objs) >= 4 else 2
+    ranked_adaptations = [
+        (item, float(score))
+        for item, score in scores.most_common()
+        if float(score) >= 2.5
+    ][:max_adaptations]
+    situational = _finished_only([item for item, _score in ranked_adaptations], snapshot)
+
+    base, situational = enforce_single_boot_rule(base, situational, scores)
+    base = _finished_only(base, snapshot)
+    situational = _finished_only(situational, snapshot)
+    ordered = _finished_only(order_build_items(base, situational, pool, scores), snapshot)
+    ordered = _ensure_exactly_one_boot(ordered, champ, effective_role, snapshot)
+    ordered = list(dict.fromkeys(ordered))[:6]
+
+    return {
+        "champion": champ,
+        "role": effective_role,
+        "base": base,
+        "situational": situational,
+        "ordered": ordered,
+        "reasons": {key: list(dict.fromkeys(values)) for key, values in reasons.items()},
+        "reason_details": {
+            key: list({
+                (detail.get("kind", ""), detail.get("enemy", "")): detail
+                for detail in values
+            }.values())
+            for key, values in reason_details.items()
+        },
+        "threat_enemies": list(dict.fromkeys(threat_enemies)),
+        "neutral_enemies": list(dict.fromkeys(neutral_enemies)),
+        "pool_size": len(pool),
+        "source": "wrpocket.app:fallback",
+        "source_url": "",
+        "source_missing": True,
+        "fallback_used": True,
+        "threat_counts": {},
+    }
+
+
 def recommend_build(
     champion_name: str,
     enemies: list[tuple[str, str]],
@@ -1181,6 +1292,13 @@ def recommend_build(
     core, baseline_boot, allowed_situational, allowed_boots, source_row = _approved_role_build(
         champ, effective_role, snapshot
     )
+
+    # Never let a temporary WildRiftCore parser/cache/network failure erase the
+    # working recommendation foundation. A healthy champion+role source still
+    # wins; only missing/incomplete core data falls back to the proven pool
+    # builder that existed before the source-driven rewrite.
+    if source_row is None or len(core) < 3:
+        return _fallback_pool_build(champ, enemy_objs, effective_role, snapshot)
 
     reasons = defaultdict(list)
     reason_details = defaultdict(list)
