@@ -43,7 +43,7 @@ WR_COUNTER_CHAMPS = "https://wildriftcounter.com/champions/"
 WR_CORE_CHAMPS = "https://wildriftcore.com/en/champions/"
 WR_CORE_BUILDS = "https://wildriftcore.com/en/builds/"
 JINA_READER_PREFIX = "https://r.jina.ai/"
-WRC_BUILD_SCHEMA_VERSION = "4"
+WRC_BUILD_SCHEMA_VERSION = "5"
 WR_CORE_TIERLISTS = {
     "Барон": "https://wildriftcore.com/en/tierlist/baron-lane/",
     "Лес": "https://wildriftcore.com/en/tierlist/jungle/",
@@ -1540,6 +1540,8 @@ def parse_wildriftcore_build_page(
                         if item not in variant_items:
                             variant_items.append(item)
                 trigger = ""
+                example_enemies: list[str] = []
+                example_text = ""
                 for j, line in enumerate(block):
                     if plain_heading(line).casefold() == "when to pick it":
                         for candidate in block[j + 1:]:
@@ -1554,6 +1556,43 @@ def parse_wildriftcore_build_page(
                                 continue
                             trigger = candidate_plain.strip("_*")
                             break
+                    if plain_heading(line).casefold() == "example enemy draft":
+                        for candidate in block[j + 1:]:
+                            candidate_plain = plain_heading(candidate)
+                            if candidate_plain.casefold().startswith("open this draft"):
+                                break
+                            # Reader Markdown keeps champion portrait alt text.
+                            # Persist the five illustrative enemies as evidence
+                            # for the same source rule; they are not hard-coded
+                            # replacements for the textual "When to pick it".
+                            for raw_name in re.findall(
+                                r"!\[[^\]]*Image:\s*([^\]]+)\]",
+                                candidate,
+                                flags=re.I,
+                            ):
+                                enemy_name = clean(raw_name)
+                                if (
+                                    enemy_name
+                                    and enemy_name.casefold() != "image"
+                                    and enemy_name not in example_enemies
+                                ):
+                                    example_enemies.append(enemy_name)
+                            for slug in re.findall(
+                                r"/en/champions/([^/?#)\s]+)",
+                                candidate,
+                                flags=re.I,
+                            ):
+                                enemy_name = clean(slug.replace("-", " "))
+                                if enemy_name and enemy_name not in example_enemies:
+                                    example_enemies.append(enemy_name)
+                            if (
+                                candidate_plain
+                                and "Image:" not in candidate_plain
+                                and not candidate_plain.casefold().startswith("example enemy draft")
+                                and not item_links(candidate)
+                                and not example_text
+                            ):
+                                example_text = candidate_plain.strip("_*")
                         break
                 if len(variant_items) >= 3:
                     variants.append({
@@ -1561,6 +1600,8 @@ def parse_wildriftcore_build_page(
                         "name": variant_name,
                         "items": variant_items[:5],
                         "trigger": trigger,
+                        "example_enemies": example_enemies[:5],
+                        "example_text": example_text,
                         "priority": variant_priority,
                     })
                     variant_priority += 1
@@ -1804,9 +1845,11 @@ def fetch_wildriftcore_role_builds(
                 payload = parse_wildriftcore_build_page(page_text, champion_id, known_items)
 
                 # Direct HTML templates may omit source sections that are
-                # present in the public Reader representation. If the Standard
-                # build itself is incomplete, retry the exact source page
-                # through Reader. Optional variants are enrichment only.
+                # present in the public Reader representation. For the local
+                # draft advisor we require not only the Standard core but the
+                # complete three WRC variants with their rule text and example
+                # enemy draft, so retry through Reader whenever any of that is
+                # missing.
                 def _complete_standard_builds(value: dict) -> bool:
                     rows = list(value.get("builds", []) or [])
                     return bool(rows) and all(
@@ -1816,7 +1859,35 @@ def fetch_wildriftcore_role_builds(
                         for row in rows
                     )
 
-                if transport != "reader" and not _complete_standard_builds(payload):
+                def _complete_variant_rules(value: dict) -> bool:
+                    build_roles = {
+                        str(row.get("role") or "").strip()
+                        for row in (value.get("builds", []) or [])
+                        if str(row.get("role") or "").strip()
+                    }
+                    variants_by_role: dict[str, list[dict]] = {}
+                    for row in (value.get("variants", []) or []):
+                        role_key = str(row.get("role") or "").strip()
+                        if role_key:
+                            variants_by_role.setdefault(role_key, []).append(row)
+                    for role_key in build_roles:
+                        rows = variants_by_role.get(role_key, [])
+                        if len(rows) < 3:
+                            return False
+                        for row in rows[:3]:
+                            items = [x for x in (row.get("items") or []) if str(x).strip()]
+                            if len(items) != 5:
+                                return False
+                            if not str(row.get("trigger") or "").strip():
+                                return False
+                            if not list(row.get("example_enemies") or []):
+                                return False
+                    return bool(build_roles)
+
+                if transport != "reader" and (
+                    not _complete_standard_builds(payload)
+                    or not _complete_variant_rules(payload)
+                ):
                     reader_response = _jina_reader_get(net, build_url, progress)
                     payload = parse_wildriftcore_build_page(
                         reader_response.text, champion_id, known_items
@@ -1833,6 +1904,11 @@ def fetch_wildriftcore_role_builds(
                     raise RuntimeError(
                         "неполная стандартная роль-сборка"
                         + (f" ({'; '.join(details)})" if details else "")
+                    )
+                if not _complete_variant_rules(payload):
+                    raise RuntimeError(
+                        "неполные WRC варианты: нужны 3 полные сборки с "
+                        "When to pick it и Example enemy draft для каждой роли"
                     )
 
                 payload["schema_version"] = WRC_BUILD_SCHEMA_VERSION
@@ -1892,10 +1968,16 @@ def fetch_wildriftcore_role_builds(
             ]
             trigger = clean(str(row.get("trigger") or ""))
             priority = int(row.get("priority") or 0)
+            example_enemies = [
+                clean(str(enemy))
+                for enemy in (row.get("example_enemies") or [])
+                if clean(str(enemy))
+            ][:5]
+            example_text = clean(str(row.get("example_text") or ""))
             if role and name and len(items) >= 3:
                 variants_out.append((
                     champion_id, role, name, items[:5], trigger, priority,
-                    cache_patch, source_url,
+                    example_enemies, example_text, cache_patch, source_url,
                 ))
 
     if _db is not None and success == total:
