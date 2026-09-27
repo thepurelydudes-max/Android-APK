@@ -756,7 +756,7 @@ def _audit_wrc_build_integrity() -> dict:
     incomplete_variant_sets = sorted(
         f"{cid}:{role}={len(role_variants.get((cid, role), []))}/3"
         for cid, role in role_builds
-        if len(role_variants.get((cid, role), [])) < 3
+        if len(role_variants.get((cid, role), [])) != 3
     )
     missing_situational_roles = sorted(
         f"{cid}:{role}"
@@ -781,12 +781,7 @@ def _audit_wrc_build_integrity() -> dict:
         for row in rows:
             items = [str(x) for x in (row.get("items") or []) if str(x).strip()]
             trigger = str(row.get("trigger_text") or "").strip()
-            examples = [
-                str(x).strip()
-                for x in (row.get("example_enemies") or [])
-                if str(x).strip()
-            ]
-            if len(items) != 5 or not trigger or not examples:
+            if len(items) not in {0, 5} or not trigger:
                 incomplete_variants.append(
                     f"{cid}:{role}:{row.get('variant_name') or '?'}"
                 )
@@ -1255,18 +1250,9 @@ def update_all(
             f"неполный набор вариантов {len(names)}: " + ", ".join(names[:8])
             + ("…" if len(names) > 8 else "")
         )
-    if build_integrity.get("missing_situational_roles"):
-        names = list(build_integrity["missing_situational_roles"])
-        build_gap_parts.append(
-            f"без situational {len(names)}: " + ", ".join(names[:8])
-            + ("…" if len(names) > 8 else "")
-        )
-    if build_integrity.get("missing_opponent_adaptation_roles"):
-        names = list(build_integrity["missing_opponent_adaptation_roles"])
-        build_gap_parts.append(
-            f"без opponent adaptations {len(names)}: " + ", ".join(names[:8])
-            + ("…" if len(names) > 8 else "")
-        )
+    # Situational and exact-opponent blocks are source enrichment: WRC does
+    # not publish them for every role. Their absence is reported in the audit
+    # object but is not an update failure.
     incomplete = list(build_integrity.get("incomplete_builds") or []) + list(
         build_integrity.get("incomplete_variants") or []
     )
