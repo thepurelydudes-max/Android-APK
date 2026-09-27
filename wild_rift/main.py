@@ -275,77 +275,16 @@ class MobileAssistant:
         )
 
     def build_item_names(self, build: dict | None, limit: int = 6) -> list[str]:
-        """Return the same six-slot build strip concept used by the desktop UI.
+        """Display only the engine's source-approved ordered build.
 
-        The engine order is authoritative. If an incomplete source only returns
-        fewer than six ordered entries, fill remaining slots exclusively from the
-        same champion's finished-item pool; never invent unrelated items.
+        The UI must never invent/fill missing slots: all six items must come from
+        the champion+role builder itself.
         """
         if not build:
             return []
-        champ = build.get("champion") or {}
-        candidates: list[str] = []
-        for source in (build.get("ordered") or [], build.get("situational") or [], build.get("base") or []):
-            for name in source:
-                if name and name not in candidates:
-                    candidates.append(name)
-        cid = str(champ.get("id") or "")
-        for row in self.snapshot.get("item_pools", {}).get(cid, []):
-            name = str(row.get("item_name") or "")
-            item = self.snapshot.get("items", {}).get(name) or {}
-            if str(item.get("tier") or "").casefold() != "upgraded":
-                continue
-            if name and name not in candidates:
-                candidates.append(name)
-
-        # Some public build-trend rows contain only three core items. The desktop
-        # layout is six-slot, so complete an undersized source with conservative
-        # full-tier staples that match this champion's archetype. The adaptive
-        # engine's ordered items always stay first and therefore keep priority.
-        arch = engine.archetype(champ)
-        if len(candidates) < limit:
-            if "tank" in arch or "support" in arch:
-                fallback = [
-                    "Amaranth's Twinguard", "Force of Nature", "Randuin's Omen",
-                    "Thornmail", "Frozen Heart", "Spirit Visage", "Warmog's Armor",
-                    "Locket of the Iron Solari", "Knight's Vow", "Zeke's Convergence",
-                ]
-            elif "marksman" in arch:
-                fallback = [
-                    "Blade of the Ruined King", "Infinity Edge", "Bloodthirster",
-                    "Mortal Reminder", "Phantom Dancer", "Terminus",
-                    "Wit's End", "Guardian Angel", "Maw of Malmortius",
-                ]
-            elif "mage" in arch or "magic" in arch:
-                fallback = [
-                    "Rabadon's Deathcap", "Infinity Orb", "Morellonomicon",
-                    "Liandry's Torment", "Riftmaker", "Void Staff",
-                    "Horizon Focus", "Banshee's Veil", "Zhonya's Hourglass",
-                ]
-            elif "assassin" in arch:
-                fallback = [
-                    "Youmuu's Ghostblade", "Duskblade of Draktharr", "Edge of Night",
-                    "Serylda's Grudge", "Serpent's Fang", "Guardian Angel",
-                    "Maw of Malmortius", "The Collector",
-                ]
-            else:
-                fallback = [
-                    "Black Cleaver", "Trinity Force", "Sterak's Gage",
-                    "Death's Dance", "Sundered Sky", "Guardian Angel",
-                    "Maw of Malmortius", "Blade of the Ruined King",
-                ]
-            for name in fallback:
-                item = self.snapshot.get("items", {}).get(name) or {}
-                if str(item.get("tier") or "").casefold() != "upgraded":
-                    continue
-                if name not in candidates:
-                    candidates.append(name)
-                if len(candidates) >= limit + 4:
-                    break
-
         result: list[str] = []
         has_boots = False
-        for name in candidates:
+        for name in build.get("ordered") or []:
             item = self.snapshot.get("items", {}).get(name) or {}
             if str(item.get("tier") or "").casefold() != "upgraded":
                 continue
@@ -354,7 +293,8 @@ class MobileAssistant:
                 continue
             if is_boots:
                 has_boots = True
-            result.append(name)
+            if name not in result:
+                result.append(name)
             if len(result) >= limit:
                 break
         return result
@@ -1087,9 +1027,9 @@ class MobileAssistant:
         self.status_text.value = message
         self.status_text.color = P["cyan_soft"]
 
-        # updater.py has 7 top-level stages in the current data pipeline.
-        total_stages = 7
-        stage_match = re.match(r"\s*([1-7])/7\b", message)
+        # updater.py has 8 top-level stages in the current data pipeline.
+        total_stages = 8
+        stage_match = re.match(r"\s*([1-8])/8\b", message)
         if stage_match:
             self._update_stage = int(stage_match.group(1))
             if self.update_progress:
@@ -1099,7 +1039,7 @@ class MobileAssistant:
                 )
             return
 
-        # Stage 7 emits detailed image-cache counters. Split the final 1/7
+        # Stage 8 emits detailed image-cache counters. Split the final 1/8
         # between champion portraits and item icons so progress stays animated.
         count_match = re.search(r"(\d+)\s*/\s*(\d+)", message)
         if count_match and self._update_stage == total_stages and self.update_progress:
@@ -1110,7 +1050,7 @@ class MobileAssistant:
             stage_fraction = (0.5 + 0.5 * fraction) if is_items else (0.5 * fraction)
             self.update_progress.value = max(
                 0.0,
-                min(1.0, (6.0 + stage_fraction) / float(total_stages)),
+                min(1.0, (7.0 + stage_fraction) / float(total_stages)),
             )
 
     async def update_data(self, _e=None) -> None:
