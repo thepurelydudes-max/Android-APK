@@ -90,7 +90,7 @@ def _patch_key(value: str) -> tuple[int, ...]:
 
 def _seed_db_quality(
     path: Path,
-) -> tuple[tuple[int, ...], int, int, int, int, int]:
+) -> tuple[tuple[int, ...], int, int, int, int, int, int, int]:
     """Return WRC data richness used when an APK replaces an older seed.
 
     Role builds/variants are included deliberately. A same-patch APK may contain
@@ -98,7 +98,7 @@ def _seed_db_quality(
     runtime DB whose matchup matrix is fine but whose build tables are empty.
     """
     if not path.is_file():
-        return (0,), 0, 0, 0, 0, 0
+        return (0,), 0, 0, 0, 0, 0, 0, 0, 0, 0
     try:
         with sqlite3.connect(path) as con:
             patch_row = con.execute(
@@ -126,13 +126,24 @@ def _seed_db_quality(
                 "SELECT COUNT(*) FROM role_build_variants "
                 "WHERE source='wildriftcore.com'"
             )
+            complete_variant_rules = count(
+                "SELECT COUNT(*) FROM role_build_variants "
+                "WHERE source='wildriftcore.com' "
+                "AND length(trim(trigger_text))>0 "
+                "AND example_enemies_json NOT IN ('','[]')"
+            )
+            opponent_adaptations = count(
+                "SELECT COUNT(*) FROM role_build_opponent_adaptations "
+                "WHERE source='wildriftcore.com'"
+            )
             build_pages = count(
                 "SELECT COUNT(*) FROM build_page_cache "
                 "WHERE source='wildriftcore.com'"
             )
             return (
                 patch, matchups, matchup_pages,
-                role_builds, role_variants, build_pages,
+                role_builds, role_variants, complete_variant_rules,
+                opponent_adaptations, build_pages,
             )
     except sqlite3.Error:
         return (0,), 0, 0, 0, 0, 0
@@ -155,11 +166,13 @@ def _copy_seed_if_better(seed_db: Path, database: Path) -> None:
     runtime_quality = _seed_db_quality(database)
     (
         seed_patch, seed_matchups, seed_matchup_pages,
-        seed_role_builds, seed_role_variants, seed_build_pages,
+        seed_role_builds, seed_role_variants, seed_complete_variant_rules,
+        seed_opponent_adaptations, seed_build_pages,
     ) = seed_quality
     (
         run_patch, run_matchups, run_matchup_pages,
-        run_role_builds, run_role_variants, run_build_pages,
+        run_role_builds, run_role_variants, run_complete_variant_rules,
+        run_opponent_adaptations, run_build_pages,
     ) = runtime_quality
 
     should_upgrade = False
@@ -170,10 +183,18 @@ def _copy_seed_if_better(seed_db: Path, database: Path) -> None:
         # Prefer the validated bundled seed whenever it has richer WRC build
         # coverage. If build coverage is equal, fall back to matchup richness.
         seed_build_quality = (
-            seed_role_builds, seed_role_variants, seed_build_pages
+            seed_role_builds,
+            seed_role_variants,
+            seed_complete_variant_rules,
+            seed_opponent_adaptations,
+            seed_build_pages,
         )
         run_build_quality = (
-            run_role_builds, run_role_variants, run_build_pages
+            run_role_builds,
+            run_role_variants,
+            run_complete_variant_rules,
+            run_opponent_adaptations,
+            run_build_pages,
         )
         if seed_build_quality > run_build_quality:
             should_upgrade = True
