@@ -68,6 +68,10 @@ TEXT = {
         "stats": "Характеристики",
         "effect": "Эффект",
         "update": "Обновить данные",
+        "copy_log": "Скопировать лог",
+        "log_copied": "Лог обновления скопирован в буфер обмена.",
+        "log_missing": "Лога предупреждений пока нет.",
+        "log_copy_error": "Не удалось скопировать лог",
         "updating": "Обновляю локальную базу из интернет-источников…",
         "updated": "Данные обновлены.",
         "update_warnings": "предупреждений обновления",
@@ -102,6 +106,10 @@ TEXT = {
         "stats": "Stats",
         "effect": "Effect",
         "update": "Update data",
+        "copy_log": "Copy log",
+        "log_copied": "Update log copied to clipboard.",
+        "log_missing": "There is no warning log yet.",
+        "log_copy_error": "Could not copy log",
         "updating": "Updating the local database from internet sources…",
         "updated": "Data updated.",
         "update_warnings": "update warnings",
@@ -162,6 +170,8 @@ class MobileAssistant:
         self.pick_title_text: ft.Text | None = None
         self.build_title_text: ft.Text | None = None
         self.footer_offline_text: ft.Text | None = None
+        self.copy_log_button: ft.OutlinedButton | None = None
+        self.clipboard = ft.Clipboard()
 
         self.status_text = ft.Text("")
         self.pick_column = ft.Column(spacing=7)
@@ -548,6 +558,11 @@ class MobileAssistant:
 
     def footer(self) -> ft.Control:
         self.update_button = ft.FilledButton(content=self.t("update"), icon=ft.Icons.REFRESH, on_click=self.update_data)
+        self.copy_log_button = ft.OutlinedButton(
+            content=self.t("copy_log"),
+            icon=ft.Icons.CONTENT_COPY,
+            on_click=self.copy_update_log,
+        )
         self.footer_offline_text = ft.Text(self.t("offline"), size=10, color="#758997")
         self.update_progress = ft.ProgressBar(
             value=0,
@@ -561,13 +576,40 @@ class MobileAssistant:
             content=ft.Column(
                 spacing=8,
                 controls=[
-                    ft.Row(controls=[self.update_button]),
+                    ft.Row(
+                        spacing=8,
+                        wrap=True,
+                        controls=[self.update_button, self.copy_log_button],
+                    ),
                     self.update_progress,
                     self.status_text,
                     self.footer_offline_text,
                 ],
             ),
         )
+
+    async def copy_update_log(self, _e=None) -> None:
+        """Copy the last update warning log directly to the Android clipboard."""
+        log_path = RUNTIME_DIR / "logs" / "update-warnings.log"
+        try:
+            if not log_path.is_file():
+                self.status_text.value = self.t("log_missing")
+                self.status_text.color = P["muted"]
+                self.page.update()
+                return
+            value = log_path.read_text(encoding="utf-8").strip()
+            if not value:
+                self.status_text.value = self.t("log_missing")
+                self.status_text.color = P["muted"]
+                self.page.update()
+                return
+            await self.clipboard.set(value)
+            self.status_text.value = self.t("log_copied")
+            self.status_text.color = P["success"]
+        except Exception as exc:
+            self.status_text.value = f"{self.t('log_copy_error')}: {exc}"
+            self.status_text.color = P["danger"]
+        self.page.update()
 
     def rebuild_page(self) -> None:
         self.page.clean()
@@ -994,6 +1036,8 @@ class MobileAssistant:
             self.build_title_text.value = self.t("build")
         if self.update_button is not None:
             self.update_button.content = self.t("update")
+        if self.copy_log_button is not None:
+            self.copy_log_button.content = self.t("copy_log")
         if self.footer_offline_text is not None:
             self.footer_offline_text.value = self.t("offline")
 
@@ -1105,6 +1149,14 @@ class MobileAssistant:
             msg = self.t("updated")
             if summary.get("patch"):
                 msg += f" {self.t('patch')}: {summary['patch']}."
+            if not errors:
+                # Do not leave a stale warning log from an older update: the
+                # copy button must always represent the most recent run.
+                try:
+                    (RUNTIME_DIR / "logs" / "update-warnings.log").unlink(missing_ok=True)
+                except Exception:
+                    pass
+
             if errors:
                 # A bare number such as "5 warnings" is not actionable. Show
                 # the affected update subsystems directly in the status line;
