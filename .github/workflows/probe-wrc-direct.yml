@@ -34,3 +34,23 @@ jobs:
             grep -o -m1 -E 'Best Malphite build[^<]{0,300}' /tmp/wrc-body.html || true
             echo
           done
+
+      - name: Probe with real headless Chrome
+        shell: bash
+        run: |
+          set -u
+          command -v google-chrome || command -v chromium || command -v chromium-browser || true
+          CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          if [[ -z "$CHROME" ]]; then
+            echo "No Chrome/Chromium found"
+            exit 0
+          fi
+          for url in             'https://wildriftcore.com/en/champions/malphite/builds/'             'https://wildriftcore.com/en/builds/'; do
+            echo "=== CHROME $url ==="
+            timeout 45 "$CHROME" --headless=new --no-sandbox --disable-gpu               --disable-dev-shm-usage --virtual-time-budget=15000 --dump-dom "$url"               > /tmp/wrc-chrome.html 2>/tmp/wrc-chrome.err || true
+            echo "bytes=$(wc -c < /tmp/wrc-chrome.html)"
+            grep -o -m1 -E '<title>[^<]+' /tmp/wrc-chrome.html || true
+            grep -o -m1 -E 'Best Malphite build[^<]{0,300}' /tmp/wrc-chrome.html || true
+            grep -o -m1 -E 'Cloudflare|Just a moment' /tmp/wrc-chrome.html || true
+            tail -20 /tmp/wrc-chrome.err || true
+          done
