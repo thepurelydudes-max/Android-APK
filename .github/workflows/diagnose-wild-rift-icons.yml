@@ -1,0 +1,58 @@
+name: Diagnose Wild Rift Item Icons
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".diagnose-icons-trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install diagnostic dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "requests>=2.32.0" "Pillow>=10.4.0" "beautifulsoup4>=4.12.0"
+
+      - name: Run real updater and audit every item icon
+        id: audit
+        continue-on-error: true
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/wrca_icon_audit
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+          ICON_DIAGNOSTIC_OUTPUT: ${{ github.workspace }}/icon_diagnostic
+        run: |
+          cd "$GITHUB_WORKSPACE/wild_rift"
+          python diagnose_item_icons.py
+
+      - name: Show diagnostic report
+        if: always()
+        shell: bash
+        run: |
+          cat "$GITHUB_WORKSPACE/icon_diagnostic/item_icon_diagnostic.txt" || true
+
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wild-Rift-Item-Icon-Diagnostic
+          path: icon_diagnostic/
+          if-no-files-found: warn
+          retention-days: 7
