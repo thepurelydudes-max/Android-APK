@@ -835,12 +835,13 @@ def parse_wildriftcore_matchups(
 
     for idx, (owner_id, profile_url) in enumerate(profiles, 1):
         cached_rows = cached_pages.get(owner_id) or []
-        if cached_rows:
+        cached_trait_rows = cached_traits.get(owner_id) or []
+        if cached_rows and cached_trait_rows:
             successful_pages += 1
             reused_pages += 1
             for champion_id, enemy_id, role, score in cached_rows:
                 direct[(champion_id, enemy_id, role)] = score
-            add_trait_observations(cached_traits.get(owner_id) or [])
+            add_trait_observations(cached_trait_rows)
             if progress:
                 progress(
                     f"WildRiftCore matchups: {idx}/{total} — {owner_id} "
@@ -868,27 +869,39 @@ def parse_wildriftcore_matchups(
                     net._wildriftcore_reader_only = True
                     html = _jina_reader_get(net, counters_url, progress).text
                     transport = "reader"
-            page_rows = _parse_wildriftcore_counter_page(html, owner_id, resolve)
+            parsed_rows = _parse_wildriftcore_counter_page(
+                html, owner_id, resolve
+            )
             page_traits = _parse_wildriftcore_counter_traits(html, resolve)
+            # WRC occasionally changes the SEO/counter layout independently of
+            # its Edge board. If an older same-patch Edge page is already cached,
+            # keep those proven scores while enriching it with newly parsed
+            # semantic labels instead of deleting working matchup data.
+            page_rows = parsed_rows or cached_rows
             if page_rows:
                 successful_pages += 1
                 downloaded_pages += 1
                 for champion_id, enemy_id, role, score in page_rows:
                     direct[(champion_id, enemy_id, role)] = score
-                add_trait_observations(page_traits)
+                add_trait_observations(page_traits or cached_trait_rows)
                 # Save immediately, not at the end of the 140-page run.
                 if _db is not None:
                     try:
                         _db.upsert_matchup_page_cache(
                             "wildriftcore.com", cache_patch, owner_id, page_rows,
-                            counters_url, traits=page_traits,
+                            counters_url,
+                            traits=(page_traits or cached_trait_rows),
                         )
                         cached_pages[owner_id] = list(page_rows)
-                        cached_traits[owner_id] = list(page_traits)
+                        cached_traits[owner_id] = list(
+                            page_traits or cached_trait_rows
+                        )
                     except Exception:
                         pass
             else:
-                errors.append(f"{owner_id}: на странице не найдены matchup-строки")
+                errors.append(
+                    f"{owner_id}: на странице не найдены matchup-строки"
+                )
         except requests.HTTPError as exc:
             response = getattr(exc, "response", None)
             if response is not None and response.status_code == 429:
