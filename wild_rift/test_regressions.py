@@ -54,6 +54,91 @@ def make_snapshot(
     }
 
 
+class ChampionIdentityRegressionTests(unittest.TestCase):
+    def test_supplement_does_not_duplicate_nunu_and_localizes_norra(self):
+        base = [{
+            "id": "Nunu",
+            "name": "Nunu & Willump",
+            "name_ru": "Нуну и Виллумп",
+            "roles": ["Tank"],
+            "lanes": ["jungle"],
+            "damage_type": "Magic",
+        }]
+        supplement = [
+            {
+                "id": "Nunu And Willump",
+                "name": "Nunu And Willump",
+                "name_ru": "",
+                "roles": [],
+                "lanes": [],
+                "damage_type": "",
+                "profile_slug": "nunu-and-willump",
+            },
+            {
+                "id": "Norra",
+                "name": "Norra",
+                "name_ru": "",
+                "roles": [],
+                "lanes": [],
+                "damage_type": "",
+                "profile_slug": "norra",
+            },
+        ]
+
+        merged = updater.merge_champion_roster_supplement(base, supplement)
+        self.assertEqual([row["id"] for row in merged], ["Nunu", "Norra"])
+        norra = next(row for row in merged if row["id"] == "Norra")
+        self.assertEqual(norra["name_ru"], "Норра")
+
+    def test_duplicate_champion_identity_migrates_references(self):
+        db.init_db()
+        canonical = "RegressionNunu"
+        alias = "Regression Nunu And Willump"
+        db.upsert_champion(
+            canonical, "Nunu & Willump", ["Tank"], ["jungle"], "Magic",
+            "regression", name_ru="Нуну и Виллумп",
+        )
+        db.upsert_champion(
+            alias, "Nunu And Willump", [], [], "", "regression",
+            icon_url="https://example.invalid/nunu.png",
+        )
+        with db.connect() as con:
+            con.execute(
+                """INSERT OR REPLACE INTO stats(
+                   champion_id,lane,rank_segment,win_rate,pick_rate,ban_rate,date
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                (alias, "jungle", "all", 51.0, 5.0, 2.0, "2026-09-27"),
+            )
+            con.execute(
+                """INSERT OR REPLACE INTO counter_items(
+                   enemy_id,item_name,reason,source
+                   ) VALUES(?,?,?,?)""",
+                (alias, "Thornmail", "regression", "regression"),
+            )
+
+        db.migrate_champion_identities({alias: canonical})
+
+        with db.connect() as con:
+            self.assertIsNone(
+                con.execute("SELECT 1 FROM champions WHERE id=?", (alias,)).fetchone()
+            )
+            self.assertIsNotNone(
+                con.execute(
+                    "SELECT 1 FROM stats WHERE champion_id=? AND lane='jungle'",
+                    (canonical,),
+                ).fetchone()
+            )
+            self.assertIsNotNone(
+                con.execute(
+                    "SELECT 1 FROM counter_items WHERE enemy_id=? AND item_name='Thornmail'",
+                    (canonical,),
+                ).fetchone()
+            )
+            con.execute("DELETE FROM counter_items WHERE enemy_id=?", (canonical,))
+            con.execute("DELETE FROM stats WHERE champion_id=?", (canonical,))
+            con.execute("DELETE FROM champions WHERE id=?", (canonical,))
+
+
 class RecommendationRegressionTests(unittest.TestCase):
     def test_visible_total_score_is_the_primary_pick_order(self):
         champions = [
