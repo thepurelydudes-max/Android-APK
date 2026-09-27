@@ -1,0 +1,21 @@
+Wild Rift Counter Assistant 3.7.6
+====================================
+
+Champion list localization and spacing
+--------------------------------------
+- Added stable Russian display override: Norra -> Норра.
+- Confirmed the 3.7.5 bundled DB contained two Nunu identities:
+  canonical id=Nunu, name=Nunu & Willump, name_ru=Нуну и Виллумп;
+  duplicate id=Nunu And Willump, name_ru empty.
+- WildRiftMeta supplemental roster merge now compares canonical champion aliases,
+  so "Nunu And Willump" is recognized as the existing Nunu rather than added as
+  a second champion.
+- Existing installations are repaired on DB initialization: stale
+  "Nunu And Willump" rows and direct references are migrated into canonical Nunu,
+  so users do not need to press Update to remove the duplicate.
+- The expanded champion dropdown keeps the same framed 28px portrait and row
+  styling, but no longer uses Flet's built-in leading_icon layout. Portrait and
+  name are rendered in one Row with explicit 6px spacing, removing the oversized
+  Android gap without removing any visual element.
+- Added regression tests for Norra localization, Nunu supplement deduplication
+  and duplicate-ID database migration.
