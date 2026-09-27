@@ -486,6 +486,11 @@ BUILD_NEED_TAGS = {
 CORE_SITUATIONAL_TAGS = {
     "anti_heal", "anti_shield", "anti_crit", "anti_attack_speed",
     "anti_magic", "anti_physical", "anti_cc", "anti_burst",
+    # Penetration / anti-tank items are answers to a specific enemy build, not
+    # generic core purchases. Keeping them out of the first-pass core prevents
+    # things such as Void Staff from appearing just because it is present in a
+    # broad Build Trends pool.
+    "anti_tank", "anti_armor", "anti_magic_resist",
 }
 
 
@@ -607,9 +612,15 @@ def _core_category_quotas(champ: dict, pool: list[dict], role_ru: str, snapshot:
                 support_slots = 2 if magic_count >= support_count * 2 else 3
                 add("Support", support_slots)
                 add(offense, 5 - sum(value for _category, value in quotas))
+            elif support_count >= 1:
+                # Even flex mages should keep at least one genuine support item
+                # when the user explicitly selected Support. Champion-wide Build
+                # Trends otherwise let the Mid damage pool completely erase the
+                # selected role and can push pure penetration into the core.
+                add("Support", 1)
+                add(offense, 4)
             else:
                 add(offense, 5)
-                add("Support", 5 - sum(value for _category, value in quotas))
     else:
         if "tank" in roles:
             defense_slots = min(3, int(counts.get("Defense", 0)))
@@ -627,7 +638,60 @@ def _core_category_quotas(champ: dict, pool: list[dict], role_ru: str, snapshot:
 
 
 def _core_item_penalty(item_name: str) -> int:
-    return 1 if tags_for(item_name) & CORE_SITUATIONAL_TAGS else 0
+    tags = tags_for(item_name)
+    # Pure penetration / anti-tank tools are the most situational. Anti-heal,
+    # anti-shield and defensive answers are still situational, but may be valid
+    # earlier when the normal pool is small.
+    if tags & {"anti_tank", "anti_armor", "anti_magic_resist"}:
+        return 2
+    return 1 if tags & CORE_SITUATIONAL_TAGS else 0
+
+
+def _finished_boot_catalog(snapshot: dict | None = None) -> list[str]:
+    if snapshot is not None:
+        rows = list((snapshot.get("items") or {}).values())
+    else:
+        rows = db.item_catalog_rows()
+    out: list[str] = []
+    for row in rows:
+        name = str(row.get("name") or "")
+        category = str(row.get("category") or "")
+        if not name or not is_boot_item(name, category):
+            continue
+        if str(row.get("tier") or "").strip().casefold() != "upgraded":
+            continue
+        out.append(name)
+    return out
+
+
+def _fallback_boot(champ: dict, role_ru: str, snapshot: dict | None = None) -> str:
+    """Return a conservative finished boot when a source pool lost its boot row.
+
+    This is a safety net only. Under normal conditions the champion's own WR
+    Pocket pool decides the boot. The fallback prevents a data-refresh/parser
+    hiccup from silently producing a five-item build.
+    """
+    available = _finished_boot_catalog(snapshot)
+    if not available:
+        return ""
+    have = {norm_item(name): name for name in available}
+    roles = {str(x).casefold() for x in champ.get("roles", [])}
+    preferences: list[str]
+    if role_ru == "Саппорт":
+        preferences = ["Crimson Lucidity", "Chainlaced Crushers", "Armored Advance", "Spellslinger's Shoes"]
+    elif "mage" in roles:
+        preferences = ["Spellslinger's Shoes", "Crimson Lucidity", "Chainlaced Crushers", "Armored Advance"]
+    elif "marksman" in roles:
+        preferences = ["Gunmetal Greaves", "Armorcrusher Boots", "Immortal Boots", "Crimson Lucidity"]
+    elif "tank" in roles or "fighter" in roles:
+        preferences = ["Chainlaced Crushers", "Armored Advance", "Immortal Boots", "Crimson Lucidity"]
+    else:
+        preferences = ["Crimson Lucidity", "Chainlaced Crushers", "Armored Advance", "Spellslinger's Shoes"]
+    for wanted in preferences:
+        hit = have.get(norm_item(wanted))
+        if hit:
+            return hit
+    return available[0]
 
 
 def _core_build(champ: dict, pool: list[dict], role_ru: str, snapshot: dict | None = None) -> list[str]:
@@ -683,10 +747,11 @@ def _core_build(champ: dict, pool: list[dict], role_ru: str, snapshot: dict | No
 
     boots = [row for row in pool if _semantic_pool_category(row, snapshot) == "Boots"]
     boots.sort(key=lambda row: int(row.get("priority") or 999))
-    if boots:
-        boot_name = str(boots[0].get("item_name") or "")
-        if boot_name:
-            picked.append(boot_name)
+    boot_name = str(boots[0].get("item_name") or "") if boots else ""
+    if not boot_name:
+        boot_name = _fallback_boot(champ, role_ru, snapshot)
+    if boot_name and boot_name not in picked:
+        picked.append(boot_name)
 
     return picked
 
@@ -744,11 +809,16 @@ def _generic_threat_tags(enemy: dict, snapshot: dict | None = None) -> set[str]:
 def _compatible(item: str, champ: dict, pool: list[dict], role_ru: str, snapshot: dict | None = None) -> bool:
     """Allow situational items only when they still fit the selected champion."""
     pool_names = {norm_item(str(row.get("item_name") or "")) for row in pool}
-    if norm_item(item) in pool_names:
-        return True
-
     category = _item_category(item, snapshot)
     tags = tags_for(item)
+
+    # WR Pocket pools are champion-wide, not role-specific. A flex mage's Mid
+    # damage pool must not leak pure penetration purchases into a Support build.
+    if role_ru == "Саппорт" and category in {"Physical", "Magic"} and tags & {"anti_tank", "anti_armor", "anti_magic_resist"}:
+        return False
+
+    if norm_item(item) in pool_names:
+        return True
     profile = _build_profile(champ, pool, role_ru, snapshot)
     roles = profile["roles"]
     counts = profile["counts"]
@@ -844,6 +914,28 @@ def order_build_items(base: list[str], situational: list[str], pool: list[dict],
         if len(out) >= 6:
             break
     return out
+
+
+def _ensure_exactly_one_boot(
+    names: list[str], champ: dict, role_ru: str, snapshot: dict | None = None,
+) -> list[str]:
+    """Final invariant: every non-empty six-slot recommendation has one boot."""
+    out = list(dict.fromkeys(names or []))
+    boots = [name for name in out if is_boot_item(name, _item_category(name, snapshot))]
+    if boots:
+        keep = boots[0]
+        out = [name for name in out if not is_boot_item(name, _item_category(name, snapshot)) or name == keep]
+    else:
+        keep = _fallback_boot(champ, role_ru, snapshot)
+        if keep:
+            if len(out) >= 6:
+                # Never evict the first two identity/core items just to restore
+                # a missing data-source boot. Replace the tail instead.
+                replace_at = max(2, len(out) - 1)
+                out[replace_at] = keep
+            else:
+                out.append(keep)
+    return list(dict.fromkeys(out))[:6]
 
 
 def _finished_only(names: list[str], snapshot: dict | None = None) -> list[str]:
@@ -943,6 +1035,7 @@ def recommend_build(
     base = _finished_only(base, snapshot)
     situational = _finished_only(situational, snapshot)
     ordered = _finished_only(order_build_items(base, situational, pool, scores), snapshot)
+    ordered = _ensure_exactly_one_boot(ordered, champ, effective_role, snapshot)
 
     return {
         "champion": champ,
