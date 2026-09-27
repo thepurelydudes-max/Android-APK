@@ -184,6 +184,14 @@ def _role_evidence(champ: dict, role_ru: str, snapshot: dict | None = None) -> f
     allowed = ROLE_TO_LANES.get(role_ru, set())
     lanes = {str(x).casefold() for x in champ.get("lanes", [])}
     lane_known = bool(lanes & allowed)
+
+    # Champion lane metadata is the legality gate for draft recommendations.
+    # Stats/tier sources are ranking evidence only. They may contain niche/off-meta
+    # samples (for example Malphite Mid at ~1% pick rate) or parser noise and must
+    # never invent a new selectable role for a champion whose lane list is known.
+    if lanes and not lane_known:
+        return None
+
     stat_lane = ROLE_TO_STAT.get(role_ru, "")
     st = _stat(champ.get("id", ""), stat_lane, "all", snapshot) if stat_lane else None
     tier = _tier(champ.get("id", ""), role_ru, snapshot)
@@ -348,7 +356,12 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             continue
         tier = _tier(cand.get("id", ""), role_ru, snapshot)
         st = _stat(cand.get("id", ""), stat_lane, "all", snapshot) if stat_lane else None
-        if not lane_ok(cand, role_ru) and not st and not tier:
+
+        # The selected role is a hard eligibility filter. Role-specific stats and
+        # tier rows can rank a champion only after the champion is known to belong
+        # to that lane. This prevents niche/off-meta samples and noisy tier rows
+        # from leaking tanks/supports into Mid, ADC, etc.
+        if not lane_ok(cand, role_ru):
             continue
         candidate_rows.append((cand, tier, st))
 
