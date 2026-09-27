@@ -39,3 +39,17 @@ Safety
   champion/item images and recommendation data cannot remain stale.
 - A backup of 3.6.9 was created before these performance changes:
   backup/wild-rift-3.6.9-before-ui-performance
+
+Additional Android tree reduction
+---------------------------------
+- Removed the per-option portrait/control subtree from all five enemy dropdowns.
+  With ~140 champions this removes roughly 700 nested avatar/image controls from
+  the permanently mounted UI tree. The selected champion portrait beside each
+  dropdown remains unchanged.
+- Role-tab changes now use targeted control.update() calls for the five role
+  buttons plus the pick/build columns instead of page.update(). Flutter no longer
+  needs to traverse/diff every dropdown option when only the selected role and
+  recommendations changed.
+- Selecting a recommended champion likewise updates only the two affected cards
+  and the build pane whenever those controls are mounted.
+
