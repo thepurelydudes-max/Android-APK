@@ -892,6 +892,44 @@ def parse_wildriftcore_build_page(
             ):
                 current_item = canonical_item_name(line)
 
+        # Exact opponent -> item adaptations published for this role are a
+        # stronger source signal than broad inferred enemy tags.
+        opponent_start = -1
+        for i, value in enumerate(segment):
+            if value.casefold().startswith("adaptations by opponent"):
+                opponent_start = i + 1
+                break
+        if opponent_start >= 0:
+            role_items = list(known_by_length)
+            role_items.extend(
+                row["item"] for row in situational
+                if row.get("role") == role and row.get("item") not in role_items
+            )
+            role_items = sorted(set(role_items), key=len, reverse=True)
+            opp_priority = 100
+            for raw in segment[opponent_start:]:
+                line = clean(raw)
+                if not line or "›" not in line:
+                    continue
+                enemy_name, right = [clean(x) for x in line.split("›", 1)]
+                if not enemy_name or not right:
+                    continue
+                chosen = ""
+                reason = ""
+                for candidate in role_items:
+                    if right.casefold().startswith(candidate.casefold()):
+                        chosen = candidate
+                        reason = clean(right[len(candidate):])
+                        break
+                if not chosen:
+                    continue
+                situational.append({
+                    "role": role, "item": chosen,
+                    "trigger": f"Opponent: {enemy_name}" + (f"; {reason}" if reason else ""),
+                    "priority": opp_priority,
+                })
+                opp_priority += 1
+
     # Historical "Boots & enchant" is used only to discover champion-approved
     # alternatives.  It never creates a boot that is not already on this page.
     historical_boots: list[tuple[str, str]] = []
@@ -935,13 +973,23 @@ def parse_wildriftcore_build_page(
 
     # Deduplicate while preserving source order.
     dedup_sit: list[dict] = []
-    seen_sit: set[tuple[str, str]] = set()
+    sit_index: dict[tuple[str, str], dict] = {}
     for row in situational:
         key = (row["role"], row["item"])
-        if key in seen_sit:
+        existing = sit_index.get(key)
+        if existing is None:
+            copied = dict(row)
+            sit_index[key] = copied
+            dedup_sit.append(copied)
             continue
-        seen_sit.add(key)
-        dedup_sit.append(row)
+        trigger = clean(str(row.get("trigger") or ""))
+        old_trigger = clean(str(existing.get("trigger") or ""))
+        if trigger and trigger not in old_trigger:
+            existing["trigger"] = old_trigger + (" || " if old_trigger else "") + trigger
+        existing["priority"] = min(
+            int(existing.get("priority") or 999),
+            int(row.get("priority") or 999),
+        )
 
     dedup_boots: list[dict] = []
     seen_boots: set[tuple[str, str]] = set()
