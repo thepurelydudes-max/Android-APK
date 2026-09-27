@@ -1013,6 +1013,7 @@ def migrate_item_aliases(aliases: dict[str, str]) -> None:
                 ("counter_items", "enemy_id,item_name,reason,source"),
                 ("role_build_situational", "champion_id,role,item_name,trigger_text,priority,source"),
                 ("role_build_boots", "champion_id,role,item_name,trigger_text,priority,source"),
+                ("role_build_opponent_adaptations", "champion_id,role,enemy_name,enemy_name_norm,item_name,reason,priority,source"),
             ):
                 rows = con.execute(
                     f"SELECT {columns} FROM {table} WHERE item_name=?", (alias,)
