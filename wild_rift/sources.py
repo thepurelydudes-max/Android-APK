@@ -43,7 +43,7 @@ WR_COUNTER_CHAMPS = "https://wildriftcounter.com/champions/"
 WR_CORE_CHAMPS = "https://wildriftcore.com/en/champions/"
 WR_CORE_BUILDS = "https://wildriftcore.com/en/builds/"
 JINA_READER_PREFIX = "https://r.jina.ai/"
-WRC_BUILD_SCHEMA_VERSION = "3"
+WRC_BUILD_SCHEMA_VERSION = "4"
 WR_CORE_TIERLISTS = {
     "Барон": "https://wildriftcore.com/en/tierlist/baron-lane/",
     "Лес": "https://wildriftcore.com/en/tierlist/jungle/",
@@ -1774,19 +1774,21 @@ def fetch_wildriftcore_role_builds(
         if payload and str(payload.get("schema_version") or "") != WRC_BUILD_SCHEMA_VERSION:
             payload = None
         if payload:
-            # Old/incomplete cache rows are never allowed to masquerade as a
-            # full build page after the variant-aware schema migration.
-            build_roles = {str(row.get("role") or "") for row in payload.get("builds", [])}
-            variant_counts = {
-                role: sum(
-                    1 for row in payload.get("variants", [])
-                    if str(row.get("role") or "") == role
-                )
-                for role in build_roles
-            }
+            # A page is usable when its authoritative Standard role builds are
+            # complete. WildRiftCore's public reader exposes full variant item
+            # lists for some champions (for example Malphite), while other
+            # pages expose only variant names/triggers (for example Aatrox).
+            # Missing optional variants must never invalidate a perfectly good
+            # 5-item + boot Standard build.
+            cached_builds = list(payload.get("builds", []) or [])
             if (
-                not build_roles
-                or any(variant_counts.get(role, 0) < 3 for role in build_roles)
+                not cached_builds
+                or any(
+                    not str(row.get("role") or "").strip()
+                    or len([x for x in (row.get("items") or []) if str(x).strip()]) != 5
+                    or not str(row.get("boot") or "").strip()
+                    for row in cached_builds
+                )
             ):
                 payload = None
         if payload:
@@ -1801,47 +1803,37 @@ def fetch_wildriftcore_role_builds(
                 page_text, transport = _wildriftcore_build_text(net, build_url, progress)
                 payload = parse_wildriftcore_build_page(page_text, champion_id, known_items)
 
-                # Complete variants are part of the contract now. Direct HTML
-                # can differ by CDN template, while the reader has a stable
-                # Markdown representation of all Standard/Vs AD/Vs AP blocks.
-                build_roles = {str(row.get("role") or "") for row in payload.get("builds", [])}
-                variant_counts = {
-                    role: sum(
-                        1 for row in payload.get("variants", [])
-                        if str(row.get("role") or "") == role
+                # Direct HTML templates may omit source sections that are
+                # present in the public Reader representation. If the Standard
+                # build itself is incomplete, retry the exact source page
+                # through Reader. Optional variants are enrichment only.
+                def _complete_standard_builds(value: dict) -> bool:
+                    rows = list(value.get("builds", []) or [])
+                    return bool(rows) and all(
+                        str(row.get("role") or "").strip()
+                        and len([x for x in (row.get("items") or []) if str(x).strip()]) == 5
+                        and str(row.get("boot") or "").strip()
+                        for row in rows
                     )
-                    for role in build_roles
-                }
-                if transport != "reader" and (
-                    not build_roles
-                    or any(variant_counts.get(role, 0) < 3 for role in build_roles)
-                ):
+
+                if transport != "reader" and not _complete_standard_builds(payload):
                     reader_response = _jina_reader_get(net, build_url, progress)
                     payload = parse_wildriftcore_build_page(
                         reader_response.text, champion_id, known_items
                     )
                     transport = "reader"
 
-                if not payload.get("builds"):
-                    raise RuntimeError("не найдена роль-специфичная сборка")
-                build_roles = {str(row.get("role") or "") for row in payload.get("builds", [])}
-                variant_counts = {
-                    role: sum(
-                        1 for row in payload.get("variants", [])
-                        if str(row.get("role") or "") == role
+                if not _complete_standard_builds(payload):
+                    details = []
+                    for row in list(payload.get("builds", []) or []):
+                        role = str(row.get("role") or "?")
+                        amount = len([x for x in (row.get("items") or []) if str(x).strip()])
+                        boot = bool(str(row.get("boot") or "").strip())
+                        details.append(f"{role}:{amount}/5,boot={'yes' if boot else 'no'}")
+                    raise RuntimeError(
+                        "неполная стандартная роль-сборка"
+                        + (f" ({'; '.join(details)})" if details else "")
                     )
-                    for role in build_roles
-                }
-                incomplete_variant_roles = sorted(
-                    role for role in build_roles
-                    if variant_counts.get(role, 0) < 3
-                )
-                if incomplete_variant_roles:
-                    detail = ", ".join(
-                        f"{role}={variant_counts.get(role, 0)}/3"
-                        for role in incomplete_variant_roles
-                    )
-                    raise RuntimeError("неполные варианты для ролей: " + detail)
 
                 payload["schema_version"] = WRC_BUILD_SCHEMA_VERSION
                 payload["_source_url"] = build_url
