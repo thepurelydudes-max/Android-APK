@@ -1200,12 +1200,19 @@ def _select_role_variant(
         # enemy-only input. Mixed rules still use their observable enemy clause,
         # e.g. "2+ dive threats 2+ allied carries to protect".
         pure_allied_rule = (
-            "allied" in trigger_folded
-            and not any(token in trigger_folded for token in (
-                "dive threat", "enemy tank", "poke champion",
-                "hard engage", "crowd-control", "crowd control",
-                "mostly physical", "mostly magic",
-            ))
+            "allied engages" in trigger_folded
+            or (
+                "allied carries" in trigger_folded
+                and "dive threat" not in trigger_folded
+            )
+            or (
+                "allied" in trigger_folded
+                and not any(token in trigger_folded for token in (
+                    "dive threat", "poke champion",
+                    "hard engage", "crowd-control", "crowd control",
+                    "mostly physical", "mostly magic",
+                ))
+            )
         )
         if pure_allied_rule:
             continue
