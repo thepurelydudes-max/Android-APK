@@ -2576,21 +2576,35 @@ def _public_item_asset_slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
 
 
+KNOWN_WRC_ITEM_ICON_URLS = {
+    # WildRiftCore's current recommended-build label is "Mercury Boots", while
+    # its image asset and historical/situational label are Mercury's Treads.
+    # The asset lives outside the normal items-cn directory, so a slug-derived
+    # URL alone can never find it.
+    "Mercury's Treads": "https://wildriftcore.com/assets/images/newItems/mercurys_treads.webp",
+}
+
+
 def trusted_item_icon_urls(name: str) -> list[str]:
     """Cheap name-addressed WR icon candidates.
 
-    These are tried before any HTML page lookup. The third source is especially
-    important for patch 7.3 additions: WildRiftCore currently serves several of
-    them from /assets/images/items-cn/<item-slug>.webp.
+    Known source-native exceptions come first, then predictable mirrors. Exact
+    page-derived URLs are added later only when these candidates fail.
     """
-    slug = _public_item_asset_slug(name)
+    canonical = canonical_item_name(name)
+    slug = _public_item_asset_slug(canonical)
     if not slug:
         return []
-    return [
+    urls = []
+    special = KNOWN_WRC_ITEM_ICON_URLS.get(canonical)
+    if special:
+        urls.append(special)
+    urls.extend([
         f"https://www.wildriftmeta.com/assets/item/icon/item-{slug}-icon.png",
         f"https://assets.riftgg.app/items/{slug}.webp",
         f"https://wildriftcore.com/assets/images/items-cn/{slug}.webp",
-    ]
+    ])
+    return list(dict.fromkeys(urls))
 
 
 def _usable_item_icon_url(value: str) -> bool:
@@ -2601,6 +2615,26 @@ def _usable_item_icon_url(value: str) -> bool:
     if "placeholder" in folded or folded.endswith(".svg"):
         return False
     return any(folded.split("?", 1)[0].endswith(ext) for ext in (".png", ".webp", ".jpg", ".jpeg"))
+
+
+def is_trusted_item_icon_url(value: str) -> bool:
+    """Allow cached/page-derived item art only from known WR asset locations."""
+    text = str(value or "").strip()
+    if not _usable_item_icon_url(text):
+        return False
+    parsed = urlparse(text)
+    host = (parsed.hostname or "").casefold()
+    path = (parsed.path or "").casefold()
+
+    if host == "game.gtimg.cn" and "/equipicons/" in path:
+        return True
+    if host in {"wildriftcore.com", "www.wildriftcore.com"} and "/assets/images/" in path:
+        return True
+    if host in {"wildriftmeta.com", "www.wildriftmeta.com"} and "/assets/" in path:
+        return True
+    if host == "assets.riftgg.app":
+        return True
+    return False
 
 
 def fetch_verified_item_icon_urls(
