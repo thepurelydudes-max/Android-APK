@@ -1397,6 +1397,7 @@ class MobileAssistant:
                     ("WildRiftCounter items", "counter items"),
                     ("Champion media cache", "champion images"),
                     ("Item media cache", "item images"),
+                    ("Item icon audit", "item icons"),
                 )
                 for value in errors:
                     first_line = str(value or "").splitlines()[0].strip()
