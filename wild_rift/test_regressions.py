@@ -300,6 +300,34 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
             )
         )
 
+    def test_mercury_treads_uses_real_wrc_boot_asset(self):
+        urls = sources.trusted_item_icon_urls("Mercury Boots")
+        self.assertEqual(
+            urls[0],
+            "https://wildriftcore.com/assets/images/newItems/mercurys_treads.webp",
+        )
+        self.assertEqual(
+            sources.canonical_item_name("Mercury Boots"),
+            "Mercury's Treads",
+        )
+
+    def test_item_icon_source_trust_accepts_real_wr_assets_not_wrpocket_cards(self):
+        self.assertTrue(sources.is_trusted_item_icon_url(
+            "https://game.gtimg.cn/images/lgamem/act/lrlib/img/EquipIcons/lol_bxzx.png"
+        ))
+        self.assertTrue(sources.is_trusted_item_icon_url(
+            "https://wildriftcore.com/assets/images/items-cn/rapid-firecannon.webp"
+        ))
+        self.assertTrue(sources.is_trusted_item_icon_url(
+            "https://wildriftcore.com/assets/images/newItems/mercurys_treads.webp"
+        ))
+        self.assertFalse(sources.is_trusted_item_icon_url(
+            "https://wrpocket.app/assets/img/items/lol_fjdp.webp"
+        ))
+        self.assertFalse(sources.is_trusted_item_icon_url(
+            "https://wildriftcore.com/assets/images/placeholders/item.svg"
+        ))
+
     def test_current_patch_boot_names_keep_their_identity(self):
         self.assertEqual(
             sources.canonical_completed_item_name("Mercury's Treads"),
@@ -510,6 +538,52 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
         rows = sources.verify_wrpocket_item_icons(FakeNet(), [record])
         self.assertFalse(rows[0].get("_icon_verified"))
         self.assertEqual(rows[0].get("icon_url"), "")
+
+    def test_trusted_cached_item_survives_failed_revalidation(self):
+        from pathlib import Path
+        from PIL import Image
+        from media_cache import ITEM_DIR, safe_name
+
+        db.init_db()
+        name = "Regression Trusted Cached Item"
+        icon_url = (
+            "https://game.gtimg.cn/images/lgamem/act/lrlib/img/EquipIcons/"
+            "regression_trusted.png"
+        )
+        target = ITEM_DIR / f"{safe_name(name)}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGBA", (8, 8), (255, 255, 255, 255)).save(target, "PNG")
+        portable = updater._portable_path(str(target))
+
+        db.upsert_item(
+            name, "Defense", "regression", icon_url=icon_url,
+            icon_path=portable, tier="Upgraded",
+        )
+        db.delete_media_asset(f"item:{name}")
+
+        class FailingNet:
+            _item_icon_last_request = 0.0
+            def get(self, *_args, **_kwargs):
+                raise RuntimeError("temporary network failure")
+
+        errors = []
+        try:
+            _champions, item_count, item_failures = updater._cache_media(
+                FailingNet(), [], [(name, "Defense", icon_url)], "",
+                lambda _message: None,
+                current_patch="7.3", previous_patch="7.3",
+                errors=errors, force_item_refresh=False,
+            )
+            row = db.get_item(name) or {}
+            self.assertEqual(item_failures, 0)
+            self.assertEqual(item_count, 1)
+            self.assertEqual(row.get("icon_path"), portable)
+            self.assertFalse(any("Item media cache" in value for value in errors))
+        finally:
+            target.unlink(missing_ok=True)
+            with db.connect() as con:
+                con.execute("DELETE FROM media_assets WHERE asset_key=?", (f"item:{name}",))
+                con.execute("DELETE FROM items WHERE name=?", (name,))
 
     def test_cleared_icon_path_does_not_revalidate_leftover_png(self):
         db.init_db()
