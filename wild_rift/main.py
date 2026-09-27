@@ -250,12 +250,17 @@ class MobileAssistant:
         return ft.Container(
             width=size,
             height=size,
-            alignment=ft.Alignment.CENTER,
             bgcolor=P["bg"],
-            content=ft.Icon(
-                ft.Icons.IMAGE_NOT_SUPPORTED_OUTLINED,
-                size=max(14, int(size * 0.46)),
-                color=P["muted"],
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(
+                        ft.Icons.IMAGE_NOT_SUPPORTED_OUTLINED,
+                        size=max(14, int(size * 0.46)),
+                        color=P["muted"],
+                    )
+                ],
             ),
         )
 
@@ -965,7 +970,7 @@ class MobileAssistant:
                         height=38,
                         border_radius=6,
                         clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                        content=ft.Image(src=self.image_src(row), fit=ft.BoxFit.COVER),
+                        content=self.item_image_content(row, 38),
                     ),
                     ft.Column(
                         spacing=3,
