@@ -25,6 +25,7 @@ def make_snapshot(
     item_pools=None,
     counter_items=None,
     role_builds=None,
+    role_variants=None,
     role_situational=None,
     role_boots=None,
 ):
@@ -49,6 +50,7 @@ def make_snapshot(
         "item_pools": item_pools or {},
         "counter_items": counter_items or {},
         "role_builds": role_builds or {},
+        "role_variants": role_variants or {},
         "role_situational": role_situational or {},
         "role_boots": role_boots or {},
     }
@@ -137,6 +139,105 @@ class ChampionIdentityRegressionTests(unittest.TestCase):
             con.execute("DELETE FROM counter_items WHERE enemy_id=?", (canonical,))
             con.execute("DELETE FROM stats WHERE champion_id=?", (canonical,))
             con.execute("DELETE FROM champions WHERE id=?", (canonical,))
+
+
+class WildRiftCoreBuildRegressionTests(unittest.TestCase):
+    def test_reader_markdown_parses_standard_variants_and_situational(self):
+        text = """Title: Malphite Wild Rift Best Build Guide (Patch 7.3)
+
+Markdown Content:
+### Malphite Baron Lane — recommended build
+Best Malphite build (Baron Lane): Randuin's Omen › Thornmail › Sunfire Aegis › Radiant Virtue › Amaranth's Twinguard, boots Plated Steelcaps, keystone Grasp of the Undying.
+
+#### Standard — frontline
+[Randuin's Omen](https://wildriftcore.com/en/items/randuins-omen/)›[Thornmail](https://wildriftcore.com/en/items/thornmail/)›[Sunfire Aegis](https://wildriftcore.com/en/items/sunfire-aegis/)›[Radiant Virtue](https://wildriftcore.com/en/items/radiant-virtue/)›[Amaranth's Twinguard](https://wildriftcore.com/en/items/amaranths-twinguard/)
+When to pick it
+Balanced draft, no strong signal
+
+#### Vs AD comps
+[Randuin's Omen](https://wildriftcore.com/en/items/randuins-omen/)›[Iceborn Gauntlet](https://wildriftcore.com/en/items/iceborn-gauntlet/)›[Amaranth's Twinguard](https://wildriftcore.com/en/items/amaranths-twinguard/)›[Thornmail](https://wildriftcore.com/en/items/thornmail/)›[Unending Despair](https://wildriftcore.com/en/items/unending-despair/)
+When to pick it
+Mostly physical damage
+
+#### Vs AP comps
+[Force of Nature](https://wildriftcore.com/en/items/force-of-nature/)›[Kaenic Rookern](https://wildriftcore.com/en/items/kaenic-rookern/)›[Amaranth's Twinguard](https://wildriftcore.com/en/items/amaranths-twinguard/)›[Randuin's Omen](https://wildriftcore.com/en/items/randuins-omen/)›[Unending Despair](https://wildriftcore.com/en/items/unending-despair/)
+When to pick it
+Mostly magic damage
+
+### Situational adaptations
+**Mantle of the Twelfth Hour**_Against AD burst (assassins)_
+**Kaenic Rookern**_Against AP burst (mages)_
+
+### Adaptations by opponent
+[**Olaf**](https://wildriftcore.com/en/champions/olaf/)›[Mantle of the Twelfth Hour](https://wildriftcore.com/en/items/mantle-of-the-twelfth-hour/)_Physical damage_
+"""
+        known = [
+            "Randuin's Omen", "Thornmail", "Sunfire Aegis",
+            "Radiant Virtue", "Amaranth's Twinguard", "Plated Steelcaps",
+            "Iceborn Gauntlet", "Unending Despair", "Force of Nature",
+            "Kaenic Rookern", "Mantle of the Twelfth Hour",
+        ]
+        payload = sources.parse_wildriftcore_build_page(text, "Malphite", known)
+        self.assertEqual(len(payload["builds"]), 1)
+        self.assertEqual(len(payload["variants"]), 3)
+        ad = next(row for row in payload["variants"] if row["name"] == "Vs AD comps")
+        self.assertEqual(ad["trigger"], "Mostly physical damage")
+        self.assertIn("Iceborn Gauntlet", ad["items"])
+        mantle_rows = [
+            row for row in payload["situational"]
+            if row["item"] == "Mantle of the Twelfth Hour"
+        ]
+        self.assertTrue(mantle_rows)
+        self.assertTrue(any("Olaf" in row["trigger"] for row in mantle_rows))
+
+    def test_variant_selector_prefers_ad_variant_for_physical_team(self):
+        rows = [
+            {
+                "variant_name": "Standard — frontline",
+                "items": ["A", "B", "C", "D", "E"],
+                "trigger_text": "Balanced draft, no strong signal",
+                "priority": 0,
+            },
+            {
+                "variant_name": "Vs AD comps",
+                "items": ["F", "G", "H", "I", "J"],
+                "trigger_text": "Mostly physical damage",
+                "priority": 1,
+            },
+            {
+                "variant_name": "Vs AP comps",
+                "items": ["K", "L", "M", "N", "O"],
+                "trigger_text": "Mostly magic damage",
+                "priority": 2,
+            },
+        ]
+        chosen = engine._select_role_variant(
+            rows,
+            engine.Counter({"anti_physical": 4, "anti_magic": 1}),
+        )
+        self.assertEqual(chosen["variant_name"], "Vs AD comps")
+
+    def test_db_persists_role_build_variants(self):
+        db.init_db()
+        cid = "RegressionVariantChampion"
+        db.upsert_champion(
+            cid, cid, ["Tank"], ["top"], "Magic", "regression"
+        )
+        db.replace_source_role_builds_partial(
+            "wildriftcore.com",
+            [(cid, "Барон", ["Randuin's Omen", "Thornmail", "Sunfire Aegis"], "Plated Steelcaps", "7.3", "https://example.invalid")],
+            [],
+            [],
+            [(cid, "Барон", "Vs AD comps", ["Randuin's Omen", "Thornmail", "Sunfire Aegis"], "Mostly physical damage", 1, "7.3", "https://example.invalid")],
+        )
+        rows = db.get_role_build_variants(cid, "Барон")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["variant_name"], "Vs AD comps")
+        self.assertEqual(rows[0]["items"][0], "Randuin's Omen")
+        with db.connect() as con:
+            con.execute("DELETE FROM role_build_variants WHERE champion_id=?", (cid,))
+            con.execute("DELETE FROM role_builds WHERE champion_id=?", (cid,))
+            con.execute("DELETE FROM champions WHERE id=?", (cid,))
 
 
 class RecommendationRegressionTests(unittest.TestCase):
