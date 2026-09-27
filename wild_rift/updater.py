@@ -644,6 +644,15 @@ def update_all(
         existing_names = {canonical_item_name(name) for name in db.get_item_names()}
         missing_role_items = sorted(name for name in role_item_names if name and name not in existing_names)
         if missing_role_items:
+            # The exact champion+role build page is already sufficient authority
+            # that these names are recommendable role items. Seed them first so
+            # a temporary metadata/icon request failure never deletes a valid
+            # source-approved slot; the request below enriches the record.
+            for name in missing_role_items:
+                db.upsert_item(
+                    name, "", "wildriftcore.com",
+                    name_ru=item_name_ru(name, pc_ru), tier="Upgraded",
+                )
             source_item_rows, source_item_errors = fetch_wildriftcore_item_metadata(
                 net, missing_role_items, emit
             )
