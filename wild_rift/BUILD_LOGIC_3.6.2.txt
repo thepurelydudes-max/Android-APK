@@ -1,0 +1,18 @@
+Wild Rift Counter Assistant 3.6.2
+====================================
+
+Source-driven recommendation architecture:
+- hard selected-role eligibility for champion picks;
+- mirror-role matchup is the primary pick signal;
+- exact champion+role WildRiftCore standard core;
+- exact champion+role situational item whitelist;
+- exact opponent adaptations from the same source outrank broad inferred threats;
+- no global-shop item invention and no UI fallback fillers;
+- champion+role approved boots, mapped from WRC mid-tier names to current
+  completed boot upgrades;
+- current WRC role items missing from WR Pocket are seeded immediately and then
+  enriched from their own WRC item page, so transient icon/metadata failures
+  cannot remove a valid source-approved build slot;
+- 8-stage updater with immediate 0/N media-cache progress, eliminating stale
+  champion names such as Zyra during portrait caching;
+- workflow retries one transient Flet/Android build failure before failing.
