@@ -60,6 +60,8 @@ jobs:
             -o /tmp/malphite-jina.txt
           echo '=== section markers ==='
           grep -n -E 'recommended build|Situational adaptations|Adaptations by opponent|Vs AD|Vs AP|Standard|When to pick|Boots & enchant' /tmp/malphite-jina.txt | head -80 || true
+          echo '=== situational vicinity ==='
+          sed -n '205,238p' /tmp/malphite-jina.txt
           echo '=== recommended build vicinity ==='
           n="$(grep -n -m1 'recommended build' /tmp/malphite-jina.txt | cut -d: -f1 || true)"
           if [[ -n "$n" ]]; then
