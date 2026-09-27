@@ -529,6 +529,7 @@ BUILD_NEED_TAGS = {
     "anti_heal", "anti_shield", "anti_crit", "anti_attack_speed",
     "anti_physical", "anti_magic", "anti_cc", "anti_burst",
     "anti_tank", "anti_armor", "anti_magic_resist", "anti_auto",
+    "anti_mobility", "anti_dive", "anti_duelist",
 }
 CORE_SITUATIONAL_TAGS = {
     "anti_heal", "anti_shield", "anti_crit", "anti_attack_speed",
@@ -847,7 +848,9 @@ def _generic_threat_tags(enemy: dict, snapshot: dict | None = None) -> set[str]:
     if "marksman" in roles:
         tags |= {"anti_crit", "anti_auto"}
     if "assassin" in roles:
-        tags.add("anti_burst")
+        tags |= {"anti_burst", "anti_dive"}
+    if "fighter" in roles and "tank" not in roles:
+        tags.add("anti_duelist")
     if "tank" in roles:
         tags.add("anti_tank")
     return tags
@@ -1024,8 +1027,68 @@ def _variant_tags(name: str, trigger: str) -> set[str]:
     return tags
 
 
+def _variant_example_matches(
+    row: dict,
+    enemy_objs: list[tuple[dict, str]] | None,
+) -> int:
+    if not enemy_objs:
+        return 0
+    wanted = {
+        norm_item(str(value))
+        for value in (row.get("example_enemies") or [])
+        if str(value).strip()
+    }
+    if not wanted:
+        return 0
+    draft = set()
+    for enemy, _role in enemy_objs:
+        draft.add(norm_item(str(enemy.get("id") or "")))
+        draft.add(norm_item(str(enemy.get("name") or "")))
+    return len({value for value in wanted if value and value in draft})
+
+
+def _wrc_example_threat_tags(
+    enemy: dict,
+    snapshot: dict | None = None,
+) -> set[str]:
+    """Learn enemy archetype tags from WRC's own example-draft explanations.
+
+    Example drafts contain neutral fillers too, so only tag an example champion
+    when WRC explicitly names that champion in the accompanying explanation
+    (e.g. "Dive threat: Fiora, Lee Sin" or "Extended duels against Jax, Xin Zhao").
+    """
+    if snapshot is None:
+        return set()
+    enemy_keys = {
+        norm_item(str(enemy.get("id") or "")),
+        norm_item(str(enemy.get("name") or "")),
+    }
+    enemy_keys.discard("")
+    if not enemy_keys:
+        return set()
+
+    tags: set[str] = set()
+    for rows in (snapshot.get("role_variants", {}) or {}).values():
+        for row in rows:
+            example_text = str(row.get("example_text") or "")
+            if not example_text:
+                continue
+            folded = norm_item(example_text)
+            if not any(key and key in folded for key in enemy_keys):
+                continue
+            tags |= _variant_tags(
+                str(row.get("variant_name") or ""),
+                " ".join([
+                    str(row.get("trigger_text") or ""),
+                    example_text,
+                ]),
+            )
+    return tags
+
+
 def _select_role_variant(
     rows: list[dict], threat_counts: Counter,
+    enemy_objs: list[tuple[dict, str]] | None = None,
 ) -> dict | None:
     """Choose one complete WRC variant from the enemy draft.
 
@@ -1046,10 +1109,12 @@ def _select_role_variant(
     for row in rows:
         name = str(row.get("variant_name") or "")
         trigger = str(row.get("trigger_text") or "")
-        tags = _variant_tags(name, trigger)
+        example_text = str(row.get("example_text") or "")
+        tags = _variant_tags(name, f"{trigger} {example_text}")
         if not tags:
             continue
 
+        example_matches = _variant_example_matches(row, enemy_objs)
         score = 0.0
         if "anti_physical" in tags:
             # WRC's "Vs AD comps" is a composition-level override, not "there
@@ -1065,10 +1130,24 @@ def _select_role_variant(
 
         other = tags - {"anti_physical", "anti_magic"}
         if other:
-            matched = sum(int(threat_counts.get(tag, 0)) for tag in other)
-            if matched < 2:
-                continue
-            score += float(matched)
+            counts = [int(threat_counts.get(tag, 0)) for tag in other]
+            trigger_folded = trigger.casefold()
+            if "2+" in trigger_folded or "two or more" in trigger_folded:
+                # WRC rules such as "2+ dive threats 2+ burst champions" are
+                # alternatives. Do not double-count one enemy across two tags.
+                matched = max(counts, default=0)
+                if matched < 2 and example_matches < 2:
+                    continue
+            else:
+                matched = max(counts, default=0)
+                if matched <= 0 and example_matches <= 0:
+                    continue
+            score += float(matched) * 3.0
+
+        # Exact overlap with WRC's illustrative enemy draft is supporting
+        # evidence, not a replacement for the textual rule.
+        if example_matches:
+            score += min(3, example_matches) * 2.0
 
         if score <= 0:
             continue
@@ -1114,6 +1193,10 @@ def _trigger_tags_from_text(value: str) -> set[str]:
         tags.add("anti_cc")
     if any(token in text for token in ("mobility", "mobile", "dash", "dashes")):
         tags.add("anti_mobility")
+    if any(token in text for token in ("dive", "diver", "engage", "all-in", "all in")):
+        tags.add("anti_dive")
+    if any(token in text for token in ("duelist", "duel", "extended fight", "prolonged fight")):
+        tags.add("anti_duelist")
     if "burst" in text or "assassin" in text:
         tags.add("anti_burst")
     if any(token in text for token in ("armor/magic resist", "armor and magic resist", "resist build")):
@@ -1171,6 +1254,7 @@ def _enemy_threat_profile(
     for enemy, enemy_role in enemy_objs:
         tags = set(_direct_need_tags(_counter_items(enemy["id"], snapshot)))
         tags |= _generic_threat_tags(enemy, snapshot)
+        tags |= _wrc_example_threat_tags(enemy, snapshot)
         if enemy_role:
             tags |= _enemy_role_build_threat_tags(enemy, enemy_role, snapshot)
 
@@ -1429,7 +1513,9 @@ def recommend_build(
     # and champion-specific alternatives). Select the whole coherent variant
     # first; only then apply individual situational replacements.
     variant_rows = _role_variant_rows(champ["id"], effective_role, snapshot)
-    selected_variant = _select_role_variant(variant_rows, threat_counts)
+    selected_variant = _select_role_variant(
+        variant_rows, threat_counts, enemy_objs
+    )
     selected_variant_name = ""
     if selected_variant:
         variant_items = _finished_only(
@@ -1578,6 +1664,15 @@ def recommend_build(
         "source_url": str((source_row or {}).get("source_url") or ""),
         "source_missing": source_row is None,
         "selected_variant": selected_variant_name,
+        "selected_variant_trigger": str(
+            (selected_variant or {}).get("trigger_text") or ""
+        ),
+        "selected_variant_example_enemies": list(
+            (selected_variant or {}).get("example_enemies") or []
+        ),
+        "selected_variant_example_text": str(
+            (selected_variant or {}).get("example_text") or ""
+        ),
         "threat_counts": dict(threat_counts),
     }
 
