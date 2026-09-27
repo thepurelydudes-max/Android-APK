@@ -47,6 +47,19 @@ jobs:
           grep -n -E 'recommended build|^#### |Situational adaptations|When to pick it|Best Aatrox build' /tmp/aatrox.txt | head -120 || true
 
           cd "$GITHUB_WORKSPACE/wild_rift"
+          echo "=== AATROX PARSER RESULT ==="
+          python - <<'PY'
+          import json, pathlib
+          import sources
+          p=sources.parse_wildriftcore_build_page(pathlib.Path("/tmp/aatrox.txt").read_text(errors="replace"), "Aatrox", [])
+          print(json.dumps({
+              "builds": p.get("builds"),
+              "variants": p.get("variants"),
+              "situational": p.get("situational"),
+              "boots": p.get("boots"),
+          }, ensure_ascii=False, indent=2))
+          PY
+
           python - <<'PY'
           import pathlib
           import sources
