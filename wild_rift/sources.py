@@ -41,6 +41,9 @@ STATS_API = "https://ry2x.github.io/WildRift-Merged-Stats-Data/heroStats.json"
 WR_COUNTER_HOME = "https://wildriftcounter.com/"
 WR_COUNTER_CHAMPS = "https://wildriftcounter.com/champions/"
 WR_CORE_CHAMPS = "https://wildriftcore.com/en/champions/"
+WR_CORE_BUILDS = "https://wildriftcore.com/en/builds/"
+JINA_READER_PREFIX = "https://r.jina.ai/"
+WRC_BUILD_SCHEMA_VERSION = "2"
 WR_CORE_TIERLISTS = {
     "Барон": "https://wildriftcore.com/en/tierlist/baron-lane/",
     "Лес": "https://wildriftcore.com/en/tierlist/jungle/",
@@ -86,6 +89,11 @@ class Net:
         self._wildriftcore_gap = 1.35
         self._wildriftcounter_last_request = 0.0
         self._wildriftcounter_gap = 0.85
+        # Jina Reader is used only when WildRiftCore's Cloudflare challenge
+        # blocks a normal HTTP client. Its public endpoint currently exposes a
+        # 20 requests/minute limit, so stay safely below it.
+        self._jina_last_request = 0.0
+        self._jina_gap = 3.25
 
     def note_request_error(self, url: str, exc: BaseException) -> None:
         if not is_dns_resolution_error(exc):
@@ -216,6 +224,102 @@ def _wildriftcore_get(
     assert last_response is not None
     last_response.raise_for_status()
     return last_response
+
+
+def _jina_reader_get(
+    net: Net,
+    source_url: str,
+    progress: Callable[[str], None] | None = None,
+) -> requests.Response:
+    """Read a public WildRiftCore page through Jina when Cloudflare blocks HTTP.
+
+    This is a resilience fallback, not the primary source. The original
+    WildRiftCore URL remains the canonical source URL stored in the database.
+    """
+    reader_url = JINA_READER_PREFIX + str(source_url)
+    waits = (4.0, 8.0, 15.0)
+    last_exc: Exception | None = None
+
+    for attempt in range(len(waits) + 1):
+        gap = float(getattr(net, "_jina_gap", 3.25))
+        last = float(getattr(net, "_jina_last_request", 0.0))
+        elapsed = time.monotonic() - last
+        if elapsed < gap:
+            time.sleep(gap - elapsed)
+        try:
+            response = net.s.get(
+                reader_url,
+                timeout=max(net.timeout, 45),
+                headers={"Accept": "text/plain"},
+            )
+            net._jina_last_request = time.monotonic()
+            if response.status_code == 429 and attempt < len(waits):
+                wait = max(_retry_after_seconds(response) or 0.0, waits[attempt])
+                if progress:
+                    progress(
+                        f"WildRiftCore reader: лимит запросов, повтор через "
+                        f"{int(math.ceil(wait))} с…"
+                    )
+                time.sleep(wait)
+                continue
+            if 500 <= response.status_code < 600 and attempt < len(waits):
+                time.sleep(waits[attempt])
+                continue
+            response.raise_for_status()
+            text = response.text or ""
+            if not text.strip():
+                raise RuntimeError("Jina Reader вернул пустую страницу")
+            return response
+        except Exception as exc:
+            last_exc = exc
+            net._jina_last_request = time.monotonic()
+            if attempt >= len(waits):
+                break
+            time.sleep(waits[attempt])
+
+    raise RuntimeError(
+        f"WildRiftCore недоступен напрямую и через reader: {last_exc}"
+    )
+
+
+def _wildriftcore_build_text(
+    net: Net,
+    url: str,
+    progress: Callable[[str], None] | None = None,
+) -> tuple[str, str]:
+    """Return build-page text and transport name (direct|reader).
+
+    WildRiftCore currently presents a Cloudflare managed challenge to GitHub
+    runners and some Android/VPN routes. A normal direct response is always
+    preferred; only an HTTP/network failure falls back to Jina's public reader.
+    """
+    direct_error: Exception | None = None
+    try:
+        response = _wildriftcore_get(net, url, progress, WR_CORE_HTML_HEADERS)
+        text = response.text or ""
+        if (
+            response.status_code == 200
+            and text.strip()
+            and "Just a moment..." not in text
+            and "cf-mitigated" not in text.casefold()
+        ):
+            return text, "direct"
+        direct_error = RuntimeError("Cloudflare challenge")
+    except Exception as exc:
+        direct_error = exc
+
+    if progress:
+        progress(
+            "WildRiftCore: прямой доступ заблокирован, использую резервный reader…"
+        )
+    response = _jina_reader_get(net, url, progress)
+    text = response.text or ""
+    if "Markdown Content:" not in text and "Best " not in text:
+        raise RuntimeError(
+            f"WildRiftCore reader вернул неожиданный документ "
+            f"(direct: {direct_error})"
+        )
+    return text, "reader"
 
 
 def _wildriftcounter_get(
@@ -457,28 +561,48 @@ def _wildriftcore_profile_links(
     resolve: Callable[[str], str | None],
     progress: Callable[[str], None] | None = None,
 ) -> list[tuple[str, str]]:
-    """Discover champion profile URLs from the current WildRiftCore champion index.
+    """Discover every champion build URL exposed by WildRiftCore.
 
-    Discovering links from the index is intentionally preferred over generating slugs:
-    names such as Kha'Zix, K'Santé and Nunu & Willump have site-specific URL forms.
+    Prefer the normal champion index. If Cloudflare blocks it, the public
+    /en/builds/ page is read through Jina and its canonical WildRiftCore links
+    are extracted. This avoids guessing special slugs such as Nunu & Willump.
     """
-    html = _wildriftcore_get(net, WR_CORE_CHAMPS, progress).text
-    soup = BeautifulSoup(html, "html.parser")
     found: dict[str, str] = {}
-    for a in soup.find_all("a", href=True):
-        href = str(a.get("href") or "")
-        m = re.search(r"/en/champions/([^/?#]+)/?$", href)
-        if not m:
-            continue
-        slug = m.group(1)
-        cid = resolve(slug)
-        if not cid:
-            # Fallback for a future harmless URL/name mismatch. Card text may contain a tier
-            # suffix, so try only the leading text up to the first obvious tier token.
-            raw = clean(a.get_text(" ", strip=True))
-            cid = resolve(raw)
+
+    try:
+        html = _wildriftcore_get(net, WR_CORE_CHAMPS, progress, WR_CORE_HTML_HEADERS).text
+        soup = BeautifulSoup(html, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = str(a.get("href") or "")
+            m = re.search(r"/en/champions/([^/?#]+)/?$", href)
+            if not m:
+                continue
+            slug = m.group(1)
+            cid = resolve(slug)
+            if not cid:
+                cid = resolve(clean(a.get_text(" ", strip=True)))
+            if cid:
+                found[cid] = urljoin(WR_CORE_CHAMPS, href).rstrip("/")
+    except Exception:
+        found = {}
+
+    if found:
+        return sorted(found.items(), key=lambda row: row[0].casefold())
+
+    text, _transport = _wildriftcore_build_text(net, WR_CORE_BUILDS, progress)
+    # The reader output keeps the canonical destination URLs from the source.
+    slugs = re.findall(
+        r"https?://(?:www\.)?wildriftcore\.com/en/champions/([^/?#]+)/builds/?",
+        text,
+        flags=re.I,
+    )
+    for slug in dict.fromkeys(slugs):
+        cid = resolve(slug) or resolve(slug.replace("-", " "))
         if cid:
-            found[cid] = urljoin(WR_CORE_CHAMPS, href)
+            found[cid] = f"https://wildriftcore.com/en/champions/{slug}".rstrip("/")
+
+    if not found:
+        raise RuntimeError("Не найдены страницы чемпионов на WildRiftCore")
     return sorted(found.items(), key=lambda row: row[0].casefold())
 
 
