@@ -216,6 +216,107 @@ class RecommendationRegressionTests(unittest.TestCase):
         self.assertIn("— Zyra", joined)
 
 
+class SourceIntegrityRegressionTests(unittest.TestCase):
+    def test_tier_integrity_detects_a_resolved_champion_without_tier_row(self):
+        names = [f"Hero{i}" for i in range(12)]
+        links = "".join(
+            f'<a href="/en/champions/{name.casefold()}">{name}</a>'
+            for name in names
+        )
+        # Hero11 is deliberately placed after the last tier heading with no tier
+        # assignment in a structure the tier parser cannot classify, while the
+        # integrity scanner can still see its champion profile link.
+        html = (
+            '<h2>Every Top champion ranked, S+ to C</h2>'
+            '<h3>S+</h3>'
+            + "".join(
+                f'<a href="/en/champions/{name.casefold()}">S+ {name}</a>'
+                for name in names[:11]
+            )
+            + '<div><a href="/en/champions/hero11">Hero11</a></div>'
+            + '<h2>How do we calculate this tier list?</h2>'
+        )
+        mapping = {name.casefold(): name for name in names}
+        resolve = lambda value: mapping.get(sources.slugish(value))
+        parsed = sources._parse_wildriftcore_tier_page(html, "Барон", resolve)
+        expected_ids, unresolved = sources._wildriftcore_ranked_section_ids(html, resolve)
+        parsed_ids = {row[0] for row in parsed}
+        self.assertFalse(unresolved)
+        self.assertIn("Hero11", expected_ids)
+        self.assertIn("Hero11", expected_ids - parsed_ids)
+
+    def test_exact_item_detail_icon_replaces_catalog_card_icon(self):
+        record = {
+            "name": "Sunfire Aegis",
+            "tier": "Upgraded",
+            "detail_url": "https://wrpocket.app/en/items/sunfire-aegis",
+            "icon_url": "https://example.invalid/wrong.png",
+            "price": 2900,
+            "stats": [],
+            "effect_en": "",
+        }
+        html = (
+            '<html><body>'
+            '<img src="https://game.gtimg.cn/images/lgamem/act/lrlib/img/EquipIcons/lol_rydp.png" alt="サンファイアイージス">'
+            '<h1>Sunfire Aegis</h1>'
+            '<h2>Recipe</h2>'
+            '<img src="https://game.gtimg.cn/images/lgamem/act/lrlib/img/EquipIcons/component.png">'
+            '</body></html>'
+        )
+
+        class Response:
+            text = html
+
+        class FakeNet:
+            def get(self, _url, *args, **kwargs):
+                return Response()
+
+        rows = sources.verify_wrpocket_item_icons(FakeNet(), [record])
+        self.assertTrue(rows[0].get("_icon_verified"))
+        self.assertEqual(
+            rows[0]["icon_url"],
+            "https://game.gtimg.cn/images/lgamem/act/lrlib/img/EquipIcons/lol_rydp.png",
+        )
+
+    def test_unverified_catalog_icon_is_not_allowed_to_overwrite_database(self):
+        record = {
+            "name": "Sunfire Aegis",
+            "tier": "Upgraded",
+            "detail_url": "https://wrpocket.app/en/items/sunfire-aegis",
+            "icon_url": "https://example.invalid/wrong.png",
+            "price": 2900,
+            "stats": [],
+            "effect_en": "",
+        }
+
+        class Response:
+            text = '<html><body><h1>Sunfire Aegis</h1><h2>Recipe</h2></body></html>'
+
+        class FakeNet:
+            def get(self, _url, *args, **kwargs):
+                return Response()
+
+        rows = sources.verify_wrpocket_item_icons(FakeNet(), [record])
+        self.assertFalse(rows[0].get("_icon_verified"))
+        self.assertEqual(rows[0].get("icon_url"), "")
+
+    def test_cleared_icon_path_does_not_revalidate_leftover_png(self):
+        db.init_db()
+        with tempfile.TemporaryDirectory(prefix="wrca-icon-") as folder:
+            target = os.path.join(folder, "item.png")
+            with open(target, "wb") as handle:
+                handle.write(b"old-but-untrusted")
+            seeded = updater._seed_media_record(
+                "item:RegressionOnly",
+                "https://game.gtimg.cn/new-icon.png",
+                {"icon_url": "https://game.gtimg.cn/new-icon.png", "icon_path": ""},
+                __import__("pathlib").Path(target),
+                "7.3",
+                "7.3",
+            )
+            self.assertIsNone(seeded)
+
+
 class BundledDatabaseSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
