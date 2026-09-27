@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from collections import Counter
 
 # Keep regression tests away from a developer's real runtime database.
 _TEST_RUNTIME = tempfile.mkdtemp(prefix="wrca-test-")
