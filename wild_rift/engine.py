@@ -1567,13 +1567,13 @@ def recommend_build(
     for enemy, _enemy_role in enemy_objs:
         display = str(enemy.get("name") or enemy.get("id") or "")
         for value in (enemy.get("id"), enemy.get("name"), enemy.get("name_ru")):
-            key = norm_item(str(value or ""))
+            key = db.normalize_search(str(value or ""))
             if key:
                 draft_enemy_keys[key] = display
 
     exact_adaptation_hits: list[dict] = []
     for row in allowed_opponent_adaptations:
-        enemy_key = norm_item(
+        enemy_key = db.normalize_search(
             str(row.get("enemy_name_norm") or row.get("enemy_name") or "")
         )
         matched_enemy = draft_enemy_keys.get(enemy_key)
