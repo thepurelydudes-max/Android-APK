@@ -8,7 +8,7 @@ from typing import Callable
 
 import db
 from localization import COMMON_CHAMPION_ALIASES
-from media_cache import BRAND_DIR, CHAMPION_DIR, ITEM_DIR, cache_brand_logo, ensure_cache_dirs, safe_name, sync_cached_image
+from media_cache import BRAND_DIR, CHAMPION_DIR, ITEM_DIR, cache_brand_logo, ensure_cache_dirs, safe_name, sync_cached_image, _valid_image
 from sources import (
     DDRAGON_CHAMPION_ICON, Net, fetch_champions_locale, fetch_wildriftmeta_champion_roster, fetch_counter_item_pages,
     fetch_ddragon_item_ru_map, fetch_ddragon_version, fetch_stats, fetch_wrpocket_item_pools,
@@ -18,7 +18,7 @@ from sources import (
     fetch_wildriftcore_item_metadata,
     slugish, clean_item_name, clean_wrpocket_item_stats,
     clean_wrpocket_item_effect, _item_dataset_hash, canonical_item_name, is_finished_item_tier,
-    trusted_item_icon_urls, fetch_verified_item_icon_urls, is_dns_resolution_error,
+    trusted_item_icon_urls, fetch_verified_item_icon_urls, is_trusted_item_icon_url, is_dns_resolution_error,
 )
 
 
@@ -488,14 +488,23 @@ def _cache_media(
         existing = db.get_item(name)
         asset_key = f"item:{name}"
 
-        # Final item art must come from a source tied to this exact item name.
-        # Start with cheap name-addressed URLs; if they all fail, resolve the
-        # actual image src from the exact WRC/WRMeta item page.
-        candidates = trusted_item_icon_urls(name)
+        # Final item art must come from a trusted WR asset source tied to this
+        # exact item. Preserve an already verified source URL first: many seed
+        # icons use Riot/Tencent EquipIcons and should not be blanked merely
+        # because a newer mirror is temporarily unavailable.
+        generated_candidates = trusted_item_icon_urls(name)
         manifest = db.get_media_asset(asset_key)
         manifest_url = str((manifest or {}).get("source_url") or "")
-        if manifest_url in candidates:
-            candidates = [manifest_url] + [u for u in candidates if u != manifest_url]
+        existing_url = str((existing or {}).get("icon_url") or "")
+
+        candidates: list[str] = []
+        for icon_url in (existing_url, manifest_url, *generated_candidates):
+            if (
+                icon_url
+                and is_trusted_item_icon_url(icon_url)
+                and icon_url not in candidates
+            ):
+                candidates.append(icon_url)
 
         chosen = None
         last_status = "failed"
@@ -543,7 +552,7 @@ def _cache_media(
                     result.status == "stale_kept"
                     and result.path
                     and record_url == icon_url
-                    and icon_url in trusted_item_icon_urls(name)
+                    and is_trusted_item_icon_url(icon_url)
                 ):
                     chosen = (icon_url, result)
                     return
@@ -600,6 +609,71 @@ def _cache_media(
     except Exception:
         pass
     return champ_count, item_count, item_failures
+
+
+def _audit_item_icon_integrity() -> tuple[list[str], list[str]]:
+    """Return (referenced items missing from catalog, catalog/ref items without valid art)."""
+    from paths import resolve_media_path
+
+    snapshot = db.load_runtime_snapshot()
+    items: dict[str, dict] = snapshot.get("items", {}) or {}
+    referenced: set[str] = set()
+
+    for rows in (snapshot.get("item_pools", {}) or {}).values():
+        referenced.update(
+            canonical_item_name(str(row.get("item_name") or ""))
+            for row in rows
+            if canonical_item_name(str(row.get("item_name") or ""))
+        )
+    for rows in (snapshot.get("counter_items", {}) or {}).values():
+        referenced.update(
+            canonical_item_name(str(row.get("item_name") or ""))
+            for row in rows
+            if canonical_item_name(str(row.get("item_name") or ""))
+        )
+    for row in (snapshot.get("role_builds", {}) or {}).values():
+        referenced.update(
+            canonical_item_name(str(name or ""))
+            for name in (row.get("items") or [])
+            if canonical_item_name(str(name or ""))
+        )
+        boot = canonical_item_name(str(row.get("boot_name") or ""))
+        if boot:
+            referenced.add(boot)
+    for mapping_name in ("role_situational", "role_boots"):
+        for rows in (snapshot.get(mapping_name, {}) or {}).values():
+            referenced.update(
+                canonical_item_name(str(row.get("item_name") or ""))
+                for row in rows
+                if canonical_item_name(str(row.get("item_name") or ""))
+            )
+
+    catalog_names = set(items)
+    missing_catalog = sorted(name for name in referenced if name not in catalog_names)
+
+    # Audit every final item, plus anything a current build can render.
+    names_to_check = {
+        name
+        for name, row in items.items()
+        if is_finished_item_tier(str(row.get("tier") or ""))
+    } | (referenced & catalog_names)
+
+    missing_icons: list[str] = []
+    for name in sorted(names_to_check):
+        row = items.get(name) or {}
+        icon_path = str(row.get("icon_path") or "").strip()
+        if not icon_path:
+            missing_icons.append(name)
+            continue
+        try:
+            resolved = resolve_media_path(icon_path)
+        except Exception:
+            missing_icons.append(name)
+            continue
+        if not _valid_image(resolved):
+            missing_icons.append(name)
+
+    return missing_catalog, missing_icons
 
 
 def update_all(
@@ -924,10 +998,19 @@ def update_all(
                     continue
                 ru_name = item_name_ru(name, pc_ru)
                 trusted_urls = trusted_item_icon_urls(name)
+                page_icon_url = str(row.get("icon_url") or "")
+                preferred_icon_url = (
+                    page_icon_url
+                    if is_trusted_item_icon_url(page_icon_url)
+                    else (trusted_urls[0] if trusted_urls else "")
+                )
+                # parse_wildriftcore_item_page already matched the image to this
+                # exact item name. Do not throw that verified src away and
+                # replace it with a guessed CDN path.
                 db.upsert_item(
                     name, str(row.get("category") or ""), "wildriftcore.com",
                     name_ru=ru_name,
-                    icon_url=(trusted_urls[0] if trusted_urls else ""),
+                    icon_url=preferred_icon_url,
                     tier="Upgraded",
                 )
                 db.upsert_item_details(
@@ -936,7 +1019,7 @@ def update_all(
                     data_hash=_item_dataset_hash(
                         name, int(row.get("price") or 0), list(row.get("stats") or []),
                         str(row.get("effect_en") or ""),
-                        (trusted_urls[0] if trusted_urls else ""),
+                        preferred_icon_url,
                         str(row.get("detail_url") or ""),
                     ),
                     data_patch=current_patch, source_url=str(row.get("detail_url") or ""),
@@ -998,6 +1081,28 @@ def update_all(
     summary["item_images"] = ii
     if force_item_icon_refresh and item_icon_failures == 0:
         db.set_meta("item_icon_schema_version", ITEM_ICON_SCHEMA_VERSION)
+
+    # Do not rely only on download exceptions. Verify the post-update state that
+    # the UI will actually render: every final/referenced item must resolve to a
+    # real image file. This makes "Скопировать лог" expose silent blanks too.
+    missing_catalog, missing_icons = _audit_item_icon_integrity()
+    summary["item_icon_missing_catalog"] = missing_catalog
+    summary["item_icon_missing"] = missing_icons
+    if missing_catalog or missing_icons:
+        parts: list[str] = []
+        if missing_catalog:
+            parts.append(
+                f"{len(missing_catalog)} отсутствуют в каталоге: "
+                + ", ".join(missing_catalog[:20])
+                + ("…" if len(missing_catalog) > 20 else "")
+            )
+        if missing_icons:
+            parts.append(
+                f"{len(missing_icons)} без валидной иконки: "
+                + ", ".join(missing_icons[:20])
+                + ("…" if len(missing_icons) > 20 else "")
+            )
+        summary["errors"].append("Item icon audit: " + "; ".join(parts))
 
     _check_cancel(cancel_check)
     stamp = format_update_timestamp(now)
