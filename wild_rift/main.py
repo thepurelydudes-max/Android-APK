@@ -447,41 +447,25 @@ class MobileAssistant:
         return ft.Row(spacing=5, controls=controls)
 
     def champion_options(self) -> list[ft.DropdownOption]:
-        """Blue desktop-like enemy list: white names plus a tiny hero portrait.
+        """Return deliberately lightweight dropdown options for Android.
 
-        The portrait exists only in the expanded menu. The closed dropdown keeps
-        the ordinary text value, while the full-size portrait remains in the
-        separate avatar frame on the left.
+        Five selectors each contain the full champion roster. Putting a nested
+        portrait Container/Image and a per-option ButtonStyle into every entry
+        created ~700 image/control subtrees that Flutter had to keep attached
+        while *any* part of the page updated. The selected champion already has
+        a full-size portrait beside the field, so the menu only needs the name.
         """
-        champions = sorted(self.snapshot.get("champions", []), key=lambda c: self.champ_name(c).casefold())
-        options: list[ft.DropdownOption] = []
-        for champ in champions:
-            name = self.champ_name(champ)
-            option_avatar = self.avatar_box(champ, 28)
-            options.append(
-                ft.DropdownOption(
-                    key=str(champ["id"]),
-                    text=name,
-                    leading_icon=option_avatar,
-                    style=ft.ButtonStyle(
-                        color={
-                            ft.ControlState.DEFAULT: "#FFFFFF",
-                            ft.ControlState.HOVERED: "#FFFFFF",
-                            ft.ControlState.FOCUSED: "#FFFFFF",
-                            ft.ControlState.SELECTED: "#FFFFFF",
-                        },
-                        bgcolor={
-                            ft.ControlState.DEFAULT: P["panel_alt"],
-                            ft.ControlState.HOVERED: P["panel_hover"],
-                            ft.ControlState.FOCUSED: P["panel_hover"],
-                            ft.ControlState.SELECTED: "#123D4C",
-                        },
-                        shape=ft.RoundedRectangleBorder(radius=8),
-                        padding=ft.Padding.symmetric(horizontal=8, vertical=6),
-                    ),
-                )
+        champions = sorted(
+            self.snapshot.get("champions", []),
+            key=lambda champ: self.champ_name(champ).casefold(),
+        )
+        return [
+            ft.DropdownOption(
+                key=str(champ["id"]),
+                text=self.champ_name(champ),
             )
-        return options
+            for champ in champions
+        ]
 
     def portrait(self, champ: dict | None, size: int = 48) -> ft.Container:
         return self.avatar_box(champ, size)
@@ -733,12 +717,25 @@ class MobileAssistant:
         if role == self.role:
             return
         self.role = role
-        # The calculation is fast; the old delay/flicker came from page.clean()
-        # and rebuilding five 134-entry dropdowns. Update only role styling and
-        # the two result columns, then send one UI diff to Flutter.
         self.refresh_role_controls()
         self.recalculate(preserve_selection=False, update_page=False)
-        self.page.update()
+
+        # Do not call page.update() here. A page-wide diff walks the five large
+        # searchable dropdowns even though a role switch changes only five role
+        # buttons and the two result columns. Targeted control updates keep the
+        # Android bridge payload small and make the tab highlight/result swap
+        # immediate.
+        for box in self.role_buttons.values():
+            try:
+                box.update()
+            except Exception:
+                pass
+        try:
+            self.pick_column.update()
+            self.build_column.update()
+        except Exception:
+            # Safe fallback for a control that is not mounted yet.
+            self.page.update()
 
     def on_enemy_select(self, index: int, e) -> None:
         cid = str(e.control.value or "") or None
@@ -880,7 +877,24 @@ class MobileAssistant:
                 indicator.color = P["gold_bright"] if selected else P["muted"]
 
         self.render_current_build()
-        self.page.update()
+        # Only two recommendation cards and the build pane changed. Avoid a
+        # page-wide update that would traverse every dropdown option.
+        updated_any = False
+        for pick_id in (old_id, new_id):
+            box = self.pick_card_boxes.get(pick_id)
+            if box is not None:
+                try:
+                    box.update()
+                    updated_any = True
+                except Exception:
+                    pass
+        try:
+            self.build_column.update()
+            updated_any = True
+        except Exception:
+            pass
+        if not updated_any:
+            self.page.update()
 
     def localized_enemy_records(self, names: list[str]) -> list[dict]:
         out = []
