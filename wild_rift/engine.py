@@ -1052,11 +1052,14 @@ def _select_role_variant(
 
         score = 0.0
         if "anti_physical" in tags:
-            if physical < 3 or physical <= magic:
+            # WRC's "Vs AD comps" is a composition-level override, not "there
+            # are a couple of AD champions". Require overwhelming physical
+            # dominance; mixed/hybrid drafts stay on Standard.
+            if physical < 4 or magic > 1:
                 continue
             score += 10.0 + physical * 2.0 - magic
         if "anti_magic" in tags:
-            if magic < 3 or magic <= physical:
+            if magic < 4 or physical > 1:
                 continue
             score += 10.0 + magic * 2.0 - physical
 
