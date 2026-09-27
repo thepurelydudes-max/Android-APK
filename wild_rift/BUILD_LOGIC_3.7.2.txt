@@ -26,3 +26,35 @@ Existing pre-3.7.2 APKs cannot be upgraded in place because the ephemeral privat
 keys that signed them were discarded with their GitHub runners. One final
 uninstall/reinstall is unavoidable when moving to the persistent key. Every
 subsequent APK signed with that same key can update in place.
+
+Item icon integrity / real updater audit
+----------------------------------------
+- Added a dedicated GitHub diagnostic that seeds a clean runtime, runs the real
+  updater, then validates every final/referenced item icon with Pillow and checks
+  that the referenced file physically exists.
+- Before the repair the diagnostic reproduced one silent blank:
+  Immortal Boots had icon_path cleared after a stale_kept revalidation result.
+- The item cache now preserves a previously verified local image when its source
+  URL is from a trusted WR asset host (Tencent EquipIcons, WildRiftCore assets,
+  WildRiftMeta assets or RiftGG). Old WR Pocket card artwork is deliberately not
+  trusted because it previously misidentified Kaenic Rookern/Sundered Sky.
+- Exact item-page icon URLs returned by WildRiftCore metadata are now preserved
+  instead of being discarded in favor of a guessed CDN path.
+- Mercury Boots / Mercury Treads / Mercurys Treads are merged into the canonical
+  Mercury's Treads DB identity. Its current WildRiftCore image is pinned to:
+  https://wildriftcore.com/assets/images/newItems/mercurys_treads.webp
+- Patch 7.3 item art such as Fiendhunter Bolts, Rapid Firecannon,
+  Whispering Circlet and Yun Tal Wildarrows uses WildRiftCore's real
+  /assets/images/items-cn/<slug>.webp source when needed.
+- Item icon schema bumped to v7 so installations that already completed the v6
+  repair receive one new controlled integrity pass.
+- After every in-app data update the app now performs a post-update item-icon
+  audit. Silent blank icons are written to update-warnings.log as
+  "Item icon audit: ...", so "Скопировать лог" lists the exact affected names.
+- Post-fix clean-runtime diagnostic result: 102 final items checked,
+  0 missing/invalid icons, 0 referenced items without an icon.
+- GitHub-hosted diagnostics currently receive HTTP 403 from WildRiftCore HTML
+  tier/build pages, so source-added 7.3 items cannot be discovered through the
+  full WRC build crawl on that runner. Their actual current item pages/assets
+  were verified separately and the phone updater can still use them when WRC is
+  reachable from the device.
