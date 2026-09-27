@@ -446,48 +446,43 @@ class MobileAssistant:
             controls.append(box)
         return ft.Row(spacing=5, controls=controls)
 
-    def _dropdown_avatar(self, champ: dict | None, size: int = 28) -> ft.Control:
-        """One lightweight cached portrait for a dropdown row.
-
-        Keep the visual hero cue without restoring the old nested
-        Container -> Row -> Image tree and per-option ButtonStyle. Dropdown
-        portraits never fetch remote URLs directly: if a portrait is not in the
-        verified local cache, render a small neutral fallback icon instead.
-        """
-        local = self._cached_local_media_src(champ)
-        if local:
-            return ft.Image(
-                src=local,
-                width=size,
-                height=size,
-                fit=ft.BoxFit.COVER,
-            )
-        return ft.Icon(
-            ft.Icons.PERSON_OUTLINE,
-            size=max(18, size - 6),
-            color=P["muted"],
-        )
-
     def champion_options(self) -> list[ft.DropdownOption]:
-        """Enemy selector options with lightweight cached champion portraits.
+        """Blue desktop-like enemy list: white names plus a tiny hero portrait.
 
-        Five selectors still contain the full roster, so keep each option to a
-        single Image/Icon plus text. This restores the portraits removed during
-        the 3.7.0 performance pass without bringing back the old nested avatar
-        containers and per-row styles that caused large Flutter diff trees.
+        This is intentionally restored to the pre-optimization visual layout:
+        the expanded menu shows the same framed 28px champion portrait, row
+        spacing, hover/selected background and white text as before. Do not
+        simplify this control tree for performance without preserving the UI.
         """
-        champions = sorted(
-            self.snapshot.get("champions", []),
-            key=lambda champ: self.champ_name(champ).casefold(),
-        )
-        return [
-            ft.DropdownOption(
-                key=str(champ["id"]),
-                text=self.champ_name(champ),
-                leading_icon=self._dropdown_avatar(champ, 28),
+        champions = sorted(self.snapshot.get("champions", []), key=lambda c: self.champ_name(c).casefold())
+        options: list[ft.DropdownOption] = []
+        for champ in champions:
+            name = self.champ_name(champ)
+            option_avatar = self.avatar_box(champ, 28)
+            options.append(
+                ft.DropdownOption(
+                    key=str(champ["id"]),
+                    text=name,
+                    leading_icon=option_avatar,
+                    style=ft.ButtonStyle(
+                        color={
+                            ft.ControlState.DEFAULT: "#FFFFFF",
+                            ft.ControlState.HOVERED: "#FFFFFF",
+                            ft.ControlState.FOCUSED: "#FFFFFF",
+                            ft.ControlState.SELECTED: "#FFFFFF",
+                        },
+                        bgcolor={
+                            ft.ControlState.DEFAULT: P["panel_alt"],
+                            ft.ControlState.HOVERED: P["panel_hover"],
+                            ft.ControlState.FOCUSED: P["panel_hover"],
+                            ft.ControlState.SELECTED: "#123D4C",
+                        },
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                        padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+                    ),
+                )
             )
-            for champ in champions
-        ]
+        return options
 
     def portrait(self, champ: dict | None, size: int = 48) -> ft.Container:
         return self.avatar_box(champ, size)
