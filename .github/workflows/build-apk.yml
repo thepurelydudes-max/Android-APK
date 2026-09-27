@@ -76,6 +76,16 @@ jobs:
             test -d mlbb/assets || { echo "mlbb/assets is missing."; exit 1; }
           fi
 
+      - name: Test Wild Rift recommendation engine
+        if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "requests>=2.32.0" "Pillow>=10.4.0" "beautifulsoup4>=4.12.0"
+          cd "$GITHUB_WORKSPACE/wild_rift"
+          python -m py_compile db.py engine.py sources.py updater.py main.py
+          python -m unittest -v test_regressions.py
+
       - name: Build Wild Rift APK
         if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
         shell: bash
