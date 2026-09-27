@@ -361,54 +361,84 @@ def _cache_media(
     progress(update_text("cache_items", lang, current=0, total=len(items)))
     for idx, row in enumerate(items, 1):
         _check_cancel(cancel_check)
-        name = row[0]
-        icon_url = row[2] if len(row) > 2 else ""
-        if not icon_url:
+        name = canonical_item_name(str(row[0] or ""))
+        if not name:
             continue
         target = ITEM_DIR / f"{safe_name(name)}.png"
         existing = db.get_item(name)
         asset_key = f"item:{name}"
-        record = _seed_media_record(asset_key, icon_url, existing, target, previous_patch, current_patch)
 
-        # 3.5.0/3.5.1 forced every item image to be downloaded again in one
-        # update. That created a burst of 100+ media requests and turned
-        # transient CDN failures into dozens of "source warnings". Only items
-        # whose verified URL/path is actually unresolved need a forced retry.
-        record_url = str((record or {}).get("source_url") or "")
-        existing_path = str((existing or {}).get("icon_path") or "")
-        force_this_item = bool(
-            force_item_refresh and (
-                not existing_path
+        # Item art has a stricter trust policy than ordinary media. WR Pocket
+        # supplied the wrong art for several correctly named Wild Rift items
+        # (notably Kaenic Rookern and Sundered Sky), so never fall back to its
+        # card/detail-page image here. Try two independent, name-addressed WR
+        # icon mirrors instead. A missing icon is preferable to a wrong icon.
+        candidates = trusted_item_icon_urls(name)
+        if not candidates:
+            item_failures += 1
+            item_media_issues.append(f"Item image {name}: no trusted icon URL")
+            db.clear_item_icon_path(name)
+            db.delete_media_asset(asset_key)
+            progress(update_text("cache_items", lang, current=idx, total=len(items)))
+            continue
+
+        manifest = db.get_media_asset(asset_key)
+        manifest_url = str((manifest or {}).get("source_url") or "")
+        # If this installation already verified one of the trusted mirrors,
+        # prefer it first so a mirror that was previously unavailable is not
+        # retried before every cached item on every update.
+        if manifest_url in candidates:
+            candidates = [manifest_url] + [u for u in candidates if u != manifest_url]
+
+        chosen = None
+        last_status = "failed"
+        last_exc = ""
+        for candidate_index, icon_url in enumerate(candidates):
+            record = _seed_media_record(
+                asset_key, icon_url, existing, target, previous_patch, current_patch
+            )
+            record_url = str((record or {}).get("source_url") or "")
+            existing_path = str((existing or {}).get("icon_path") or "")
+            force_this_item = bool(
+                force_item_refresh
+                or candidate_index > 0
+                or not existing_path
                 or (record_url and record_url != icon_url)
                 or not (record or {}).get("sha256")
             )
-        )
-        try:
-            result = sync_cached_image(
-                net, icon_url, target, record, current_patch=current_patch, previous_patch=previous_patch,
-                force_refresh=force_this_item,
-            )
-            failed = result.status in {"failed", "stale_kept"}
-            if failed:
-                item_failures += 1
-                item_media_issues.append(f"Item image {name}: {result.status}")
-                # Never roll a newly verified URL back to an old cached asset.
-                # Leave icon_path empty so the UI can use the verified remote URL,
-                # and keep the old manifest out of the next retry decision.
-                if record_url and record_url != icon_url:
-                    db.clear_item_icon_path(name)
-                    db.delete_media_asset(asset_key)
-            else:
-                _store_media_result(asset_key, result)
-                if result.path:
-                    db.update_item_media(name, icon_url, _portable_path(result.path))
-                    item_count += 1
-        except Exception as exc:
+            try:
+                result = sync_cached_image(
+                    net, icon_url, target, record,
+                    current_patch=current_patch, previous_patch=previous_patch,
+                    force_refresh=force_this_item,
+                )
+            except Exception as exc:
+                last_exc = str(exc)
+                last_status = "exception"
+                continue
+
+            last_status = result.status
+            if result.status in {"failed", "stale_kept", "missing_url"}:
+                continue
+            if result.path:
+                chosen = (icon_url, result)
+                break
+
+        if chosen is None:
             item_failures += 1
-            item_media_issues.append(f"Item image {name}: {exc}")
-            if record_url and record_url != icon_url:
-                db.clear_item_icon_path(name)
-                db.delete_media_asset(asset_key)
+            detail = last_exc or last_status
+            item_media_issues.append(f"Item image {name}: {detail}")
+            # Critical invariant: never show an old untrusted PNG after both
+            # trusted sources failed. The file may remain on disk, but clearing
+            # icon_path makes the UI render a neutral placeholder instead.
+            db.clear_item_icon_path(name)
+            db.delete_media_asset(asset_key)
+        else:
+            icon_url, result = chosen
+            _store_media_result(asset_key, result)
+            db.update_item_media(name, icon_url, _portable_path(result.path))
+            item_count += 1
+
         progress(update_text("cache_items", lang, current=idx, total=len(items)))
 
     if champion_media_issues:
