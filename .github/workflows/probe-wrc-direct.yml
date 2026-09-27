@@ -1,0 +1,36 @@
+name: Probe WildRiftCore Direct Access
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".probe-wrc-trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe WildRiftCore endpoints
+        shell: bash
+        run: |
+          set -u
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
+          urls=(
+            'https://wildriftcore.com/en/champions/'
+            'https://wildriftcore.com/en/builds/'
+            'https://wildriftcore.com/en/champions/malphite/builds/'
+            'https://wildriftcore.com/champions/malphite/builds/'
+            'https://www.wildriftcore.com/en/champions/malphite/builds/'
+          )
+          for url in "${urls[@]}"; do
+            echo "=== $url ==="
+            curl -L -sS -A "$UA" -H 'Accept: text/html,application/xhtml+xml' -H 'Accept-Language: en-US,en;q=0.9'               -o /tmp/wrc-body.html -D /tmp/wrc-headers.txt --max-time 30 -w 'HTTP=%{http_code} SIZE=%{size_download} FINAL=%{url_effective}\n' "$url" || true
+            head -20 /tmp/wrc-headers.txt || true
+            grep -o -m1 -E '<title>[^<]+' /tmp/wrc-body.html || true
+            grep -o -m1 -E 'Best Malphite build[^<]{0,300}' /tmp/wrc-body.html || true
+            echo
+          done
