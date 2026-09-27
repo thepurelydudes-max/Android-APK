@@ -11,6 +11,8 @@ import sources
 OUT = Path("wrc_snapshot")
 RAW_BUILDS = OUT / "raw" / "builds"
 RAW_COUNTERS = OUT / "raw" / "counters"
+RAW_HTML_BUILDS = OUT / "raw_html" / "builds"
+RAW_HTML_COUNTERS = OUT / "raw_html" / "counters"
 
 
 def _slug_links(text: str) -> list[str]:
@@ -40,6 +42,8 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     RAW_BUILDS.mkdir(parents=True, exist_ok=True)
     RAW_COUNTERS.mkdir(parents=True, exist_ok=True)
+    RAW_HTML_BUILDS.mkdir(parents=True, exist_ok=True)
+    RAW_HTML_COUNTERS.mkdir(parents=True, exist_ok=True)
 
     net = sources.Net()
     print("Discovering WildRiftCore champion build pages...", flush=True)
@@ -73,11 +77,13 @@ def main() -> int:
         }
 
         try:
-            text, transport = sources._wildriftcore_build_text(net, build_url, print)
-            _write_text(RAW_BUILDS / f"{slug}.txt", text)
+            # Reader/Markdown is the canonical analysis snapshot because it
+            # preserves headings and labels across Cloudflare/SSR variations.
+            text = sources._jina_reader_get(net, build_url, print).text
+            _write_text(RAW_BUILDS / f"{slug}.md", text)
             row["build"] = {
                 "ok": True,
-                "transport": transport,
+                "transport": "reader",
                 "bytes": len(text.encode("utf-8")),
                 "sha256": _sha256(text),
                 "has_when_to_pick": "when to pick it" in text.casefold(),
@@ -85,16 +91,32 @@ def main() -> int:
                 "has_situational_adaptations": "situational adaptations" in text.casefold(),
                 "has_adaptations_by_opponent": "adaptations by opponent" in text.casefold(),
             }
+            # Preserve direct HTML as a second raw representation when WRC
+            # allows it. Failure here never invalidates the reader snapshot.
+            try:
+                direct = sources._wildriftcore_get(
+                    net, build_url, print, sources.WR_CORE_HTML_HEADERS
+                ).text
+                _write_text(RAW_HTML_BUILDS / f"{slug}.html", direct)
+                row["build"]["direct_html"] = {
+                    "ok": True,
+                    "bytes": len(direct.encode("utf-8")),
+                    "sha256": _sha256(direct),
+                }
+            except Exception as direct_exc:
+                row["build"]["direct_html"] = {
+                    "ok": False, "error": str(direct_exc)
+                }
         except Exception as exc:
             row["build"] = {"ok": False, "error": str(exc)}
             manifest["errors"].append(f"{slug} builds: {exc}")
 
         try:
-            text, transport = sources._wildriftcore_build_text(net, counters_url, print)
-            _write_text(RAW_COUNTERS / f"{slug}.txt", text)
+            text = sources._jina_reader_get(net, counters_url, print).text
+            _write_text(RAW_COUNTERS / f"{slug}.md", text)
             row["counters"] = {
                 "ok": True,
-                "transport": transport,
+                "transport": "reader",
                 "bytes": len(text.encode("utf-8")),
                 "sha256": _sha256(text),
                 "has_edge": "edge" in text.casefold(),
@@ -102,6 +124,20 @@ def main() -> int:
                 "has_do_not_pick": "do not pick" in text.casefold(),
                 "has_key_item": "key item" in text.casefold(),
             }
+            try:
+                direct = sources._wildriftcore_get(
+                    net, counters_url, print, sources.WR_CORE_HTML_HEADERS
+                ).text
+                _write_text(RAW_HTML_COUNTERS / f"{slug}.html", direct)
+                row["counters"]["direct_html"] = {
+                    "ok": True,
+                    "bytes": len(direct.encode("utf-8")),
+                    "sha256": _sha256(direct),
+                }
+            except Exception as direct_exc:
+                row["counters"]["direct_html"] = {
+                    "ok": False, "error": str(direct_exc)
+                }
         except Exception as exc:
             row["counters"] = {"ok": False, "error": str(exc)}
             manifest["errors"].append(f"{slug} counters: {exc}")
