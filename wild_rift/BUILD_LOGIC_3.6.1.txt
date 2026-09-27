@@ -1,0 +1,37 @@
+Wild Rift Counter Assistant 3.6.1
+====================================
+
+Final source-driven recommendation pass.
+
+Picks
+-----
+- Selected lane is a hard eligibility gate.
+- Mirror-role matchup is primary: positive > neutral/unknown > negative.
+- Team-wide matchup coverage, tier and win rate remain secondary ranking signals.
+
+Builds
+------
+- Core comes only from WildRiftCore for the exact champion + selected role.
+- Situational items come only from that same champion+role source page.
+- Exact opponent -> item adaptations published by WildRiftCore outrank broad
+  inferred enemy-threat tags.
+- Enemy analysis can activate source-approved items but cannot search the global
+  shop or invent tank/ADC/mage purchases.
+- The UI never fills missing slots with hard-coded fallback items.
+- Core identity is protected: only tail slots can be replaced.
+
+Boots/items
+-----------
+- WildRiftCore mid-tier/legacy boot names are mapped to the current completed
+  boot upgrades used by this assistant.
+- Current role items missing from WR Pocket are fetched from their own
+  WildRiftCore item pages, stored as recommendable source-native items and
+  receive their verified item icon/details.
+
+Updater
+-------
+- 8 stages, including champion+role build data.
+- Role-build pages are cached per patch/champion and partial failures preserve
+  last known-good rows.
+- Media-cache stage immediately emits 0/N and then every champion/item counter,
+  so stale text such as Zyra cannot remain visible through the cache pass.
