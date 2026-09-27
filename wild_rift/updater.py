@@ -349,6 +349,10 @@ def _collapse_dns_warnings(errors: list[str], net: Net) -> list[str]:
     if not getattr(net, "dns_outage", False):
         return errors
     dns_entries = [str(value) for value in errors if is_dns_resolution_error(value)]
+    media_dns_entries = [
+        str(value) for value in errors
+        if str(value).startswith("Media refresh skipped: DNS")
+    ]
     if not dns_entries:
         return errors
 
@@ -365,9 +369,13 @@ def _collapse_dns_warnings(errors: list[str], net: Net) -> list[str]:
     )
     if affected:
         message += "\nЗатронуто: " + ", ".join(affected)
+    for value in media_dns_entries:
+        message += "\n" + value
 
     return [message] + [
-        str(value) for value in errors if not is_dns_resolution_error(value)
+        str(value) for value in errors
+        if not is_dns_resolution_error(value)
+        and not str(value).startswith("Media refresh skipped: DNS")
     ]
 
 
