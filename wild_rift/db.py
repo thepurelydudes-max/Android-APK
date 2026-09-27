@@ -96,6 +96,8 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS role_build_variants (
                 champion_id TEXT NOT NULL, role TEXT NOT NULL, variant_name TEXT NOT NULL,
                 items_json TEXT NOT NULL DEFAULT '[]', trigger_text TEXT NOT NULL DEFAULT '',
+                example_enemies_json TEXT NOT NULL DEFAULT '[]',
+                example_text TEXT NOT NULL DEFAULT '',
                 priority INTEGER NOT NULL DEFAULT 999, source TEXT NOT NULL,
                 patch TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -152,6 +154,14 @@ def init_db() -> None:
         _ensure_column(con, "items", "data_patch", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "data_source_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "tier", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(
+            con, "role_build_variants", "example_enemies_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )
+        _ensure_column(
+            con, "role_build_variants", "example_text",
+            "TEXT NOT NULL DEFAULT ''",
+        )
 
         # Backfill aliases for databases created by the original MVP.
         for row in con.execute("SELECT id,name,name_ru FROM champions").fetchall():
@@ -239,7 +249,7 @@ def migrate_champion_identities(aliases: dict[str, str]) -> None:
                 ("champion_tiers", "champion_id,role,tier,source,patch,updated_at", "champion_id"),
                 ("item_pools", "champion_id,item_name,category,priority,source", "champion_id"),
                 ("role_builds", "champion_id,role,items_json,boot_name,source,patch,source_url,updated_at", "champion_id"),
-                ("role_build_variants", "champion_id,role,variant_name,items_json,trigger_text,priority,source,patch,source_url,updated_at", "champion_id"),
+                ("role_build_variants", "champion_id,role,variant_name,items_json,trigger_text,example_enemies_json,example_text,priority,source,patch,source_url,updated_at", "champion_id"),
                 ("role_build_situational", "champion_id,role,item_name,trigger_text,priority,source", "champion_id"),
                 ("role_build_boots", "champion_id,role,item_name,trigger_text,priority,source", "champion_id"),
                 ("matchup_page_cache", "source,patch,champion_id,rows_json,source_url,fetched_at", "champion_id"),
@@ -586,17 +596,35 @@ def replace_source_role_builds_partial(
         if (str(c), str(r)) in touched and str(i).strip()
     ]
     variant_rows = []
-    for c, r, name, items, trigger, priority, patch, source_url in variants:
+    for raw_variant in variants:
+        values = list(raw_variant)
+        if len(values) >= 10:
+            (
+                c, r, name, items, trigger, priority,
+                example_enemies, example_text, patch, source_url,
+            ) = values[:10]
+        elif len(values) >= 8:
+            # Backward-compatible path for old tests/last-known-good payloads.
+            c, r, name, items, trigger, priority, patch, source_url = values[:8]
+            example_enemies, example_text = [], ""
+        else:
+            continue
         cid = str(c or "").strip()
         role_value = str(r or "").strip()
         variant_name = str(name or "").strip()
         clean_items = [str(x).strip() for x in (items or []) if str(x).strip()]
+        clean_examples = list(dict.fromkeys(
+            str(x).strip() for x in (example_enemies or []) if str(x).strip()
+        ))[:5]
         if (cid, role_value) not in touched or not variant_name or len(clean_items) < 3:
             continue
         variant_rows.append((
             cid, role_value, variant_name,
             json.dumps(clean_items[:5], ensure_ascii=False),
-            str(trigger or ""), int(priority if priority is not None else 999), source,
+            str(trigger or ""),
+            json.dumps(clean_examples, ensure_ascii=False),
+            str(example_text or ""),
+            int(priority if priority is not None else 999), source,
             str(patch or ""), str(source_url or ""),
         ))
 
@@ -626,9 +654,10 @@ def replace_source_role_builds_partial(
         )
         con.executemany(
             """INSERT OR REPLACE INTO role_build_variants(
-                champion_id,role,variant_name,items_json,trigger_text,priority,
+                champion_id,role,variant_name,items_json,trigger_text,
+                example_enemies_json,example_text,priority,
                 source,patch,source_url,updated_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
             variant_rows,
         )
         con.executemany(
@@ -711,7 +740,8 @@ def get_role_build(champion_id: str, role: str, source: str = "wildriftcore.com"
 def get_role_build_variants(champion_id: str, role: str, source: str = "wildriftcore.com") -> list[dict]:
     with connect() as con:
         rows = con.execute(
-            """SELECT variant_name,items_json,trigger_text,priority,source,patch,source_url
+            """SELECT variant_name,items_json,trigger_text,example_enemies_json,
+                      example_text,priority,source,patch,source_url
                FROM role_build_variants
                WHERE champion_id=? AND role=? AND source=?
                ORDER BY priority ASC,variant_name""",
@@ -725,6 +755,13 @@ def get_role_build_variants(champion_id: str, role: str, source: str = "wildrift
         except (TypeError, json.JSONDecodeError):
             data["items"] = []
             data.pop("items_json", None)
+        try:
+            data["example_enemies"] = json.loads(
+                data.pop("example_enemies_json") or "[]"
+            )
+        except (TypeError, json.JSONDecodeError):
+            data["example_enemies"] = []
+            data.pop("example_enemies_json", None)
         out.append(data)
     return out
 
@@ -1171,6 +1208,13 @@ def load_runtime_snapshot() -> dict:
         except (TypeError, json.JSONDecodeError):
             data["items"] = []
             data.pop("items_json", None)
+        try:
+            data["example_enemies"] = json.loads(
+                data.pop("example_enemies_json") or "[]"
+            )
+        except (TypeError, json.JSONDecodeError):
+            data["example_enemies"] = []
+            data.pop("example_enemies_json", None)
         role_variants.setdefault((row["champion_id"], row["role"]), []).append(data)
 
     role_situational: dict[tuple[str, str], list[dict]] = {}
