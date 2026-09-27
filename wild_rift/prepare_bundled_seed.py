@@ -72,6 +72,12 @@ def _audit() -> dict:
             "SELECT COUNT(*) FROM build_page_cache "
             "WHERE source='wildriftcore.com'"
         ).fetchone()[0])
+        trait_rows = [
+            dict(row) for row in con.execute(
+                "SELECT champion_id,trait,confidence,evidence_count,mentions "
+                "FROM champion_traits WHERE source='wildriftcore.com'"
+            ).fetchall()
+        ]
         block_counts = {}
         for table, id_col in (
             ("stats", "champion_id"),
@@ -124,7 +130,7 @@ def _audit() -> dict:
     roles_with_incomplete_variant_count = sorted(
         f"{cid}:{role}={variant_counts.get((cid, role), 0)}/3"
         for cid, role in role_build_keys
-        if variant_counts.get((cid, role), 0) < 3
+        if variant_counts.get((cid, role), 0) != 3
     )
     situational_keys = {
         (str(row.get("champion_id") or ""), str(row.get("role") or ""))
@@ -153,6 +159,9 @@ def _audit() -> dict:
             )
 
     incomplete_variants = []
+    variants_with_full_items = 0
+    variants_metadata_only = 0
+    variants_with_examples = 0
     for row in role_variant_rows:
         try:
             names = json.loads(row.get("items_json") or "[]")
@@ -162,10 +171,18 @@ def _audit() -> dict:
             example_enemies = json.loads(row.get("example_enemies_json") or "[]")
         except Exception:
             example_enemies = []
+        if len(names) == 5:
+            variants_with_full_items += 1
+        elif len(names) == 0:
+            variants_metadata_only += 1
+        if [x for x in example_enemies if str(x).strip()]:
+            variants_with_examples += 1
+        # Public WRC exposes every variant name + trigger, but only some pages
+        # expose the separate five-item variant row/example draft. 0 and 5 are
+        # both valid; 1-4 means a broken parse.
         if (
-            len(names) != 5
+            len(names) not in {0, 5}
             or not str(row.get("trigger_text") or "").strip()
-            or not [x for x in example_enemies if str(x).strip()]
         ):
             incomplete_variants.append(
                 f"{row.get('champion_id')}:{row.get('role')}:{row.get('variant_name')}"
@@ -185,6 +202,13 @@ def _audit() -> dict:
         "items_missing": missing_items,
         "wrc_role_builds": len(role_build_rows),
         "wrc_role_variants": len(role_variant_rows),
+        "wrc_variants_with_full_items": variants_with_full_items,
+        "wrc_variants_metadata_only": variants_metadata_only,
+        "wrc_variants_with_examples": variants_with_examples,
+        "wrc_champion_traits": len(trait_rows),
+        "wrc_trait_champions": len({
+            str(row.get("champion_id") or "") for row in trait_rows
+        }),
         "wrc_situational": len(situational_rows),
         "wrc_opponent_adaptations": len(opponent_rows),
         "wrc_build_cache_pages": build_cache_rows,
@@ -280,7 +304,11 @@ def main() -> int:
 
     print(
         f"WildRiftCore: {audit['wrc_role_builds']} role builds, "
-        f"{audit['wrc_role_variants']} variants, "
+        f"{audit['wrc_role_variants']} variants "
+        f"({audit['wrc_variants_with_full_items']} full, "
+        f"{audit['wrc_variants_metadata_only']} metadata-only), "
+        f"{audit['wrc_champion_traits']} trait rows/"
+        f"{audit['wrc_trait_champions']} champions, "
         f"{audit['wrc_situational']} situational, "
         f"{audit['wrc_opponent_adaptations']} opponent adaptations, "
         f"{audit['wrc_build_cache_pages']} cached champion pages",
@@ -335,15 +363,13 @@ def main() -> int:
             "Refusing to package champions without WildRiftCore role builds: "
             + ", ".join(audit["champions_without_role_build"])
         )
-    # The local draft advisor now relies on all three WRC variants, their
-    # "When to pick it" rules and example enemy drafts. Never ship an APK that
-    # silently falls back to a one-size-fits-all core because one of these
-    # source blocks failed to parse.
+    # The formula requires exactly three WRC variant rules per role. Variant
+    # item rows/examples, generic situational blocks and exact opponent
+    # adaptations are optional enrichment because WRC does not expose each of
+    # those blocks for every public profile.
     variant_gaps = (
         audit["roles_without_variants"]
         + audit["roles_with_incomplete_variant_count"]
-        + audit["roles_without_situational"]
-        + audit["roles_without_opponent_adaptations"]
         + audit["incomplete_variants"]
     )
     if audit["incomplete_role_builds"] or variant_gaps:
