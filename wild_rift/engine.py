@@ -1100,11 +1100,29 @@ def _trigger_is_active(trigger_text: str, tags: set[str], threat_counts: Counter
     return any(int(threat_counts.get(tag, 0)) > 0 for tag in tags)
 
 
-def _source_item_score(trigger_text: str, tags: set[str], threat_counts: Counter) -> float:
+def _source_item_score(
+    trigger_text: str, tags: set[str], threat_counts: Counter,
+    enemy_objs: list[tuple[dict, str]] | None = None,
+) -> float:
+    folded = str(trigger_text or "").casefold()
+
+    # Exact opponent adaptations published on the champion+role page outrank
+    # broad inferred tags. Multiple Opponent entries may be merged for one item.
+    opponent_names = [value.strip() for value in re.findall(r"opponent:\s*([^;|]+)", folded)]
+    if opponent_names and enemy_objs:
+        draft_names = {
+            norm_item(str(enemy.get("name") or ""))
+            for enemy, _role in enemy_objs
+        } | {
+            norm_item(str(enemy.get("id") or ""))
+            for enemy, _role in enemy_objs
+        }
+        if any(norm_item(name) in draft_names for name in opponent_names):
+            return 100.0 + float(sum(int(threat_counts.get(tag, 0)) for tag in tags))
+
     if not _trigger_is_active(trigger_text, tags, threat_counts):
         return 0.0
     score = float(sum(int(threat_counts.get(tag, 0)) for tag in tags))
-    folded = str(trigger_text or "").casefold()
     if "2+" in folded:
         score += 1.0
     return score
@@ -1183,7 +1201,7 @@ def recommend_build(
         item = str(row.get("item_name") or "")
         trigger = str(row.get("trigger_text") or "")
         tags = _trigger_tags_from_text(trigger)
-        score = _source_item_score(trigger, tags, threat_counts)
+        score = _source_item_score(trigger, tags, threat_counts, enemy_objs)
         if score <= 0:
             continue
         scored_situational.append((
@@ -1248,7 +1266,7 @@ def recommend_build(
         if not item or item == baseline_boot:
             continue
         tags = _trigger_tags_from_text(trigger)
-        score = _source_item_score(trigger, tags, threat_counts)
+        score = _source_item_score(trigger, tags, threat_counts, enemy_objs)
         if score > best_boot_score:
             chosen_boot = item
             best_boot_score = score
