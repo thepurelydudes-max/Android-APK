@@ -18,7 +18,7 @@ from sources import (
 
 
 ITEM_DATA_SCHEMA_VERSION = "4"
-ITEM_ICON_SCHEMA_VERSION = "2"
+ITEM_ICON_SCHEMA_VERSION = "3"
 
 
 class UpdateCancelled(RuntimeError):
@@ -352,22 +352,48 @@ def _cache_media(
             continue
         target = ITEM_DIR / f"{safe_name(name)}.png"
         existing = db.get_item(name)
-        record = _seed_media_record(f"item:{name}", icon_url, existing, target, previous_patch, current_patch)
+        asset_key = f"item:{name}"
+        record = _seed_media_record(asset_key, icon_url, existing, target, previous_patch, current_patch)
+
+        # 3.5.0/3.5.1 forced every item image to be downloaded again in one
+        # update. That created a burst of 100+ media requests and turned
+        # transient CDN failures into dozens of "source warnings". Only items
+        # whose verified URL/path is actually unresolved need a forced retry.
+        record_url = str((record or {}).get("source_url") or "")
+        existing_path = str((existing or {}).get("icon_path") or "")
+        force_this_item = bool(
+            force_item_refresh and (
+                not existing_path
+                or (record_url and record_url != icon_url)
+                or not (record or {}).get("sha256")
+            )
+        )
         try:
             result = sync_cached_image(
                 net, icon_url, target, record, current_patch=current_patch, previous_patch=previous_patch,
-                force_refresh=force_item_refresh,
+                force_refresh=force_this_item,
             )
-            if result.status in {"failed", "stale_kept"}:
+            failed = result.status in {"failed", "stale_kept"}
+            if failed:
                 item_failures += 1
                 errors.append(f"Item image {name}: {result.status}")
-            _store_media_result(f"item:{name}", result)
-            if result.path:
-                db.update_item_media(name, result.source_url or icon_url, _portable_path(result.path))
-                item_count += 1
+                # Never roll a newly verified URL back to an old cached asset.
+                # Leave icon_path empty so the UI can use the verified remote URL,
+                # and keep the old manifest out of the next retry decision.
+                if record_url and record_url != icon_url:
+                    db.clear_item_icon_path(name)
+                    db.delete_media_asset(asset_key)
+            else:
+                _store_media_result(asset_key, result)
+                if result.path:
+                    db.update_item_media(name, icon_url, _portable_path(result.path))
+                    item_count += 1
         except Exception as exc:
             item_failures += 1
             errors.append(f"Item image {name}: {exc}")
+            if record_url and record_url != icon_url:
+                db.clear_item_icon_path(name)
+                db.delete_media_asset(asset_key)
         if idx % 30 == 0:
             progress(update_text("cache_items", lang, current=idx, total=len(items)))
 
