@@ -8,7 +8,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from typing import Callable, Iterable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -55,6 +55,20 @@ WR_POCKET_PATCH = "https://wrpocket.app/en/patch/7"
 RIOT_PATCH_NOTES = "https://wildrift.leagueoflegends.com/en-us/news/tags/patch-notes/"
 
 
+def is_dns_resolution_error(exc: BaseException | str) -> bool:
+    """Recognise Android/urllib3 DNS failures without depending on exception internals."""
+    text = str(exc or "").casefold()
+    return any(token in text for token in (
+        "nameresolutionerror",
+        "failed to resolve",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "no address associated with hostname",
+        "nodename nor servname provided",
+        "getaddrinfo failed",
+    ))
+
+
 @dataclass
 class Net:
     timeout: int = 25
@@ -63,18 +77,55 @@ class Net:
     def __post_init__(self):
         self.s = requests.Session()
         self.s.headers.update(HEADERS)
-        # WildRiftCore rate-limits rapid page-by-page crawling.  These values are
-        # kept on the session so the dedicated requester below can slow down
-        # adaptively after a 429 without affecting the other update sources.
+        # Track DNS failures across independent hosts. If several unrelated
+        # sources fail resolution in the same update, that is a device/network
+        # DNS outage, not four separate parser failures.
+        self._dns_failed_hosts: set[str] = set()
+        self._dns_failure_events = 0
         self._wildriftcore_last_request = 0.0
         self._wildriftcore_gap = 1.35
+        self._wildriftcounter_last_request = 0.0
+        self._wildriftcounter_gap = 0.85
+
+    def note_request_error(self, url: str, exc: BaseException) -> None:
+        if not is_dns_resolution_error(exc):
+            return
+        host = (urlparse(str(url or "")).hostname or "").casefold()
+        if host:
+            self._dns_failed_hosts.add(host)
+        self._dns_failure_events += 1
+
+    @property
+    def dns_outage(self) -> bool:
+        # Two unrelated hosts failing DNS is already enough to distinguish a
+        # local resolver/VPN problem from one site's temporary outage.
+        return len(self._dns_failed_hosts) >= 2 or self._dns_failure_events >= 3
+
+    @property
+    def dns_failed_hosts(self) -> tuple[str, ...]:
+        return tuple(sorted(self._dns_failed_hosts))
 
     def get(self, url: str, headers: dict | None = None, allow_not_modified: bool = False) -> requests.Response:
-        r = self.s.get(url, timeout=self.timeout, headers=headers or None)
-        if not (allow_not_modified and r.status_code == 304):
-            r.raise_for_status()
-        time.sleep(self.delay)
-        return r
+        # Android can briefly lose DNS while VPN/private-DNS routes are changing.
+        # Retry a couple of times, but never turn one DNS outage into minutes of
+        # repeated requests for every champion/image.
+        waits = (0.8, 1.8)
+        last_exc: requests.RequestException | None = None
+        for attempt in range(len(waits) + 1):
+            try:
+                r = self.s.get(url, timeout=self.timeout, headers=headers or None)
+                if not (allow_not_modified and r.status_code == 304):
+                    r.raise_for_status()
+                time.sleep(self.delay)
+                return r
+            except requests.RequestException as exc:
+                last_exc = exc
+                self.note_request_error(url, exc)
+                if attempt >= len(waits):
+                    raise
+                time.sleep(waits[attempt])
+        assert last_exc is not None
+        raise last_exc
 
 
 def _retry_after_seconds(response: requests.Response) -> float | None:
@@ -112,7 +163,23 @@ def _wildriftcore_get(
         if elapsed < gap:
             time.sleep(gap - elapsed)
 
-        response = net.s.get(url, timeout=net.timeout, headers=headers or None)
+        try:
+            response = net.s.get(url, timeout=net.timeout, headers=headers or None)
+        except requests.RequestException as exc:
+            net._wildriftcore_last_request = time.monotonic()
+            net.note_request_error(url, exc)
+            # DNS/transport failures use short retries. The long waits below are
+            # reserved for an explicit server-side 429 Retry-After response.
+            if attempt < 2:
+                wait_seconds = (1.5, 3.0)[attempt]
+                if progress:
+                    progress(
+                        f"WildRiftCore: ошибка соединения, повтор через "
+                        f"{int(math.ceil(wait_seconds))} с…"
+                    )
+                time.sleep(wait_seconds)
+                continue
+            raise
         net._wildriftcore_last_request = time.monotonic()
         last_response = response
 
@@ -192,7 +259,10 @@ def _wildriftcounter_get(
         except requests.RequestException as exc:
             last_exc = exc
             net._wildriftcounter_last_request = time.monotonic()
-            if attempt >= len(waits):
+            net.note_request_error(url, exc)
+            # A DNS resolver failure will not be fixed by hammering the same
+            # hostname five times. Two short retries are enough.
+            if attempt >= len(waits) or (is_dns_resolution_error(exc) and attempt >= 2):
                 raise
             wait = waits[attempt]
             if progress:
