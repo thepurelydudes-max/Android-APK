@@ -180,6 +180,16 @@ class MobileAssistant:
         self.update_progress: ft.ProgressBar | None = None
         self._update_stage = 0
 
+        # Hot-path caches. Android filesystem stat/Path.resolve calls and the
+        # repeated 10-build recommendation pass were the main source of visible
+        # role-tab lag.
+        self._media_src_cache: dict[tuple[str, str, str], str] = {}
+        self._local_media_src_cache: dict[str, str] = {}
+        self._recommendation_cache: dict[tuple, tuple[list[dict], dict[str, dict]]] = {}
+        self._recommendation_cache_order: list[tuple] = []
+        self.pick_card_boxes: dict[str, ft.Container] = {}
+        self.pick_card_indicators: dict[str, ft.Icon] = {}
+
         self.reload_snapshot()
         self.configure_page()
         self.rebuild_page()
@@ -198,6 +208,10 @@ class MobileAssistant:
     def reload_snapshot(self) -> None:
         db.init_db()
         self.snapshot = db.load_runtime_snapshot()
+        self._media_src_cache.clear()
+        self._local_media_src_cache.clear()
+        self._recommendation_cache.clear()
+        self._recommendation_cache_order.clear()
 
     def champ_name(self, champ: dict | None) -> str:
         if not champ:
@@ -222,18 +236,36 @@ class MobileAssistant:
         return self.snapshot.get("champions_by_id", {}).get(str(cid or ""))
 
     def item_record(self, canonical: str) -> dict:
-        return self.snapshot.get("items", {}).get(canonical) or db.get_item(canonical) or {}
+        # The snapshot is reloaded after every data update. Falling through to
+        # SQLite here used to open a database connection while rendering cards
+        # whenever an item was temporarily absent.
+        return self.snapshot.get("items", {}).get(canonical) or {}
+
+    def _cached_local_media_src(self, record: dict | None) -> str:
+        value = str((record or {}).get("icon_path") or "")
+        if not value:
+            return ""
+        cached = self._local_media_src_cache.get(value)
+        if cached is not None:
+            return cached
+        p = resolve_media_path(value)
+        result = str(p) if p.is_file() else ""
+        self._local_media_src_cache[value] = result
+        return result
 
     def image_src(self, record: dict | None, fallback: str = "wildrift_icon.png") -> str:
         if not record:
             return fallback
         value = str(record.get("icon_path") or "")
-        if value:
-            p = resolve_media_path(value)
-            if p.is_file():
-                return str(p)
         url = str(record.get("icon_url") or "")
-        return url or fallback
+        key = (value, url, fallback)
+        cached = self._media_src_cache.get(key)
+        if cached is not None:
+            return cached
+        local = self._cached_local_media_src(record)
+        result = local or url or fallback
+        self._media_src_cache[key] = result
+        return result
 
     def item_image_content(self, record: dict | None, size: int) -> ft.Control:
         """Render only a successfully cached item icon.
@@ -242,11 +274,9 @@ class MobileAssistant:
         failed cache entry to a remote URL that may be stale/wrong. If an icon
         was not verified and cached, show a neutral missing-image marker.
         """
-        value = str((record or {}).get("icon_path") or "")
-        if value:
-            p = resolve_media_path(value)
-            if p.is_file():
-                return ft.Image(src=str(p), width=size, height=size, fit=ft.BoxFit.COVER)
+        local = self._cached_local_media_src(record)
+        if local:
+            return ft.Image(src=local, width=size, height=size, fit=ft.BoxFit.COVER)
         return ft.Container(
             width=size,
             height=size,
@@ -657,6 +687,26 @@ class MobileAssistant:
         self.page.add(ft.SafeArea(content=content))
         self.page.update()
 
+    def _recommendation_key(self) -> tuple:
+        return (
+            self.role,
+            tuple(str(cid or "") for cid in self.enemy_ids),
+        )
+
+    def _remember_recommendations(
+        self,
+        key: tuple,
+        picks: list[dict],
+        builds: dict[str, dict],
+    ) -> None:
+        self._recommendation_cache[key] = (picks, builds)
+        if key in self._recommendation_cache_order:
+            self._recommendation_cache_order.remove(key)
+        self._recommendation_cache_order.append(key)
+        while len(self._recommendation_cache_order) > 32:
+            oldest = self._recommendation_cache_order.pop(0)
+            self._recommendation_cache.pop(oldest, None)
+
     def selected_enemies(self) -> list[tuple[str, str]]:
         rows = []
         for cid in self.enemy_ids:
@@ -738,25 +788,43 @@ class MobileAssistant:
             return
 
         previous = self.selected_pick_id if preserve_selection else ""
-        self.pick_results = engine.recommend_picks(self.role, enemies, 10, snapshot=self.snapshot)
+        cache_key = self._recommendation_key()
+        cached = self._recommendation_cache.get(cache_key)
+        if cached is not None:
+            self.pick_results, self.pick_builds = cached
+        else:
+            self.pick_results = engine.recommend_picks(
+                self.role, enemies, 10, snapshot=self.snapshot
+            )
+
+            # Build previews remain exactly the same feature-wise, but the whole
+            # result is cached per role + enemy draft. Switching back to a role
+            # no longer recomputes ten adaptive builds.
+            self.pick_builds = {}
+            for result in self.pick_results:
+                champ = result.get("champion") or {}
+                cid = str(champ.get("id") or "")
+                try:
+                    self.pick_builds[cid] = engine.recommend_build(
+                        champ.get("name") or champ.get("id"),
+                        enemies,
+                        role_ru=self.role,
+                        snapshot=self.snapshot,
+                    )
+                except Exception:
+                    self.pick_builds[cid] = {
+                        "champion": champ,
+                        "ordered": [],
+                        "base": [],
+                        "situational": [],
+                        "reasons": {},
+                    }
+            self._remember_recommendations(
+                cache_key, self.pick_results, self.pick_builds
+            )
+
         ids = [str(r.get("champion", {}).get("id") or "") for r in self.pick_results]
         self.selected_pick_id = previous if previous in ids else (ids[0] if ids else "")
-
-        # Desktop UI previews the adaptive items for every candidate in the rating.
-        self.pick_builds = {}
-        for result in self.pick_results:
-            champ = result.get("champion") or {}
-            cid = str(champ.get("id") or "")
-            try:
-                self.pick_builds[cid] = engine.recommend_build(
-                    champ.get("name") or champ.get("id"),
-                    enemies,
-                    role_ru=self.role,
-                    snapshot=self.snapshot,
-                )
-            except Exception:
-                self.pick_builds[cid] = {"champion": champ, "ordered": [], "base": [], "situational": [], "reasons": {}}
-
         self.current_build = self.pick_builds.get(self.selected_pick_id)
         if self.current_build is None:
             self.refresh_build()
@@ -788,9 +856,30 @@ class MobileAssistant:
             self.current_build = None
 
     def select_pick(self, cid: str) -> None:
-        self.selected_pick_id = str(cid)
+        new_id = str(cid)
+        if new_id == self.selected_pick_id:
+            return
+        old_id = self.selected_pick_id
+        self.selected_pick_id = new_id
         self.refresh_build()
-        self.render_outputs()
+
+        # Selecting one recommendation used to recreate all 10 cards, matchup
+        # chips and ~60 item-image controls. Only two borders/icons and the build
+        # pane actually changed.
+        for pick_id in (old_id, new_id):
+            box = self.pick_card_boxes.get(pick_id)
+            indicator = self.pick_card_indicators.get(pick_id)
+            selected = pick_id == new_id
+            if box is not None:
+                box.border = ft.Border.all(
+                    2 if selected else 1,
+                    P["gold_bright"] if selected else P["border"],
+                )
+            if indicator is not None:
+                indicator.icon = ft.Icons.CHECK_CIRCLE if selected else ft.Icons.CHEVRON_RIGHT
+                indicator.color = P["gold_bright"] if selected else P["muted"]
+
+        self.render_current_build()
         self.page.update()
 
     def localized_enemy_records(self, names: list[str]) -> list[dict]:
@@ -866,6 +955,10 @@ class MobileAssistant:
         tier = str(result.get("tier") or "—")
         build = self.pick_builds.get(cid)
 
+        indicator = ft.Icon(
+            ft.Icons.CHECK_CIRCLE if selected else ft.Icons.CHEVRON_RIGHT,
+            color=P["gold_bright"] if selected else P["muted"],
+        )
         identity = ft.Row(
             spacing=8,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -881,7 +974,12 @@ class MobileAssistant:
                     spacing=1,
                     expand=True,
                     controls=[
-                        ft.Text(f"{rank}. {self.champ_name(champ)}", size=13, weight=ft.FontWeight.BOLD, color=P["gold_bright"]),
+                        ft.Text(
+                            f"{rank}. {self.champ_name(champ)}",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=P["gold_bright"],
+                        ),
                         ft.Text(
                             f"{self.t('tier')} {tier} · {self.t('score')} {float(result.get('score') or 0):.2f} · "
                             f"{self.t('winrate')} {wr_text}",
@@ -890,14 +988,17 @@ class MobileAssistant:
                         ),
                     ],
                 ),
-                ft.Icon(ft.Icons.CHECK_CIRCLE if selected else ft.Icons.CHEVRON_RIGHT, color=P["gold_bright"] if selected else P["muted"]),
+                indicator,
             ],
         )
 
-        return ft.Container(
+        card = ft.Container(
             data=cid,
             padding=9,
-            border=ft.Border.all(2, P["gold_bright"] if selected else P["border"]),
+            border=ft.Border.all(
+                2 if selected else 1,
+                P["gold_bright"] if selected else P["border"],
+            ),
             border_radius=10,
             bgcolor=P["panel_alt"],
             on_click=lambda e, pick_id=cid: self.select_pick(pick_id),
@@ -911,13 +1012,21 @@ class MobileAssistant:
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Text(self.t("items") + ":", size=9, weight=ft.FontWeight.BOLD, color=P["muted"]),
+                            ft.Text(
+                                self.t("items") + ":",
+                                size=9,
+                                weight=ft.FontWeight.BOLD,
+                                color=P["muted"],
+                            ),
                             self.build_preview(build),
                         ],
                     ),
                 ],
             ),
         )
+        self.pick_card_boxes[cid] = card
+        self.pick_card_indicators[cid] = indicator
+        return card
 
     def item_card(self, canonical: str, build: dict) -> ft.Control:
         row = self.item_record(canonical)
@@ -989,14 +1098,23 @@ class MobileAssistant:
             ),
         )
 
-    def render_outputs(self) -> None:
+    def render_pick_results(self) -> None:
+        self.pick_card_boxes = {}
+        self.pick_card_indicators = {}
         if not self.pick_results:
             self.pick_column.controls = [
-                ft.Text(self.t("pick_hint") if not self.selected_enemies() else self.t("no_results"), color=P["muted"])
+                ft.Text(
+                    self.t("pick_hint") if not self.selected_enemies() else self.t("no_results"),
+                    color=P["muted"],
+                )
             ]
-        else:
-            self.pick_column.controls = [self.pick_card(r, i + 1) for i, r in enumerate(self.pick_results)]
+            return
+        self.pick_column.controls = [
+            self.pick_card(result, index + 1)
+            for index, result in enumerate(self.pick_results)
+        ]
 
+    def render_current_build(self) -> None:
         if not self.current_build:
             self.build_column.controls = [ft.Text("—", color=P["muted"])]
             return
@@ -1005,12 +1123,18 @@ class MobileAssistant:
         items = self.build_item_names(self.current_build)
         item_rows: list[ft.Control] = []
         for start in range(0, min(6, len(items)), 3):
-            cards = [self.item_card(name, self.current_build) for name in items[start:start + 3]]
+            cards = [
+                self.item_card(name, self.current_build)
+                for name in items[start:start + 3]
+            ]
             while len(cards) < 3:
                 cards.append(ft.Container(expand=True))
             item_rows.append(ft.Row(spacing=7, controls=cards))
 
-        details = [self.item_detail(name, self.current_build, i + 1) for i, name in enumerate(items[:6])]
+        details = [
+            self.item_detail(name, self.current_build, i + 1)
+            for i, name in enumerate(items[:6])
+        ]
         self.build_column.controls = [
             ft.Container(
                 padding=8,
@@ -1025,25 +1149,49 @@ class MobileAssistant:
                             height=58,
                             border_radius=9,
                             clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                            content=ft.Image(src=self.image_src(champ), fit=ft.BoxFit.COVER),
+                            content=ft.Image(
+                                src=self.image_src(champ),
+                                fit=ft.BoxFit.COVER,
+                            ),
                         ),
                         ft.Column(
                             spacing=1,
                             expand=True,
                             controls=[
-                                ft.Text(self.t("selected"), size=10, color=P["muted"]),
-                                ft.Text(self.champ_name(champ), size=17, weight=ft.FontWeight.BOLD, color=P["gold_bright"]),
+                                ft.Text(
+                                    self.t("selected"),
+                                    size=10,
+                                    color=P["muted"],
+                                ),
+                                ft.Text(
+                                    self.champ_name(champ),
+                                    size=17,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=P["gold_bright"],
+                                ),
                             ],
                         ),
                     ],
                 ),
             ),
-            ft.Text(self.t("recommended_items"), size=12, weight=ft.FontWeight.BOLD),
+            ft.Text(
+                self.t("recommended_items"),
+                size=12,
+                weight=ft.FontWeight.BOLD,
+            ),
             *item_rows,
             ft.Divider(height=1, color=P["border"]),
-            ft.Text(self.t("build_description"), size=12, weight=ft.FontWeight.BOLD),
+            ft.Text(
+                self.t("build_description"),
+                size=12,
+                weight=ft.FontWeight.BOLD,
+            ),
             *details,
         ]
+
+    def render_outputs(self) -> None:
+        self.render_pick_results()
+        self.render_current_build()
 
     def refresh_language_controls(self) -> None:
         """Translate existing controls in place without clearing the page."""
@@ -1146,14 +1294,42 @@ class MobileAssistant:
         def report_progress(message: str) -> None:
             loop.call_soon_threadsafe(progress_queue.put_nowait, str(message))
 
-        worker = asyncio.create_task(asyncio.to_thread(updater.update_all, report_progress, self.lang))
+        worker = asyncio.create_task(
+            asyncio.to_thread(updater.update_all, report_progress, self.lang)
+        )
         try:
+            # The updater can emit hundreds of per-page/per-image messages.
+            # Updating Flutter for every one saturated the UI event loop and made
+            # role controls feel seconds behind. Keep the newest message, drain
+            # the rest, and repaint at most ~6 times per second.
+            pending_message = ""
+            last_progress_paint = 0.0
+            min_progress_interval = 0.16
             while not worker.done() or not progress_queue.empty():
                 try:
-                    message = await asyncio.wait_for(progress_queue.get(), timeout=0.15)
+                    pending_message = await asyncio.wait_for(
+                        progress_queue.get(), timeout=0.06
+                    )
+                    while True:
+                        try:
+                            pending_message = progress_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
                 except asyncio.TimeoutError:
-                    continue
-                self._apply_update_progress(message)
+                    pass
+
+                now_tick = loop.time()
+                if pending_message and (
+                    worker.done()
+                    or now_tick - last_progress_paint >= min_progress_interval
+                ):
+                    self._apply_update_progress(pending_message)
+                    self.page.update()
+                    pending_message = ""
+                    last_progress_paint = now_tick
+
+            if pending_message:
+                self._apply_update_progress(pending_message)
                 self.page.update()
 
             summary = await worker
