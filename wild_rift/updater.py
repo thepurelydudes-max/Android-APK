@@ -144,7 +144,7 @@ def build_resolver(champs: list[dict]):
     manual = {
         "khazix": "Kha'Zix", "kaisa": "Kai'Sa", "kogmaw": "Kog'Maw", "chogath": "Cho'Gath",
         "drmundo": "DrMundo", "nunuandwillump": "Nunu", "nunuwillump": "Nunu",
-        "jarvaniv": "JarvanIV", "monkeyking": "Wukong",
+        "jarvaniv": "JarvanIV", "monkeyking": "Wukong", "wukong": "MonkeyKing",
     }
     for champ in champs:
         cid = str(champ["id"])
