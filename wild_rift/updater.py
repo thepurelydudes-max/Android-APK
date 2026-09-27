@@ -764,7 +764,13 @@ def _audit_wrc_build_integrity() -> dict:
     for (cid, role), rows in role_variants.items():
         for row in rows:
             items = [str(x) for x in (row.get("items") or []) if str(x).strip()]
-            if len(items) != 5:
+            trigger = str(row.get("trigger_text") or "").strip()
+            examples = [
+                str(x).strip()
+                for x in (row.get("example_enemies") or [])
+                if str(x).strip()
+            ]
+            if len(items) != 5 or not trigger or not examples:
                 incomplete_variants.append(
                     f"{cid}:{role}:{row.get('variant_name') or '?'}"
                 )
@@ -1090,7 +1096,8 @@ def update_all(
             canonical_item_name(row[2])
             for row in role_situational if canonical_item_name(row[2])
         )
-        for _cid, _role, _variant_name, variant_items, _trigger, _priority, _patch, _url in role_variants:
+        for raw_variant in role_variants:
+            variant_items = raw_variant[3] if len(raw_variant) > 3 else []
             role_item_names.update(
                 canonical_item_name(x)
                 for x in variant_items if canonical_item_name(x)
