@@ -93,6 +93,17 @@ def init_db() -> None:
                 PRIMARY KEY (champion_id, role, source),
                 FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS role_build_variants (
+                champion_id TEXT NOT NULL, role TEXT NOT NULL, variant_name TEXT NOT NULL,
+                items_json TEXT NOT NULL DEFAULT '[]', trigger_text TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 999, source TEXT NOT NULL,
+                patch TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (champion_id, role, variant_name, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_role_build_variants_champion_role
+                ON role_build_variants(champion_id, role, source, priority);
             CREATE TABLE IF NOT EXISTS role_build_situational (
                 champion_id TEXT NOT NULL, role TEXT NOT NULL, item_name TEXT NOT NULL,
                 trigger_text TEXT NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 999,
@@ -228,6 +239,7 @@ def migrate_champion_identities(aliases: dict[str, str]) -> None:
                 ("champion_tiers", "champion_id,role,tier,source,patch,updated_at", "champion_id"),
                 ("item_pools", "champion_id,item_name,category,priority,source", "champion_id"),
                 ("role_builds", "champion_id,role,items_json,boot_name,source,patch,source_url,updated_at", "champion_id"),
+                ("role_build_variants", "champion_id,role,variant_name,items_json,trigger_text,priority,source,patch,source_url,updated_at", "champion_id"),
                 ("role_build_situational", "champion_id,role,item_name,trigger_text,priority,source", "champion_id"),
                 ("role_build_boots", "champion_id,role,item_name,trigger_text,priority,source", "champion_id"),
                 ("matchup_page_cache", "source,patch,champion_id,rows_json,source_url,fetched_at", "champion_id"),
@@ -541,6 +553,7 @@ def replace_source_role_builds_partial(
     builds: Iterable[tuple[str, str, list[str], str, str, str]],
     situational: Iterable[tuple[str, str, str, str, int]],
     boots: Iterable[tuple[str, str, str, str, int]],
+    variants: Iterable[tuple[str, str, str, list[str], str, int, str, str]] = (),
 ) -> None:
     """Replace role-build data only for champion/role pairs present in builds.
 
@@ -572,11 +585,29 @@ def replace_source_role_builds_partial(
         for c, r, i, reason, priority in boots
         if (str(c), str(r)) in touched and str(i).strip()
     ]
+    variant_rows = []
+    for c, r, name, items, trigger, priority, patch, source_url in variants:
+        cid = str(c or "").strip()
+        role_value = str(r or "").strip()
+        variant_name = str(name or "").strip()
+        clean_items = [str(x).strip() for x in (items or []) if str(x).strip()]
+        if (cid, role_value) not in touched or not variant_name or len(clean_items) < 3:
+            continue
+        variant_rows.append((
+            cid, role_value, variant_name,
+            json.dumps(clean_items[:5], ensure_ascii=False),
+            str(trigger or ""), int(priority or 999), source,
+            str(patch or ""), str(source_url or ""),
+        ))
 
     with connect() as con:
         for champion_id, role in sorted(touched):
             con.execute(
                 "DELETE FROM role_builds WHERE source=? AND champion_id=? AND role=?",
+                (source, champion_id, role),
+            )
+            con.execute(
+                "DELETE FROM role_build_variants WHERE source=? AND champion_id=? AND role=?",
                 (source, champion_id, role),
             )
             con.execute(
@@ -592,6 +623,13 @@ def replace_source_role_builds_partial(
                 champion_id,role,items_json,boot_name,source,patch,source_url,updated_at
             ) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
             build_rows,
+        )
+        con.executemany(
+            """INSERT OR REPLACE INTO role_build_variants(
+                champion_id,role,variant_name,items_json,trigger_text,priority,
+                source,patch,source_url,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            variant_rows,
         )
         con.executemany(
             """INSERT OR REPLACE INTO role_build_situational(
@@ -621,6 +659,27 @@ def get_role_build(champion_id: str, role: str, source: str = "wildriftcore.com"
     except (TypeError, json.JSONDecodeError):
         out["items"] = []
         out.pop("items_json", None)
+    return out
+
+
+def get_role_build_variants(champion_id: str, role: str, source: str = "wildriftcore.com") -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            """SELECT variant_name,items_json,trigger_text,priority,source,patch,source_url
+               FROM role_build_variants
+               WHERE champion_id=? AND role=? AND source=?
+               ORDER BY priority ASC,variant_name""",
+            (champion_id, role, source),
+        ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        data = dict(row)
+        try:
+            data["items"] = json.loads(data.pop("items_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            data["items"] = []
+            data.pop("items_json", None)
+        out.append(data)
     return out
 
 
@@ -964,6 +1023,9 @@ def load_runtime_snapshot() -> dict:
         pool_rows = con.execute("SELECT champion_id,item_name,category,priority,source FROM item_pools ORDER BY champion_id,priority ASC,item_name").fetchall()
         counter_rows = con.execute("SELECT enemy_id,item_name,reason,source FROM counter_items ORDER BY enemy_id,item_name").fetchall()
         role_build_rows = con.execute("SELECT * FROM role_builds").fetchall()
+        role_variant_rows = con.execute(
+            "SELECT * FROM role_build_variants ORDER BY champion_id,role,priority,variant_name"
+        ).fetchall()
         role_situational_rows = con.execute(
             "SELECT champion_id,role,item_name,trigger_text,priority,source FROM role_build_situational ORDER BY champion_id,role,priority,item_name"
         ).fetchall()
@@ -1031,6 +1093,16 @@ def load_runtime_snapshot() -> dict:
             data.pop("items_json", None)
         role_builds[key] = data
 
+    role_variants: dict[tuple[str, str], list[dict]] = {}
+    for row in role_variant_rows:
+        data = dict(row)
+        try:
+            data["items"] = json.loads(data.pop("items_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            data["items"] = []
+            data.pop("items_json", None)
+        role_variants.setdefault((row["champion_id"], row["role"]), []).append(data)
+
     role_situational: dict[tuple[str, str], list[dict]] = {}
     for row in role_situational_rows:
         role_situational.setdefault((row["champion_id"], row["role"]), []).append(dict(row))
@@ -1052,6 +1124,7 @@ def load_runtime_snapshot() -> dict:
         "item_pools": item_pools,
         "counter_items": counter_items,
         "role_builds": role_builds,
+        "role_variants": role_variants,
         "role_situational": role_situational,
         "role_boots": role_boots,
         "items": items,
