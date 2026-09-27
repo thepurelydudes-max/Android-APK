@@ -462,7 +462,7 @@ class NetworkResilienceRegressionTests(unittest.TestCase):
         message = (
             "HTTPSConnectionPool(host='wrpocket.app', port=443): Max retries exceeded "
             "with url: /en/champions/garen (Caused by NameResolutionError("
-            ""Failed to resolve 'wrpocket.app' ([Errno 7] No address associated with hostname)"))"
+            "\"Failed to resolve 'wrpocket.app' ([Errno 7] No address associated with hostname)\"))"
         )
         self.assertTrue(sources.is_dns_resolution_error(message))
 
