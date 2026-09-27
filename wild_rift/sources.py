@@ -1277,6 +1277,7 @@ def parse_wildriftcore_build_page(
     lookup = _known_item_lookup(known_items)
     builds: list[dict] = []
     situational: list[dict] = []
+    opponent_adaptations: list[dict] = []
     boots: list[dict] = []
     variants: list[dict] = []
 
@@ -1500,6 +1501,15 @@ def parse_wildriftcore_build_page(
                         chosen = exact
                 if not chosen:
                     continue
+                opponent_adaptations.append({
+                    "role": role,
+                    "enemy": enemy_name,
+                    "item": chosen,
+                    "reason": reason,
+                    "priority": opp_priority,
+                })
+                # Keep the legacy merged situational row too, so older runtime
+                # snapshots still understand exact-opponent rules.
                 situational.append({
                     "role": role, "item": chosen,
                     "trigger": f"Opponent: {enemy_name}" + (f"; {reason}" if reason else ""),
@@ -1662,6 +1672,13 @@ def parse_wildriftcore_build_page(
                     enemy_name = clean(enemy_match.group(1))
                     reason_match = re.search(r"\)_([^_]+)_\s*$", line)
                     reason = clean(reason_match.group(1)) if reason_match else ""
+                    opponent_adaptations.append({
+                        "role": role,
+                        "enemy": enemy_name,
+                        "item": linked_items[0],
+                        "reason": reason,
+                        "priority": opp_priority,
+                    })
                     situational.append({
                         "role": role,
                         "item": linked_items[0],
@@ -1756,12 +1773,26 @@ def parse_wildriftcore_build_page(
         seen_variants.add(key)
         dedup_variants.append(row)
 
+    dedup_opponents: list[dict] = []
+    seen_opponents: set[tuple[str, str, str]] = set()
+    for row in opponent_adaptations:
+        key = (
+            str(row.get("role") or ""),
+            slugish(str(row.get("enemy") or "")),
+            canonical_item_name(str(row.get("item") or "")),
+        )
+        if not key[0] or not key[1] or not key[2] or key in seen_opponents:
+            continue
+        seen_opponents.add(key)
+        dedup_opponents.append(row)
+
     return {
         "champion_id": champion_id,
         "schema_version": WRC_BUILD_SCHEMA_VERSION,
         "builds": builds,
         "variants": dedup_variants,
         "situational": dedup_sit,
+        "opponent_adaptations": dedup_opponents,
         "boots": dedup_boots,
     }
 
@@ -1775,7 +1806,8 @@ def fetch_wildriftcore_role_builds(
     list[tuple[str, str, list[str], str, str, str]],
     list[tuple[str, str, str, str, int]],
     list[tuple[str, str, str, str, int]],
-    list[tuple[str, str, str, list[str], str, int, str, str]],
+    list[tuple[str, str, str, str, int]],
+    list[tuple[str, str, str, list[str], str, int, list[str], str, str, str]],
     list[str],
     dict,
 ]:
@@ -1800,7 +1832,10 @@ def fetch_wildriftcore_role_builds(
     builds_out: list[tuple[str, str, list[str], str, str, str]] = []
     sit_out: list[tuple[str, str, str, str, int]] = []
     boots_out: list[tuple[str, str, str, str, int]] = []
-    variants_out: list[tuple[str, str, str, list[str], str, int, str, str]] = []
+    opponent_out: list[tuple[str, str, str, str, str, int]] = []
+    variants_out: list[tuple[
+        str, str, str, list[str], str, int, list[str], str, str, str
+    ]] = []
     errors: list[str] = []
     success = 0
     reused = 0
@@ -1958,6 +1993,16 @@ def fetch_wildriftcore_role_builds(
                     champion_id, role, item, str(row.get("trigger") or ""),
                     int(row.get("priority") or 999),
                 ))
+        for row in payload.get("opponent_adaptations", []):
+            role = str(row.get("role") or "")
+            enemy = clean(str(row.get("enemy") or ""))
+            item = canonical_item_name(str(row.get("item") or ""))
+            reason = clean(str(row.get("reason") or ""))
+            if role and enemy and item:
+                opponent_out.append((
+                    champion_id, role, enemy, item, reason,
+                    int(row.get("priority") or 999),
+                ))
         for row in payload.get("variants", []):
             role = str(row.get("role") or "")
             name = clean(str(row.get("name") or ""))
@@ -2002,6 +2047,7 @@ def fetch_wildriftcore_role_builds(
         "roles_total": len(builds_out),
         "variants_total": len(variants_out),
         "situational_total": len(sit_out),
+        "opponent_adaptations_total": len(opponent_out),
         "boots_total": len(boots_out),
         "failed_profiles": failed_profiles,
     }
@@ -2010,7 +2056,10 @@ def fetch_wildriftcore_role_builds(
             f"WildRiftCore builds: покрытие {success}/{total} страниц, "
             f"{len(builds_out)} ролей, {len(variants_out)} вариантов."
         )
-    return builds_out, sit_out, boots_out, variants_out, errors, coverage
+    return (
+        builds_out, sit_out, boots_out, opponent_out,
+        variants_out, errors, coverage,
+    )
 
 
 def _wildriftcore_item_slug(name: str) -> str:
