@@ -32,6 +32,7 @@ def make_snapshot(
     role_situational=None,
     role_boots=None,
     role_opponent_adaptations=None,
+    champion_traits=None,
 ):
     by_id = {c["id"]: dict(c) for c in champions}
     aliases = {}
@@ -58,6 +59,7 @@ def make_snapshot(
         "role_situational": role_situational or {},
         "role_boots": role_boots or {},
         "role_opponent_adaptations": role_opponent_adaptations or {},
+        "champion_traits": champion_traits or {},
     }
 
 
@@ -485,6 +487,92 @@ Open this draft in the tool →
         )
         tags = engine._wrc_example_threat_tags(fiora, snapshot)
         self.assertIn("anti_dive", tags)
+
+    def test_metadata_only_variant_selects_rule_without_replacing_standard_core(self):
+        rows = [
+            {
+                "variant_name": "Standard — bruiser",
+                "items": ["A", "B", "C", "D", "E"],
+                "trigger_text": "Balanced draft, no strong signal",
+                "priority": 0,
+            },
+            {
+                "variant_name": "Anti-tank — shred",
+                "items": [],
+                "trigger_text": "2+ enemy tanks",
+                "priority": 1,
+            },
+            {
+                "variant_name": "Sustain — brawler",
+                "items": [],
+                "trigger_text": "2+ duelists",
+                "priority": 2,
+            },
+        ]
+        chosen = engine._select_role_variant(
+            rows, Counter({"anti_tank": 2})
+        )
+        self.assertEqual(chosen["variant_name"], "Anti-tank — shred")
+        self.assertEqual(chosen["items"], [])
+
+    def test_mostly_physical_variant_uses_three_of_five_majority(self):
+        rows = [
+            {
+                "variant_name": "Standard — frontline",
+                "items": [],
+                "trigger_text": "Balanced draft, no strong signal",
+                "priority": 0,
+            },
+            {
+                "variant_name": "Vs AD comps",
+                "items": [],
+                "trigger_text": "Mostly physical damage",
+                "priority": 1,
+            },
+            {
+                "variant_name": "Vs AP comps",
+                "items": [],
+                "trigger_text": "Mostly magic damage",
+                "priority": 2,
+            },
+        ]
+        chosen = engine._select_role_variant(
+            rows,
+            Counter({"anti_physical": 3, "anti_magic": 2}),
+        )
+        self.assertEqual(chosen["variant_name"], "Vs AD comps")
+
+    def test_wrc_counter_trait_profile_marks_duelist(self):
+        jax = {
+            "id": "Jax", "name": "Jax", "name_ru": "Джакс",
+            "roles": ["Fighter"], "lanes": ["top"], "damage_type": "Physical",
+        }
+        snapshot = make_snapshot(
+            [jax],
+            champion_traits={
+                "Jax": [{
+                    "champion_id": "Jax",
+                    "trait": "duelist",
+                    "confidence": 0.28,
+                    "evidence_count": 7,
+                    "mentions": 25,
+                    "source": "wildriftcore.com",
+                }]
+            },
+        )
+        self.assertIn(
+            "anti_duelist",
+            engine._wrc_counter_trait_tags(jax, snapshot),
+        )
+
+    def test_heavy_mobility_generic_rule_requires_two_enemies(self):
+        tags = {"anti_mobility"}
+        self.assertFalse(engine._trigger_is_active(
+            "Against heavy mobility", tags, Counter({"anti_mobility": 1})
+        ))
+        self.assertTrue(engine._trigger_is_active(
+            "Against heavy mobility", tags, Counter({"anti_mobility": 2})
+        ))
 
     def test_db_persists_role_build_variants(self):
         db.init_db()
