@@ -1,0 +1,48 @@
+Wild Rift Counter Assistant 3.6.5
+====================================
+
+Source-integrity repair.
+
+Update warnings
+---------------
+- The Android status line no longer reports only an opaque warning count.
+- It now names the affected update subsystems (tiers, role builds, item icons,
+  media cache, etc.) while full details remain in update-warnings.log.
+- Media failures remain grouped instead of one warning per image.
+
+Item icons
+----------
+- Finished-item icons are now authoritative only when resolved from that exact
+  item's own WR Pocket detail page.
+- Catalog-card images are no longer trusted as final icon identity because recipe
+  and similar-item artwork can share the same surrounding DOM.
+- Icon schema bumped to v4, forcing one controlled re-verification pass even if
+  the item index would otherwise return HTTP 304.
+- If exact detail-page verification fails, an unverified catalog icon is not
+  allowed to overwrite the last known-good database URL.
+- Fixed stale-cache resurrection: a leftover PNG is no longer treated as valid
+  merely because it exists on disk after SQLite deliberately cleared icon_path
+  when the verified URL changed.
+- Existing download pacing is preserved; exact icon repair is performed through
+  the normal throttled Net session.
+
+Champion tiers
+--------------
+- Replaced the unsafe ">=10 rows means success" rule with a ranked-section
+  coverage check.
+- Every champion profile link that is present and resolvable in the role's
+  WildRiftCore ranked section must receive a parsed tier before that role is
+  allowed to replace its previous tier table.
+- If markup changes and even one resolvable champion loses its tier during
+  parsing, that role refresh is rejected and the last known-good role tiers are
+  preserved instead of writing a partial table with blank tiers.
+- Unresolved champion slugs are surfaced as a source integrity error rather than
+  silently deleting tier rows.
+
+Regression tests
+----------------
+- Added tests for incomplete tier-page detection.
+- Added tests proving exact detail-page item icons replace catalog-card icons.
+- Added tests proving unverified icons cannot overwrite the database.
+- Added a test preventing cleared icon paths from re-validating leftover stale
+  PNG files.
