@@ -20,7 +20,7 @@ from sources import (
 
 
 ITEM_DATA_SCHEMA_VERSION = "4"
-ITEM_ICON_SCHEMA_VERSION = "3"
+ITEM_ICON_SCHEMA_VERSION = "4"
 
 
 class UpdateCancelled(RuntimeError):
@@ -142,9 +142,13 @@ def _seed_media_record(asset_key: str, current_url: str, existing_row: dict | No
     record = db.get_media_asset(asset_key)
     if record:
         return record
-    # Migration path for users upgrading from the pre-manifest cache: preserve a
-    # valid existing image and treat its stored/current URL as the baseline.
-    if target.exists():
+    # Migration path for users upgrading from the pre-manifest cache. Trust the
+    # old file only when SQLite still points to a cached path. If icon_path was
+    # deliberately cleared because the verified URL changed, a leftover PNG on
+    # disk is stale and must not be "re-blessed" as if it belonged to the new
+    # URL on the next update.
+    stored_path = str((existing_row or {}).get("icon_path") or "").strip()
+    if target.exists() and stored_path:
         return {
             "source_url": (existing_row or {}).get("icon_url") or current_url,
             "etag": "", "last_modified": "", "content_length": 0, "sha256": "",
@@ -445,6 +449,7 @@ def update_all(
     previous_patch = db.get_meta("patch_version", "")
     current_patch = previous_patch
     force_item_icon_refresh = db.get_meta("item_icon_schema_version", "") != ITEM_ICON_SCHEMA_VERSION
+    item_icon_verification_failures = 0
 
     emit(update_text("loading_champions", lang))
     en_champs = fetch_champions_locale(net, "en_US")
@@ -548,7 +553,10 @@ def update_all(
         pools = fetch_wrpocket_item_pools(net, resolve, emit)
         _check_cancel(cancel_check)
         wanted_items = {canonical_item_name(row[1]) for row in pools if clean_item_name(row[1])}
-        headers = _item_dataset_headers()
+        # Icon schema changes require a real catalog body even when the server
+        # would normally answer 304. We need each item's detail URL so the exact
+        # icon can be re-verified against its own page.
+        headers = {} if force_item_icon_refresh else _item_dataset_headers()
         force_item_schema_refresh = db.get_meta("item_dataset_schema_version", "") != ITEM_DATA_SCHEMA_VERSION
         dataset = fetch_wrpocket_item_dataset(net, None, headers)
         _check_cancel(cancel_check)
@@ -571,11 +579,22 @@ def update_all(
 
         parsed_rows = list(dataset.rows or []) if dataset.status_code != 304 else []
         if parsed_rows:
-            # Item-card DOM can contain recipe/similar-item art. Verify the
-            # icon for every finished item against that item's own detail page
-            # before writing URLs or refreshing the media cache.
+            # Item-card DOM can contain recipe/similar-item art. The exact icon
+            # authority is the item's own detail page, not the catalog card.
             parsed_rows = verify_wrpocket_item_icons(net, parsed_rows, emit)
             _check_cancel(cancel_check)
+            unverified_icons = [
+                row for row in parsed_rows
+                if is_finished_item_tier(str(row.get("tier") or ""))
+                and not bool(row.get("_icon_verified"))
+            ]
+            item_icon_verification_failures += len(unverified_icons)
+            if unverified_icons:
+                names = ", ".join(str(row.get("name") or "?") for row in unverified_icons[:12])
+                summary["errors"].append(
+                    f"WR Pocket exact item icons: {len(unverified_icons)} не подтверждено"
+                    + (f" ({names}{'…' if len(unverified_icons) > 12 else ''})" if names else "")
+                )
         if dataset.status_code != 304:
             detail_rows: list[dict] = []
             # Apply every valid catalog row we could parse.  Do not reject the
@@ -741,7 +760,11 @@ def update_all(
     )
     summary["champion_images"] = ci
     summary["item_images"] = ii
-    if force_item_icon_refresh and item_icon_failures == 0:
+    if (
+        force_item_icon_refresh
+        and item_icon_failures == 0
+        and item_icon_verification_failures == 0
+    ):
         db.set_meta("item_icon_schema_version", ITEM_ICON_SCHEMA_VERSION)
 
     _check_cancel(cancel_check)
