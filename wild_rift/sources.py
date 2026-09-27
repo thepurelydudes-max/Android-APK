@@ -1536,12 +1536,29 @@ def parse_wildriftcore_build_page(
             idx = 0
             while idx < variant_limit:
                 value = segment[idx]
-                if not value.startswith("#### "):
+                heading_match = re.match(r"^(#{3,4})\s+(.+)$", value)
+                if not heading_match:
                     idx += 1
                     continue
                 variant_name = plain_heading(value)
+                variant_folded = variant_name.casefold()
+                # Single-role pages (e.g. Ahri Mid) currently use ### for the
+                # three variants, while multi-role pages nest them under ####.
+                # Exclude structural section headings but accept both levels.
+                if (
+                    "recommended build" in variant_folded
+                    or variant_folded in {
+                        "situational adaptations",
+                        "adaptations by opponent",
+                        "power vs. the roster",
+                    }
+                ):
+                    idx += 1
+                    continue
                 next_idx = idx + 1
-                while next_idx < variant_limit and not segment[next_idx].startswith(("#### ", "### ")):
+                while next_idx < variant_limit and not re.match(
+                    r"^#{3,4}\s+", segment[next_idx]
+                ):
                     next_idx += 1
                 block = segment[idx + 1:next_idx]
                 variant_items: list[str] = []
