@@ -645,6 +645,52 @@ def replace_source_role_builds_partial(
         )
 
 
+def merge_champion_lanes_from_role_builds(source: str = "wildriftcore.com") -> int:
+    """Merge current WRC champion+role support into champion lane metadata.
+
+    The structured champion feed can lag a new/flex role. A real source build
+    for a champion+role is strong evidence that the champion belongs to that
+    selectable lane, unlike noisy tier/stat rows.
+    """
+    lane_by_role = {
+        "Барон": "top",
+        "Лес": "jungle",
+        "Мид": "mid",
+        "ADC": "ad",
+        "Саппорт": "support",
+    }
+    changed = 0
+    with connect() as con:
+        rows = con.execute(
+            "SELECT DISTINCT champion_id,role FROM role_builds WHERE source=?",
+            (source,),
+        ).fetchall()
+        roles_by_champion: dict[str, set[str]] = {}
+        for row in rows:
+            lane = lane_by_role.get(str(row["role"] or ""))
+            if lane:
+                roles_by_champion.setdefault(str(row["champion_id"]), set()).add(lane)
+
+        for champion_id, source_lanes in roles_by_champion.items():
+            row = con.execute(
+                "SELECT lanes_json FROM champions WHERE id=?", (champion_id,)
+            ).fetchone()
+            if not row:
+                continue
+            try:
+                existing = [str(x) for x in json.loads(row["lanes_json"] or "[]")]
+            except Exception:
+                existing = []
+            merged = list(dict.fromkeys([*existing, *sorted(source_lanes)]))
+            if merged != existing:
+                con.execute(
+                    "UPDATE champions SET lanes_json=? WHERE id=?",
+                    (json.dumps(merged, ensure_ascii=False), champion_id),
+                )
+                changed += 1
+    return changed
+
+
 def get_role_build(champion_id: str, role: str, source: str = "wildriftcore.com") -> Optional[dict]:
     with connect() as con:
         row = con.execute(
