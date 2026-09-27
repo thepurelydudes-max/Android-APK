@@ -335,6 +335,77 @@ Magic damage dominates the enemy draft.
         )
         self.assertEqual(chosen["variant_name"], "Vs AD comps")
 
+    def test_variant_selector_uses_two_dive_threats(self):
+        rows = [
+            {
+                "variant_name": "Standard — AP burst",
+                "items": ["A", "B", "C", "D", "E"],
+                "trigger_text": "Balanced draft, no strong signal",
+                "example_enemies": ["Ryze", "Master Yi", "Lucian", "Kai'Sa", "Lulu"],
+                "example_text": "Nothing dominates on the other side.",
+                "priority": 0,
+            },
+            {
+                "variant_name": "Safety — Zhonya",
+                "items": ["F", "G", "H", "I", "J"],
+                "trigger_text": "2+ dive threats 2+ burst champions",
+                "example_enemies": ["Fiora", "Lee Sin", "Aurelion Sol", "Kai'Sa", "Lulu"],
+                "example_text": "Dive threat: Fiora, Lee Sin.",
+                "priority": 1,
+            },
+        ]
+        chosen = engine._select_role_variant(
+            rows,
+            engine.Counter({"anti_dive": 2, "anti_burst": 1}),
+        )
+        self.assertEqual(chosen["variant_name"], "Safety — Zhonya")
+
+    def test_variant_selector_ignores_allied_only_rule_without_allies(self):
+        rows = [
+            {
+                "variant_name": "Standard — support",
+                "items": ["A", "B", "C", "D", "E"],
+                "trigger_text": "Balanced draft, no strong signal",
+                "example_enemies": ["Ryze", "Master Yi", "Lucian", "Kai'Sa", "Lulu"],
+                "example_text": "Nothing dominates on the other side.",
+                "priority": 0,
+            },
+            {
+                "variant_name": "Tempo & engage",
+                "items": ["F", "G", "H", "I", "J"],
+                "trigger_text": "2+ allied engages No enemy tank",
+                "example_enemies": ["Ryze", "Master Yi", "Lucian", "Kai'Sa", "Lulu"],
+                "example_text": "Allied engage: Pantheon, Lee Sin.",
+                "priority": 1,
+            },
+        ]
+        chosen = engine._select_role_variant(
+            rows,
+            engine.Counter({"anti_engage": 5, "anti_cc": 5}),
+        )
+        self.assertEqual(chosen["variant_name"], "Standard — support")
+
+    def test_wrc_example_explanation_learns_dive_enemy_tag(self):
+        fiora = {
+            "id": "Fiora", "name": "Fiora", "name_ru": "Фиора",
+            "roles": ["Fighter"], "lanes": ["top"], "damage_type": "Physical",
+        }
+        snapshot = make_snapshot(
+            [fiora],
+            role_variants={
+                ("Ahri", "Мид"): [{
+                    "variant_name": "Safety — Zhonya",
+                    "items": ["A", "B", "C", "D", "E"],
+                    "trigger_text": "2+ dive threats 2+ burst champions",
+                    "example_enemies": ["Fiora", "Lee Sin", "Aurelion Sol", "Kai'Sa", "Lulu"],
+                    "example_text": "Dive threat: Fiora, Lee Sin.",
+                    "priority": 1,
+                }]
+            },
+        )
+        tags = engine._wrc_example_threat_tags(fiora, snapshot)
+        self.assertIn("anti_dive", tags)
+
     def test_db_persists_role_build_variants(self):
         db.init_db()
         cid = "RegressionVariantChampion"
