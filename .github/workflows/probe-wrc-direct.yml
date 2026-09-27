@@ -86,6 +86,22 @@ jobs:
             sed -n "${START},${END}p" /tmp/malphite-jina.txt
           fi
 
+      - name: Probe fresh Jina browser Aatrox
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L -sS --max-time 90 \
+            -H 'X-No-Cache: true' \
+            -H 'X-Cache-Tolerance: 0' \
+            -H 'X-Engine: browser' \
+            -H 'X-Timeout: 45' \
+            'https://r.jina.ai/https://wildriftcore.com/en/champions/aatrox/builds/' \
+            -o /tmp/aatrox-fresh.txt
+          echo "bytes=$(wc -c < /tmp/aatrox-fresh.txt)"
+          grep -n -E 'Standard — bruiser|Anti-tank — shred|Sustain — brawler|Example enemy draft|Adaptations by opponent' /tmp/aatrox-fresh.txt | head -80 || true
+          echo '=== fresh Aatrox variant block ==='
+          sed -n '24,120p' /tmp/aatrox-fresh.txt
+
       - name: Probe with real headless Chrome
         shell: bash
         run: |
