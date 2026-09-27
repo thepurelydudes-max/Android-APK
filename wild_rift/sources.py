@@ -711,6 +711,35 @@ def _parse_wildriftcore_counter_page(
             ):
                 rows.append((owner_id, opponent_id, current_role, -edge_for_opponent))
 
+    # Current SEO/Reader counter pages can expose the full signed matrix
+    # as section cards instead of a role table:
+    #   ### [Vayne](...)+3
+    #   ### [Dr. Mundo](...)−1
+    # The sign is still from the opponent's perspective, so invert it for the
+    # page owner. Store it as a general-role fallback; role-aware cached/source
+    # rows, when available, remain more specific and are preferred by engine.
+    if not rows and "Markdown Content:" in str(html or ""):
+        card_re = re.compile(
+            r"^#{3,4}\s+\[([^\]]+)\]\("
+            r"https?://(?:www\.)?wildriftcore\.com/en/champions/[^)]+\)"
+            r"\s*([+\-−±]?\s*\d+(?:\.\d+)?)\s*$",
+            flags=re.I,
+        )
+        for raw_line in str(html or "").splitlines():
+            match = card_re.match(raw_line.strip())
+            if not match:
+                continue
+            opponent_id = resolve(clean(match.group(1)))
+            edge_for_opponent = _wildriftcore_edge(
+                match.group(2).replace("−", "-").replace("±", "")
+            )
+            if (
+                opponent_id
+                and opponent_id != owner_id
+                and edge_for_opponent is not None
+            ):
+                rows.append((owner_id, opponent_id, "", -edge_for_opponent))
+
     return rows
 
 
@@ -877,7 +906,10 @@ def parse_wildriftcore_matchups(
             # its Edge board. If an older same-patch Edge page is already cached,
             # keep those proven scores while enriching it with newly parsed
             # semantic labels instead of deleting working matchup data.
-            page_rows = parsed_rows or cached_rows
+            # Same-patch role-aware cache is more precise than the current SEO
+            # general matrix. Use the newly parsed rows only when no proven
+            # page cache exists.
+            page_rows = cached_rows or parsed_rows
             if page_rows:
                 successful_pages += 1
                 downloaded_pages += 1
