@@ -747,6 +747,11 @@ def _audit_wrc_build_integrity() -> dict:
         f"{cid}:{role}"
         for cid, role in set(role_builds) - set(role_variants)
     )
+    incomplete_variant_sets = sorted(
+        f"{cid}:{role}={len(role_variants.get((cid, role), []))}/3"
+        for cid, role in role_builds
+        if len(role_variants.get((cid, role), [])) < 3
+    )
 
     incomplete_builds: list[str] = []
     for (cid, role), row in role_builds.items():
@@ -770,6 +775,7 @@ def _audit_wrc_build_integrity() -> dict:
         "variants": sum(len(rows) for rows in role_variants.values()),
         "missing_champions": missing_champions,
         "missing_variant_roles": missing_variant_roles,
+        "incomplete_variant_sets": incomplete_variant_sets,
         "incomplete_builds": incomplete_builds,
         "incomplete_variants": incomplete_variants,
     }
@@ -1198,6 +1204,12 @@ def update_all(
         names = list(build_integrity["missing_variant_roles"])
         build_gap_parts.append(
             f"без вариантов {len(names)}: " + ", ".join(names[:8])
+            + ("…" if len(names) > 8 else "")
+        )
+    if build_integrity.get("incomplete_variant_sets"):
+        names = list(build_integrity["incomplete_variant_sets"])
+        build_gap_parts.append(
+            f"неполный набор вариантов {len(names)}: " + ", ".join(names[:8])
             + ("…" if len(names) > 8 else "")
         )
     incomplete = list(build_integrity.get("incomplete_builds") or []) + list(
