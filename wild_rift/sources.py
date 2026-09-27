@@ -1684,11 +1684,41 @@ def parse_wildriftcore_build_page(
                         continue
                     enemy_match = re.search(r"\*\*([^*]+)\*\*", line)
                     linked_items = item_links(line)
-                    if not enemy_match or not linked_items:
+                    if not linked_items:
                         continue
-                    enemy_name = clean(enemy_match.group(1))
+                    enemy_name = clean(enemy_match.group(1)) if enemy_match else ""
+                    if not enemy_name:
+                        label_match = re.search(
+                            r"\[([^\]]+)\]\(https?://(?:www\.)?wildriftcore\.com/en/champions/[^)]+\)",
+                            line,
+                            flags=re.I,
+                        )
+                        if label_match:
+                            enemy_name = clean(
+                                label_match.group(1).replace("**", "")
+                            )
+                    if not enemy_name:
+                        slug_match = re.search(
+                            r"/en/champions/([^/?#)\s]+)",
+                            line,
+                            flags=re.I,
+                        )
+                        if slug_match:
+                            enemy_name = clean(
+                                slug_match.group(1).replace("-", " ")
+                            )
+                    if not enemy_name:
+                        continue
                     reason_match = re.search(r"\)_([^_]+)_\s*$", line)
                     reason = clean(reason_match.group(1)) if reason_match else ""
+                    if not reason:
+                        tail = re.sub(
+                            r".*?/en/items/[^)]+\)",
+                            "",
+                            line,
+                            flags=re.I,
+                        )
+                        reason = clean(tail.strip("_* -–—"))
                     opponent_adaptations.append({
                         "role": role,
                         "enemy": enemy_name,
