@@ -88,29 +88,54 @@ def _patch_key(value: str) -> tuple[int, ...]:
     return tuple(int(x) for x in parts[:3]) if parts else (0,)
 
 
-def _seed_db_quality(path: Path) -> tuple[tuple[int, ...], int, int]:
-    """Return (patch, WildRiftCore matchup rows, cached champion pages)."""
+def _seed_db_quality(
+    path: Path,
+) -> tuple[tuple[int, ...], int, int, int, int, int]:
+    """Return WRC data richness used when an APK replaces an older seed.
+
+    Role builds/variants are included deliberately. A same-patch APK may contain
+    a repaired complete WRC build database while Android still preserves an old
+    runtime DB whose matchup matrix is fine but whose build tables are empty.
+    """
     if not path.is_file():
-        return (0,), 0, 0
+        return (0,), 0, 0, 0, 0, 0
     try:
         with sqlite3.connect(path) as con:
-            patch_row = con.execute("SELECT value FROM meta WHERE key='patch_version'").fetchone()
+            patch_row = con.execute(
+                "SELECT value FROM meta WHERE key='patch_version'"
+            ).fetchone()
             patch = _patch_key(patch_row[0] if patch_row else "")
-            try:
-                matchups = int(con.execute(
-                    "SELECT COUNT(*) FROM matchups WHERE source='wildriftcore.com'"
-                ).fetchone()[0])
-            except sqlite3.Error:
-                matchups = 0
-            try:
-                pages = int(con.execute(
-                    "SELECT COUNT(*) FROM matchup_page_cache WHERE source='wildriftcore.com'"
-                ).fetchone()[0])
-            except sqlite3.Error:
-                pages = 0
-            return patch, matchups, pages
+
+            def count(sql: str) -> int:
+                try:
+                    return int(con.execute(sql).fetchone()[0])
+                except sqlite3.Error:
+                    return 0
+
+            matchups = count(
+                "SELECT COUNT(*) FROM matchups WHERE source='wildriftcore.com'"
+            )
+            matchup_pages = count(
+                "SELECT COUNT(*) FROM matchup_page_cache "
+                "WHERE source='wildriftcore.com'"
+            )
+            role_builds = count(
+                "SELECT COUNT(*) FROM role_builds WHERE source='wildriftcore.com'"
+            )
+            role_variants = count(
+                "SELECT COUNT(*) FROM role_build_variants "
+                "WHERE source='wildriftcore.com'"
+            )
+            build_pages = count(
+                "SELECT COUNT(*) FROM build_page_cache "
+                "WHERE source='wildriftcore.com'"
+            )
+            return (
+                patch, matchups, matchup_pages,
+                role_builds, role_variants, build_pages,
+            )
     except sqlite3.Error:
-        return (0,), 0, 0
+        return (0,), 0, 0, 0, 0, 0
 
 
 def _copy_seed_if_better(seed_db: Path, database: Path) -> None:
@@ -128,16 +153,36 @@ def _copy_seed_if_better(seed_db: Path, database: Path) -> None:
 
     seed_quality = _seed_db_quality(seed_db)
     runtime_quality = _seed_db_quality(database)
-    seed_patch, seed_matchups, seed_pages = seed_quality
-    run_patch, run_matchups, run_pages = runtime_quality
+    (
+        seed_patch, seed_matchups, seed_matchup_pages,
+        seed_role_builds, seed_role_variants, seed_build_pages,
+    ) = seed_quality
+    (
+        run_patch, run_matchups, run_matchup_pages,
+        run_role_builds, run_role_variants, run_build_pages,
+    ) = runtime_quality
 
     should_upgrade = False
     if seed_patch > run_patch:
         should_upgrade = True
     elif seed_patch == run_patch:
-        # On the same patch prefer the richer WRC matrix/cache bundled with the
-        # release, but never replace a runtime DB that has already downloaded more.
-        should_upgrade = (seed_matchups, seed_pages) > (run_matchups, run_pages)
+        # Build-table repairs must reach users who install over an older APK.
+        # Prefer the validated bundled seed whenever it has richer WRC build
+        # coverage. If build coverage is equal, fall back to matchup richness.
+        seed_build_quality = (
+            seed_role_builds, seed_role_variants, seed_build_pages
+        )
+        run_build_quality = (
+            run_role_builds, run_role_variants, run_build_pages
+        )
+        if seed_build_quality > run_build_quality:
+            should_upgrade = True
+        elif seed_build_quality == run_build_quality:
+            should_upgrade = (
+                seed_matchups, seed_matchup_pages
+            ) > (
+                run_matchups, run_matchup_pages
+            )
 
     if should_upgrade:
         # Preserve lightweight user-facing settings stored in meta.
