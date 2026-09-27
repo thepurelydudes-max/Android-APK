@@ -148,6 +148,64 @@ def _wildriftcore_get(
     return last_response
 
 
+def _wildriftcounter_get(
+    net: Net,
+    url: str,
+    progress: Callable[[str], None] | None = None,
+) -> requests.Response:
+    """Fetch WildRiftCounter pages slowly and retry transient disconnects.
+
+    The host sometimes closes keep-alive connections while many champion pages
+    are requested in sequence. One RemoteDisconnected must not abort the whole
+    counter-item refresh immediately.
+    """
+    waits = (1.5, 3.0, 6.0, 10.0)
+    last_exc: Exception | None = None
+    for attempt in range(len(waits) + 1):
+        last = float(getattr(net, "_wildriftcounter_last_request", 0.0))
+        gap = float(getattr(net, "_wildriftcounter_gap", 0.85))
+        elapsed = time.monotonic() - last
+        if elapsed < gap:
+            time.sleep(gap - elapsed)
+        try:
+            response = net.s.get(url, timeout=net.timeout)
+            net._wildriftcounter_last_request = time.monotonic()
+            if response.status_code == 429 and attempt < len(waits):
+                wait = max(_retry_after_seconds(response) or 0.0, waits[attempt])
+                net._wildriftcounter_gap = max(gap, 1.5)
+                if progress:
+                    progress(f"WildRiftCounter: 429, повтор через {int(math.ceil(wait))} с…")
+                time.sleep(wait)
+                continue
+            if 500 <= response.status_code < 600 and attempt < len(waits):
+                wait = waits[attempt]
+                if progress:
+                    progress(
+                        f"WildRiftCounter: временная ошибка {response.status_code}, "
+                        f"повтор через {int(math.ceil(wait))} с…"
+                    )
+                time.sleep(wait)
+                continue
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_exc = exc
+            net._wildriftcounter_last_request = time.monotonic()
+            if attempt >= len(waits):
+                raise
+            wait = waits[attempt]
+            if progress:
+                progress(
+                    f"WildRiftCounter: соединение прервано, повтор через "
+                    f"{int(math.ceil(wait))} с…"
+                )
+            time.sleep(wait)
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("WildRiftCounter request failed")
+
+
 def clean(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip())
 
@@ -2175,13 +2233,17 @@ def fetch_wrpocket_item_pools(net: Net, resolve: Callable[[str], str | None], pr
         # would then attach many champions' item pools to that one champion.
         slug_raw = url.rstrip("/").split("/")[-1]
         slug_guess = slug_raw.replace("-", " ")
-        cid = resolve(slug_guess)
+        # A profile URL is already a canonical identity. Never fuzzy-resolve it
+        # through display names: an upstream name mismatch once made "norra"
+        # resolve to Zyra and collapsed two profiles into one champion.
+        exact_resolve = getattr(resolve, "exact_id", resolve)
+        cid = exact_resolve(slug_guess)
         if not cid:
-            # Safe fallback only for a compact anchor label, never a large card.
-            label = clean(text)
-            if label and len(label) <= 40:
-                cid = resolve(label)
-        if not cid:
+            if progress:
+                progress(
+                    f"Wild Rift Pocket: {idx}/{len(filtered)} — "
+                    f"неизвестный профиль {slug_raw}, пропущен"
+                )
             continue
 
         previous_url = resolved_urls.get(cid)
@@ -2431,7 +2493,7 @@ def item_name_ru(name: str, ddragon_map: dict[str, str] | None = None) -> str:
 
 def fetch_counter_item_pages(net: Net, resolve: Callable[[str], str | None], known_items: Iterable[str], progress: Callable[[str], None] | None = None) -> list[tuple[str, str, str]]:
     known = sorted({clean(x) for x in known_items if clean(x)}, key=len, reverse=True)
-    soup = BeautifulSoup(net.get(WR_COUNTER_CHAMPS).text, "html.parser")
+    soup = BeautifulSoup(_wildriftcounter_get(net, WR_COUNTER_CHAMPS, progress).text, "html.parser")
     links = _links(soup, "/champions/", WR_COUNTER_CHAMPS)
     out = []
     visited = set()
@@ -2440,12 +2502,13 @@ def fetch_counter_item_pages(net: Net, resolve: Callable[[str], str | None], kno
             continue
         visited.add(url)
         slug = url.rstrip("/").split("/")[-1].replace("-", " ")
-        cid = resolve(text) or resolve(slug)
+        exact_resolve = getattr(resolve, "exact_id", resolve)
+        cid = exact_resolve(slug) or resolve(text)
         if not cid:
             continue
         if progress:
             progress(f"WildRiftCounter items: {idx}/{len(links)} — {text or slug}")
-        psoup = BeautifulSoup(net.get(url).text, "html.parser")
+        psoup = BeautifulSoup(_wildriftcounter_get(net, url, progress).text, "html.parser")
         start = None
         for h in psoup.find_all(["h2", "h3"]):
             txt = clean(h.get_text(" ", strip=True)).casefold()
