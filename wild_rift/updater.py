@@ -23,7 +23,7 @@ from sources import (
 
 
 ITEM_DATA_SCHEMA_VERSION = "4"
-ITEM_ICON_SCHEMA_VERSION = "6"
+ITEM_ICON_SCHEMA_VERSION = "7"
 
 
 class UpdateCancelled(RuntimeError):
