@@ -1,1 +1,1 @@
-probe direct WildRiftCore access
+probe WildRiftCore with headless Chrome v2
