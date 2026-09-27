@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import re
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -442,6 +443,12 @@ def _cache_media(
         last_status = "failed"
         last_exc = ""
         for candidate_index, icon_url in enumerate(candidates):
+            # Respect the image hosts. The v5 repair may touch the whole catalog
+            # once, so do not fire 100+ icon requests as a burst.
+            last_icon_request = float(getattr(net, "_item_icon_last_request", 0.0))
+            elapsed = time.monotonic() - last_icon_request
+            if elapsed < 0.35:
+                time.sleep(0.35 - elapsed)
             record = _seed_media_record(
                 asset_key, icon_url, existing, target, previous_patch, current_patch
             )
@@ -460,7 +467,9 @@ def _cache_media(
                     current_patch=current_patch, previous_patch=previous_patch,
                     force_refresh=force_this_item,
                 )
+                net._item_icon_last_request = time.monotonic()
             except Exception as exc:
+                net._item_icon_last_request = time.monotonic()
                 last_exc = str(exc)
                 last_status = "exception"
                 continue
