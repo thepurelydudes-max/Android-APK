@@ -1045,16 +1045,22 @@ def update_all(
     emit(update_text("loading_role_builds", lang))
     try:
         (
-            role_builds, role_situational, role_boots, role_variants,
+            role_builds, role_situational, role_boots,
+            role_opponent_adaptations, role_variants,
             role_build_errors, role_build_coverage,
         ) = fetch_wildriftcore_role_builds(net, resolve, known_items, emit)
         _check_cancel(cancel_check)
         db.replace_source_role_builds_partial(
-            "wildriftcore.com", role_builds, role_situational, role_boots,
-            role_variants,
+            "wildriftcore.com",
+            role_builds,
+            role_situational,
+            role_boots,
+            variants=role_variants,
+            opponent_adaptations=role_opponent_adaptations,
         )
         summary["role_builds"] = len(role_builds)
         summary["role_build_variants"] = len(role_variants)
+        summary["role_opponent_adaptations"] = len(role_opponent_adaptations)
         lane_updates = db.merge_champion_lanes_from_role_builds("wildriftcore.com")
         summary["wrc_lane_updates"] = int(lane_updates)
         summary["wrc_build_profiles_total"] = int(
@@ -1076,6 +1082,10 @@ def update_all(
         )
         db.set_meta("wrc_build_roles_total", str(len(role_builds)))
         db.set_meta("wrc_build_variants_total", str(len(role_variants)))
+        db.set_meta(
+            "wrc_build_opponent_adaptations_total",
+            str(len(role_opponent_adaptations)),
+        )
 
         # WildRiftCore can publish a current role item before WR Pocket exposes
         # it in the local catalog (support gold/new patch items are common).
@@ -1095,6 +1105,11 @@ def update_all(
         role_item_names.update(
             canonical_item_name(row[2])
             for row in role_situational if canonical_item_name(row[2])
+        )
+        role_item_names.update(
+            canonical_item_name(row[3])
+            for row in role_opponent_adaptations
+            if canonical_item_name(row[3])
         )
         for raw_variant in role_variants:
             variant_items = raw_variant[3] if len(raw_variant) > 3 else []
