@@ -43,7 +43,7 @@ WR_COUNTER_CHAMPS = "https://wildriftcounter.com/champions/"
 WR_CORE_CHAMPS = "https://wildriftcore.com/en/champions/"
 WR_CORE_BUILDS = "https://wildriftcore.com/en/builds/"
 JINA_READER_PREFIX = "https://r.jina.ai/"
-WRC_BUILD_SCHEMA_VERSION = "2"
+WRC_BUILD_SCHEMA_VERSION = "3"
 WR_CORE_TIERLISTS = {
     "Барон": "https://wildriftcore.com/en/tierlist/baron-lane/",
     "Лес": "https://wildriftcore.com/en/tierlist/jungle/",
