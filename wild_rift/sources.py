@@ -2534,12 +2534,24 @@ WR_ITEM_RU_OVERRIDES = {
 }
 
 
+ITEM_CANONICAL_ALIASES = {
+    # WildRiftCore occasionally abbreviates this boot in generated build text.
+    # Patch 7.3's real item name is Mercury's Treads; keeping "Mercury Boots"
+    # as a separate catalog row creates a fake item with no corresponding icon.
+    "mercuryboots": "Mercury's Treads",
+    "mercurytreads": "Mercury's Treads",
+}
+
+
 def canonical_item_name(name: str) -> str:
-    """Map punctuation/case variants from scraped Build Trends to one canonical WR name."""
+    """Map scraped spelling/punctuation variants to one canonical WR item name."""
     value = clean_item_name(name)
     if not value:
         return ""
     wanted = slugish(value)
+    aliased = ITEM_CANONICAL_ALIASES.get(wanted)
+    if aliased:
+        return aliased
     for canonical in WR_ITEM_RU_OVERRIDES:
         if slugish(canonical) == wanted:
             return canonical
@@ -2565,12 +2577,11 @@ def _public_item_asset_slug(name: str) -> str:
 
 
 def trusted_item_icon_urls(name: str) -> list[str]:
-    """Independent WR icon mirrors keyed by the item's canonical English name.
+    """Cheap name-addressed WR icon candidates.
 
-    Do not derive final icons from WR Pocket card/detail DOM: some current pages
-    expose generic/PC artwork under a valid Wild Rift item name. These two icon
-    endpoints are name-addressed; media_cache still validates that the response
-    is an actual image before it is accepted.
+    These are tried before any HTML page lookup. The third source is especially
+    important for patch 7.3 additions: WildRiftCore currently serves several of
+    them from /assets/images/items-cn/<item-slug>.webp.
     """
     slug = _public_item_asset_slug(name)
     if not slug:
@@ -2578,7 +2589,86 @@ def trusted_item_icon_urls(name: str) -> list[str]:
     return [
         f"https://www.wildriftmeta.com/assets/item/icon/item-{slug}-icon.png",
         f"https://assets.riftgg.app/items/{slug}.webp",
+        f"https://wildriftcore.com/assets/images/items-cn/{slug}.webp",
     ]
+
+
+def _usable_item_icon_url(value: str) -> bool:
+    text = str(value or "").strip()
+    folded = text.casefold()
+    if not text:
+        return False
+    if "placeholder" in folded or folded.endswith(".svg"):
+        return False
+    return any(folded.split("?", 1)[0].endswith(ext) for ext in (".png", ".webp", ".jpg", ".jpeg"))
+
+
+def fetch_verified_item_icon_urls(
+    net: Net,
+    name: str,
+    progress: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Resolve actual image URLs from exact item pages when guessed CDNs fail.
+
+    The page H1 and image identity must agree with the requested canonical item.
+    This is deliberately a fallback path, so ordinary cached items do not cause
+    extra HTML requests on every update.
+    """
+    canonical = canonical_item_name(name)
+    slug = _public_item_asset_slug(canonical)
+    if not canonical or not slug:
+        return []
+
+    out: list[str] = []
+
+    # WildRiftCore exposes current WR-native art on many item pages, including
+    # patch 7.3 additions such as Fiendhunter Bolts and Yun Tal Wildarrows.
+    wrc_url = f"https://wildriftcore.com/en/items/{slug}/"
+    try:
+        html = _wildriftcore_get(net, wrc_url, progress).text
+        row = parse_wildriftcore_item_page(html, wrc_url, canonical)
+        parsed_name = canonical_item_name(str(row.get("name") or ""))
+        icon_url = str(row.get("icon_url") or "")
+        if slugish(parsed_name) == slugish(canonical) and _usable_item_icon_url(icon_url):
+            out.append(icon_url)
+    except Exception:
+        pass
+
+    # WildRiftMeta is a second page-derived fallback. Its static item pages may
+    # use a different asset location from the predictable /assets/item/icon/
+    # endpoint, so read the exact src instead of guessing it again.
+    meta_url = f"https://www.wildriftmeta.com/items/{slug}/"
+    try:
+        soup = BeautifulSoup(net.get(meta_url).text, "html.parser")
+        h1 = soup.find("h1")
+        page_name = canonical_item_name(
+            clean_item_name(h1.get_text(" ", strip=True)) if h1 else ""
+        )
+        if slugish(page_name) == slugish(canonical):
+            wanted = slugish(canonical)
+            for img in soup.find_all("img"):
+                raw = str(
+                    img.get("src")
+                    or img.get("data-src")
+                    or img.get("data-lazy-src")
+                    or ""
+                ).strip()
+                if not raw:
+                    continue
+                absolute = urljoin(meta_url, raw)
+                alt = clean_item_name(str(img.get("alt") or ""))
+                alt_key = slugish(re.sub(r"\s+icon\s*$", "", alt, flags=re.I))
+                src_key = slugish(absolute.rsplit("/", 1)[-1])
+                if (
+                    (alt_key and alt_key == wanted)
+                    or (wanted and wanted in src_key and "item" in src_key)
+                ) and _usable_item_icon_url(absolute):
+                    out.append(absolute)
+                    break
+    except Exception:
+        pass
+
+    return list(dict.fromkeys(out))
 
 
 def item_name_ru(name: str, ddragon_map: dict[str, str] | None = None) -> str:
