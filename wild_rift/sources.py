@@ -1094,12 +1094,38 @@ def parse_wildriftcore_build_page(
     role section, so the assistant never invents tank/ADC items for a mage merely
     because a global item happens to counter the enemy.
     """
-    soup = BeautifulSoup(html or "", "html.parser")
-    lines = [clean(x) for x in soup.stripped_strings if clean(x)]
+    raw_text = html or ""
+    is_reader_markdown = (
+        "Markdown Content:" in raw_text
+        or bool(re.search(r"(?m)^#{2,4}\s+.+", raw_text))
+    )
+    if is_reader_markdown:
+        lines = [clean(x) for x in raw_text.splitlines() if clean(x)]
+    else:
+        soup = BeautifulSoup(raw_text, "html.parser")
+        lines = [clean(x) for x in soup.stripped_strings if clean(x)]
+
     lookup = _known_item_lookup(known_items)
     builds: list[dict] = []
     situational: list[dict] = []
     boots: list[dict] = []
+    variants: list[dict] = []
+
+    def plain_heading(value: str) -> str:
+        return clean(re.sub(r"^#{1,6}\s*", "", str(value or "")))
+
+    def item_links(value: str) -> list[str]:
+        slugs = re.findall(
+            r"https?://(?:www\.)?wildriftcore\.com/en/items/([^/?#)]+)/?",
+            str(value or ""),
+            flags=re.I,
+        )
+        out: list[str] = []
+        for slug in slugs:
+            item = _canonical_known_item(slug.replace("-", " "), lookup)
+            if item and item not in out:
+                out.append(item)
+        return out
 
     summary_re = re.compile(
         r"Best\s+.+?\s+build\s*\(([^)]+)\):\s*(.+?),\s*boots\s+(.+?),\s*keystone\b",
@@ -1290,30 +1316,151 @@ def parse_wildriftcore_build_page(
                 })
                 opp_priority += 1
 
+    # Jina Reader preserves WildRiftCore's headings and canonical item URLs as
+    # Markdown. Parse complete build variants and role-local adaptations from
+    # that representation. The legacy HTML parser above remains for direct HTML.
+    if is_reader_markdown and ordered_starts:
+        for pos, (start_idx, role) in enumerate(ordered_starts):
+            end_idx = ordered_starts[pos + 1][0] if pos + 1 < len(ordered_starts) else len(lines)
+            segment = lines[start_idx:end_idx]
+
+            # Each #### block before "Situational adaptations" is one complete
+            # source-defined build variant (Standard / Vs AD / Vs AP / etc.).
+            variant_limit = len(segment)
+            for i, value in enumerate(segment):
+                if plain_heading(value).casefold() == "situational adaptations":
+                    variant_limit = i
+                    break
+            variant_priority = 0
+            idx = 0
+            while idx < variant_limit:
+                value = segment[idx]
+                if not value.startswith("#### "):
+                    idx += 1
+                    continue
+                variant_name = plain_heading(value)
+                next_idx = idx + 1
+                while next_idx < variant_limit and not segment[next_idx].startswith(("#### ", "### ")):
+                    next_idx += 1
+                block = segment[idx + 1:next_idx]
+                variant_items: list[str] = []
+                for line in block:
+                    for item in item_links(line):
+                        if item not in variant_items:
+                            variant_items.append(item)
+                trigger = ""
+                for j, line in enumerate(block):
+                    if plain_heading(line).casefold() == "when to pick it":
+                        for candidate in block[j + 1:]:
+                            candidate_plain = plain_heading(candidate)
+                            if not candidate_plain:
+                                continue
+                            if "example enemy draft" in candidate_plain.casefold():
+                                break
+                            if item_links(candidate):
+                                continue
+                            if re.match(r"^[0-9,]+\s+total cost", candidate_plain, re.I):
+                                continue
+                            trigger = candidate_plain.strip("_*")
+                            break
+                        break
+                if len(variant_items) >= 3:
+                    variants.append({
+                        "role": role,
+                        "name": variant_name,
+                        "items": variant_items[:5],
+                        "trigger": trigger,
+                        "priority": variant_priority,
+                    })
+                    variant_priority += 1
+                idx = next_idx
+
+            # Reader situational rows are compact markdown:
+            # **Item**_Against AD burst (...)_
+            sec_start = -1
+            sec_end = len(segment)
+            for i, value in enumerate(segment):
+                plain = plain_heading(value).casefold()
+                if plain == "situational adaptations":
+                    sec_start = i + 1
+                elif sec_start >= 0 and plain == "adaptations by opponent":
+                    sec_end = i
+                    break
+            if sec_start >= 0:
+                priority = 1
+                for line in segment[sec_start:sec_end]:
+                    m = re.search(
+                        r"\*\*([^*]+)\*\*\s*_?\s*((?:Against|Vs)\s+.+?)_?\s*$",
+                        line,
+                        flags=re.I,
+                    )
+                    if not m:
+                        continue
+                    item = lookup.get(slugish(clean_item_name(m.group(1))))
+                    trigger = clean(m.group(2).strip("_*"))
+                    if item and trigger:
+                        situational.append({
+                            "role": role, "item": item, "trigger": trigger,
+                            "priority": priority,
+                        })
+                        priority += 1
+
+            # Exact opponent adaptations are stronger than broad threat tags.
+            opp_start = -1
+            for i, value in enumerate(segment):
+                if plain_heading(value).casefold() == "adaptations by opponent":
+                    opp_start = i + 1
+                    break
+            if opp_start >= 0:
+                opp_priority = 100
+                for line in segment[opp_start:]:
+                    if plain_heading(line).casefold().endswith("recommended build"):
+                        break
+                    if "/en/champions/" not in line or "/en/items/" not in line:
+                        continue
+                    enemy_match = re.search(r"\*\*([^*]+)\*\*", line)
+                    linked_items = item_links(line)
+                    if not enemy_match or not linked_items:
+                        continue
+                    enemy_name = clean(enemy_match.group(1))
+                    reason_match = re.search(r"\)_([^_]+)_\s*$", line)
+                    reason = clean(reason_match.group(1)) if reason_match else ""
+                    situational.append({
+                        "role": role,
+                        "item": linked_items[0],
+                        "trigger": f"Opponent: {enemy_name}" + (f"; {reason}" if reason else ""),
+                        "priority": opp_priority,
+                    })
+                    opp_priority += 1
+
     # Historical "Boots & enchant" is used only to discover champion-approved
     # alternatives.  It never creates a boot that is not already on this page.
     historical_boots: list[tuple[str, str]] = []
     boot_section = -1
     for idx, line in enumerate(lines):
-        if line.casefold() in {"boots & enchant", "boots and enchant"}:
+        if plain_heading(line).casefold() in {"boots & enchant", "boots and enchant"}:
             boot_section = idx
             break
     if boot_section >= 0:
         end = min(len(lines), boot_section + 40)
         for idx in range(boot_section + 1, end):
-            if lines[idx].casefold().startswith("skill order"):
+            if plain_heading(lines[idx]).casefold().startswith("skill order"):
                 end = idx
                 break
         pending_reason = ""
         for line in lines[boot_section + 1:end]:
-            folded = line.casefold()
+            plain = plain_heading(line).strip("_*")
+            folded = plain.casefold()
             if folded.startswith(("alternative", "vs ", "against ")):
-                pending_reason = line
+                pending_reason = plain
                 continue
-            item = _upgrade_boot_name(line, lookup)
-            if item and slugish(item) in {slugish(x) for x in lookup.values()} and _looks_like_boot_name(item):
-                historical_boots.append((item, pending_reason))
-                pending_reason = ""
+            candidates = item_links(line)
+            if not candidates:
+                candidates = [_upgrade_boot_name(plain, lookup)]
+            for item in candidates:
+                if item and slugish(item) in {slugish(x) for x in lookup.values()} and _looks_like_boot_name(item):
+                    historical_boots.append((item, pending_reason))
+                    pending_reason = ""
 
     for build in builds:
         role = build["role"]
@@ -1360,9 +1507,20 @@ def parse_wildriftcore_build_page(
         seen_boots.add(key)
         dedup_boots.append(row)
 
+    dedup_variants: list[dict] = []
+    seen_variants: set[tuple[str, str]] = set()
+    for row in variants:
+        key = (str(row.get("role") or ""), slugish(str(row.get("name") or "")))
+        if not key[0] or not key[1] or key in seen_variants:
+            continue
+        seen_variants.add(key)
+        dedup_variants.append(row)
+
     return {
         "champion_id": champion_id,
+        "schema_version": WRC_BUILD_SCHEMA_VERSION,
         "builds": builds,
+        "variants": dedup_variants,
         "situational": dedup_sit,
         "boots": dedup_boots,
     }
