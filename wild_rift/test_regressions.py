@@ -228,12 +228,12 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
         # integrity scanner can still see its champion profile link.
         html = (
             '<h2>Every Top champion ranked, S+ to C</h2>'
+            '<div><a href="/en/champions/hero11">Hero11</a></div>'
             '<h3>S+</h3>'
             + "".join(
                 f'<a href="/en/champions/{name.casefold()}">S+ {name}</a>'
                 for name in names[:11]
             )
-            + '<div><a href="/en/champions/hero11">Hero11</a></div>'
             + '<h2>How do we calculate this tier list?</h2>'
         )
         mapping = {name.casefold(): name for name in names}
