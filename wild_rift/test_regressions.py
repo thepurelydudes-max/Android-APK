@@ -217,6 +217,32 @@ class RecommendationRegressionTests(unittest.TestCase):
 
 
 class SourceIntegrityRegressionTests(unittest.TestCase):
+    def test_trusted_icon_urls_are_name_addressed_for_reported_bad_items(self):
+        expected = {
+            "Kaenic Rookern": "https://www.wildriftmeta.com/assets/item/icon/item-kaenic-rookern-icon.png",
+            "Sundered Sky": "https://www.wildriftmeta.com/assets/item/icon/item-sundered-sky-icon.png",
+            "Mercury's Treads": "https://www.wildriftmeta.com/assets/item/icon/item-mercurys-treads-icon.png",
+        }
+        for name, url in expected.items():
+            urls = sources.trusted_item_icon_urls(name)
+            self.assertGreaterEqual(len(urls), 2)
+            self.assertEqual(urls[0], url)
+            self.assertNotIn("wrpocket.app", " ".join(urls))
+
+    def test_legacy_boot_names_normalize_to_completed_boots(self):
+        self.assertEqual(
+            sources.canonical_completed_item_name("Mercury's Treads"),
+            "Chainlaced Crushers",
+        )
+        self.assertEqual(
+            sources.canonical_completed_item_name("Plated Steelcaps"),
+            "Armored Advance",
+        )
+        self.assertEqual(
+            sources.canonical_completed_item_name("Berserker's Greaves"),
+            "Gunmetal Greaves",
+        )
+
     def test_tier_integrity_detects_a_resolved_champion_without_tier_row(self):
         names = [f"Hero{i}" for i in range(12)]
         links = "".join(
@@ -323,6 +349,23 @@ class BundledDatabaseSmokeTests(unittest.TestCase):
         ensure_initial_data()
         db.init_db()
         cls.snapshot = db.load_runtime_snapshot()
+
+    def test_real_database_upgraded_items_have_unique_name_addressed_icon_targets(self):
+        rows = [
+            row for row in db.item_catalog_rows()
+            if str(row.get("tier") or "").casefold() == "upgraded"
+        ]
+        self.assertGreaterEqual(len(rows), 50)
+        primary_urls = []
+        for row in rows:
+            urls = sources.trusted_item_icon_urls(str(row.get("name") or ""))
+            self.assertTrue(urls, str(row.get("name") or ""))
+            primary_urls.append(urls[0])
+        self.assertEqual(
+            len(primary_urls),
+            len(set(primary_urls)),
+            "Two different upgraded items collapsed to the same trusted icon URL",
+        )
 
     def test_real_database_pick_list_is_monotonic_by_visible_score(self):
         enemies = [
