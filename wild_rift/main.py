@@ -70,6 +70,7 @@ TEXT = {
         "update": "Обновить данные",
         "updating": "Обновляю локальную базу из интернет-источников…",
         "updated": "Данные обновлены.",
+        "update_warnings": "предупреждений обновления",
         "update_error": "Ошибка обновления",
         "patch": "Патч",
         "last_update": "База",
@@ -103,6 +104,7 @@ TEXT = {
         "update": "Update data",
         "updating": "Updating the local database from internet sources…",
         "updated": "Data updated.",
+        "update_warnings": "update warnings",
         "update_error": "Update error",
         "patch": "Patch",
         "last_update": "Database",
@@ -1164,7 +1166,16 @@ class MobileAssistant:
             if summary.get("patch"):
                 msg += f" {self.t('patch')}: {summary['patch']}."
             if errors:
-                msg += f" ({len(errors)} source warnings)"
+                msg += f" ({len(errors)} {self.t('update_warnings')})"
+                try:
+                    log_dir = RUNTIME_DIR / "logs"
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    (log_dir / "update-warnings.log").write_text(
+                        "\n".join(str(x) for x in errors),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
             self.status_text.value = msg
             self.status_text.color = P["success"]
         except Exception as exc:
