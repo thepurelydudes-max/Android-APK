@@ -85,6 +85,36 @@ def init_db() -> None:
                 enemy_id TEXT NOT NULL, item_name TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL, PRIMARY KEY (enemy_id, item_name, source)
             );
+            CREATE TABLE IF NOT EXISTS role_builds (
+                champion_id TEXT NOT NULL, role TEXT NOT NULL,
+                items_json TEXT NOT NULL DEFAULT '[]', boot_name TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL, patch TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (champion_id, role, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS role_build_situational (
+                champion_id TEXT NOT NULL, role TEXT NOT NULL, item_name TEXT NOT NULL,
+                trigger_text TEXT NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 999,
+                source TEXT NOT NULL,
+                PRIMARY KEY (champion_id, role, item_name, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS role_build_boots (
+                champion_id TEXT NOT NULL, role TEXT NOT NULL, item_name TEXT NOT NULL,
+                trigger_text TEXT NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 999,
+                source TEXT NOT NULL,
+                PRIMARY KEY (champion_id, role, item_name, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS build_page_cache (
+                source TEXT NOT NULL, patch TEXT NOT NULL, champion_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}', source_url TEXT NOT NULL DEFAULT '',
+                fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (source, patch, champion_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_build_page_cache_source_patch
+                ON build_page_cache(source, patch);
             CREATE TABLE IF NOT EXISTS items (
                 name TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT ''
             );
@@ -355,6 +385,152 @@ def replace_source_counter_items(source: str, rows: Iterable[tuple[str, str, str
         con.executemany("INSERT OR REPLACE INTO counter_items(enemy_id,item_name,reason,source) VALUES(?,?,?,?)", [(e,i,r,source) for e,i,r in rows])
 
 
+def replace_source_role_builds_partial(
+    source: str,
+    builds: Iterable[tuple[str, str, list[str], str, str, str]],
+    situational: Iterable[tuple[str, str, str, str, int]],
+    boots: Iterable[tuple[str, str, str, str, int]],
+) -> None:
+    """Replace role-build data only for champion/role pairs present in builds.
+
+    Failed or rate-limited pages therefore keep their last known-good build.
+    """
+    build_rows = []
+    touched: set[tuple[str, str]] = set()
+    for champion_id, role, items, boot_name, patch, source_url in builds:
+        cid = str(champion_id or "").strip()
+        role_value = str(role or "").strip()
+        clean_items = [str(x).strip() for x in (items or []) if str(x).strip()]
+        if not cid or not role_value or not clean_items:
+            continue
+        touched.add((cid, role_value))
+        build_rows.append((
+            cid, role_value, json.dumps(clean_items, ensure_ascii=False),
+            str(boot_name or ""), source, str(patch or ""), str(source_url or ""),
+        ))
+    if not build_rows:
+        return
+
+    situational_rows = [
+        (str(c), str(r), str(i), str(reason or ""), int(priority or 999), source)
+        for c, r, i, reason, priority in situational
+        if (str(c), str(r)) in touched and str(i).strip()
+    ]
+    boot_rows = [
+        (str(c), str(r), str(i), str(reason or ""), int(priority or 999), source)
+        for c, r, i, reason, priority in boots
+        if (str(c), str(r)) in touched and str(i).strip()
+    ]
+
+    with connect() as con:
+        for champion_id, role in sorted(touched):
+            con.execute(
+                "DELETE FROM role_builds WHERE source=? AND champion_id=? AND role=?",
+                (source, champion_id, role),
+            )
+            con.execute(
+                "DELETE FROM role_build_situational WHERE source=? AND champion_id=? AND role=?",
+                (source, champion_id, role),
+            )
+            con.execute(
+                "DELETE FROM role_build_boots WHERE source=? AND champion_id=? AND role=?",
+                (source, champion_id, role),
+            )
+        con.executemany(
+            """INSERT OR REPLACE INTO role_builds(
+                champion_id,role,items_json,boot_name,source,patch,source_url,updated_at
+            ) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            build_rows,
+        )
+        con.executemany(
+            """INSERT OR REPLACE INTO role_build_situational(
+                champion_id,role,item_name,trigger_text,priority,source
+            ) VALUES(?,?,?,?,?,?)""",
+            situational_rows,
+        )
+        con.executemany(
+            """INSERT OR REPLACE INTO role_build_boots(
+                champion_id,role,item_name,trigger_text,priority,source
+            ) VALUES(?,?,?,?,?,?)""",
+            boot_rows,
+        )
+
+
+def get_role_build(champion_id: str, role: str, source: str = "wildriftcore.com") -> Optional[dict]:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM role_builds WHERE champion_id=? AND role=? AND source=?",
+            (champion_id, role, source),
+        ).fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    try:
+        out["items"] = json.loads(out.pop("items_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        out["items"] = []
+        out.pop("items_json", None)
+    return out
+
+
+def get_role_build_situational(champion_id: str, role: str, source: str = "wildriftcore.com") -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            """SELECT item_name,trigger_text,priority,source FROM role_build_situational
+               WHERE champion_id=? AND role=? AND source=? ORDER BY priority ASC,item_name""",
+            (champion_id, role, source),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_role_build_boots(champion_id: str, role: str, source: str = "wildriftcore.com") -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            """SELECT item_name,trigger_text,priority,source FROM role_build_boots
+               WHERE champion_id=? AND role=? AND source=? ORDER BY priority ASC,item_name""",
+            (champion_id, role, source),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_build_page_cache(source: str, patch: str) -> dict[str, dict]:
+    with connect() as con:
+        rows = con.execute(
+            "SELECT champion_id,payload_json,source_url FROM build_page_cache WHERE source=? AND patch=?",
+            (source, patch or ""),
+        ).fetchall()
+    out: dict[str, dict] = {}
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("builds"):
+            payload["_source_url"] = str(row["source_url"] or "")
+            out[str(row["champion_id"])] = payload
+    return out
+
+
+def upsert_build_page_cache(
+    source: str, patch: str, champion_id: str, payload: dict, source_url: str = ""
+) -> None:
+    raw = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"))
+    with connect() as con:
+        con.execute(
+            """INSERT INTO build_page_cache(source,patch,champion_id,payload_json,source_url,fetched_at)
+               VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(source,patch,champion_id) DO UPDATE SET
+               payload_json=excluded.payload_json, source_url=excluded.source_url,
+               fetched_at=CURRENT_TIMESTAMP""",
+            (source, patch or "", champion_id, raw, source_url or ""),
+        )
+
+
+def prune_build_page_cache(source: str, keep_patch: str) -> None:
+    with connect() as con:
+        con.execute("DELETE FROM build_page_cache WHERE source=? AND patch<>?", (source, keep_patch or ""))
+
+
 def replace_source_items(source: str, rows: Iterable[tuple]) -> None:
     """Refresh a source catalog without discarding cached media for unchanged items."""
     parsed = []
@@ -520,6 +696,13 @@ def load_runtime_snapshot() -> dict:
         stat_rows = con.execute("SELECT * FROM stats").fetchall()
         pool_rows = con.execute("SELECT champion_id,item_name,category,priority,source FROM item_pools ORDER BY champion_id,priority ASC,item_name").fetchall()
         counter_rows = con.execute("SELECT enemy_id,item_name,reason,source FROM counter_items ORDER BY enemy_id,item_name").fetchall()
+        role_build_rows = con.execute("SELECT * FROM role_builds").fetchall()
+        role_situational_rows = con.execute(
+            "SELECT champion_id,role,item_name,trigger_text,priority,source FROM role_build_situational ORDER BY champion_id,role,priority,item_name"
+        ).fetchall()
+        role_boot_rows = con.execute(
+            "SELECT champion_id,role,item_name,trigger_text,priority,source FROM role_build_boots ORDER BY champion_id,role,priority,item_name"
+        ).fetchall()
         item_rows = con.execute("SELECT * FROM items").fetchall()
 
     champions_list: list[dict] = []
@@ -567,6 +750,28 @@ def load_runtime_snapshot() -> dict:
     counter_items: dict[str, list[dict]] = {}
     for row in counter_rows:
         counter_items.setdefault(row["enemy_id"], []).append(dict(row))
+
+    role_builds: dict[tuple[str, str], dict] = {}
+    for row in sorted(role_build_rows, key=lambda r: 0 if r["source"] == "wildriftcore.com" else 1):
+        key = (row["champion_id"], row["role"])
+        if key in role_builds:
+            continue
+        data = dict(row)
+        try:
+            data["items"] = json.loads(data.pop("items_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            data["items"] = []
+            data.pop("items_json", None)
+        role_builds[key] = data
+
+    role_situational: dict[tuple[str, str], list[dict]] = {}
+    for row in role_situational_rows:
+        role_situational.setdefault((row["champion_id"], row["role"]), []).append(dict(row))
+
+    role_boots: dict[tuple[str, str], list[dict]] = {}
+    for row in role_boot_rows:
+        role_boots.setdefault((row["champion_id"], row["role"]), []).append(dict(row))
+
     items = {row["name"]: dict(row) for row in item_rows}
 
     return {
@@ -579,6 +784,9 @@ def load_runtime_snapshot() -> dict:
         "stats": stats,
         "item_pools": item_pools,
         "counter_items": counter_items,
+        "role_builds": role_builds,
+        "role_situational": role_situational,
+        "role_boots": role_boots,
         "items": items,
     }
 
