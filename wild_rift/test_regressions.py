@@ -457,6 +457,55 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
             self.assertIsNone(seeded)
 
 
+class NetworkResilienceRegressionTests(unittest.TestCase):
+    def test_dns_error_detector_matches_android_name_resolution_error(self):
+        message = (
+            "HTTPSConnectionPool(host='wrpocket.app', port=443): Max retries exceeded "
+            "with url: /en/champions/garen (Caused by NameResolutionError("
+            ""Failed to resolve 'wrpocket.app' ([Errno 7] No address associated with hostname)"))"
+        )
+        self.assertTrue(sources.is_dns_resolution_error(message))
+
+    def test_two_unrelated_dns_failures_mark_network_outage(self):
+        net = sources.Net(timeout=1, delay=0)
+        net.note_request_error(
+            "https://wrpocket.app/en/champions/garen",
+            RuntimeError("Failed to resolve 'wrpocket.app'"),
+        )
+        self.assertFalse(net.dns_outage)
+        net.note_request_error(
+            "https://wildriftcore.com/en/champions/",
+            RuntimeError("No address associated with hostname"),
+        )
+        self.assertTrue(net.dns_outage)
+        self.assertEqual(
+            set(net.dns_failed_hosts),
+            {"wrpocket.app", "wildriftcore.com"},
+        )
+
+    def test_dns_warnings_collapse_to_one_actionable_entry(self):
+        net = sources.Net(timeout=1, delay=0)
+        net.note_request_error(
+            "https://wrpocket.app/",
+            RuntimeError("Failed to resolve 'wrpocket.app'"),
+        )
+        net.note_request_error(
+            "https://wildriftcore.com/",
+            RuntimeError("Failed to resolve 'wildriftcore.com'"),
+        )
+        errors = [
+            "Wild Rift Pocket: NameResolutionError Failed to resolve 'wrpocket.app'",
+            "WildRiftCore builds: No address associated with hostname",
+            "Media refresh skipped: DNS недоступен; сохранён локальный кэш чемпионов 90/142, предметов 100/113.",
+        ]
+        collapsed = updater._collapse_dns_warnings(errors, net)
+        self.assertEqual(len(collapsed), 1)
+        self.assertIn("Network/DNS", collapsed[0])
+        self.assertIn("wrpocket.app", collapsed[0])
+        self.assertIn("wildriftcore.com", collapsed[0])
+        self.assertIn("Media refresh skipped", collapsed[0])
+
+
 class BundledDatabaseSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
