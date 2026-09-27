@@ -529,7 +529,8 @@ BUILD_NEED_TAGS = {
     "anti_heal", "anti_shield", "anti_crit", "anti_attack_speed",
     "anti_physical", "anti_magic", "anti_cc", "anti_burst",
     "anti_tank", "anti_armor", "anti_magic_resist", "anti_auto",
-    "anti_mobility", "anti_dive", "anti_duelist",
+    "anti_mobility", "anti_dive", "anti_duelist", "anti_poke",
+    "anti_engage",
 }
 CORE_SITUATIONAL_TAGS = {
     "anti_heal", "anti_shield", "anti_crit", "anti_attack_speed",
@@ -1070,6 +1071,12 @@ def _wrc_example_threat_tags(
     tags: set[str] = set()
     for rows in (snapshot.get("role_variants", {}) or {}).values():
         for row in rows:
+            trigger_text = str(row.get("trigger_text") or "")
+            # These examples describe our allied composition, not an enemy
+            # threat archetype. Store them for future ally-aware drafting but
+            # never learn enemy labels from them.
+            if "allied" in trigger_text.casefold():
+                continue
             example_text = str(row.get("example_text") or "")
             if not example_text:
                 continue
@@ -1110,6 +1117,11 @@ def _select_role_variant(
         name = str(row.get("variant_name") or "")
         trigger = str(row.get("trigger_text") or "")
         example_text = str(row.get("example_text") or "")
+        trigger_folded = trigger.casefold()
+        # The current UI has no ally draft input. Preserve ally-dependent WRC
+        # variants in the database but do not pretend enemy data satisfies them.
+        if "allied" in trigger_folded:
+            continue
         tags = _variant_tags(name, f"{trigger} {example_text}")
         if not tags:
             continue
@@ -1131,12 +1143,16 @@ def _select_role_variant(
         other = tags - {"anti_physical", "anti_magic"}
         if other:
             counts = [int(threat_counts.get(tag, 0)) for tag in other]
-            trigger_folded = trigger.casefold()
-            if "2+" in trigger_folded or "two or more" in trigger_folded:
+            thresholds = [
+                int(value)
+                for value in re.findall(r"(\d+)\s*\+", trigger_folded)
+            ]
+            threshold = max(thresholds, default=2 if "two or more" in trigger_folded else 1)
+            if threshold > 1:
                 # WRC rules such as "2+ dive threats 2+ burst champions" are
                 # alternatives. Do not double-count one enemy across two tags.
                 matched = max(counts, default=0)
-                if matched < 2 and example_matches < 2:
+                if matched < threshold and example_matches < threshold:
                     continue
             else:
                 matched = max(counts, default=0)
@@ -1205,8 +1221,12 @@ def _trigger_tags_from_text(value: str) -> set[str]:
         tags.add("anti_cc")
     if any(token in text for token in ("mobility", "mobile", "dash", "dashes")):
         tags.add("anti_mobility")
-    if any(token in text for token in ("dive", "diver", "engage", "all-in", "all in")):
+    if any(token in text for token in ("dive", "diver", "all-in", "all in")):
         tags.add("anti_dive")
+    if any(token in text for token in ("hard engage", "engage", "engages", "engaging")):
+        tags.add("anti_engage")
+    if "poke" in text:
+        tags.add("anti_poke")
     if any(token in text for token in ("duelist", "duel", "extended fight", "prolonged fight")):
         tags.add("anti_duelist")
     if "burst" in text or "assassin" in text:
