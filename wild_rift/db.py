@@ -70,10 +70,22 @@ def init_db() -> None:
                 ON champion_tiers(role, tier);
             CREATE TABLE IF NOT EXISTS matchup_page_cache (
                 source TEXT NOT NULL, patch TEXT NOT NULL, champion_id TEXT NOT NULL,
-                rows_json TEXT NOT NULL DEFAULT '[]', source_url TEXT NOT NULL DEFAULT '',
+                rows_json TEXT NOT NULL DEFAULT '[]', traits_json TEXT NOT NULL DEFAULT '[]',
+                source_url TEXT NOT NULL DEFAULT '',
                 fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (source, patch, champion_id)
             );
+            CREATE TABLE IF NOT EXISTS champion_traits (
+                champion_id TEXT NOT NULL, trait TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0,
+                evidence_count INTEGER NOT NULL DEFAULT 0,
+                mentions INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL, patch TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (champion_id, trait, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_champion_traits_lookup
+                ON champion_traits(champion_id, source, confidence);
             CREATE INDEX IF NOT EXISTS idx_matchup_page_cache_source_patch
                 ON matchup_page_cache(source, patch);
             CREATE TABLE IF NOT EXISTS item_pools (
@@ -168,6 +180,10 @@ def init_db() -> None:
         _ensure_column(con, "items", "data_patch", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "data_source_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "tier", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(
+            con, "matchup_page_cache", "traits_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )
         _ensure_column(
             con, "role_build_variants", "example_enemies_json",
             "TEXT NOT NULL DEFAULT '[]'",
@@ -479,18 +495,81 @@ def get_matchup_page_cache(source: str, patch: str) -> dict[str, list[tuple[str,
     return out
 
 
+def get_matchup_trait_page_cache(
+    source: str, patch: str,
+) -> dict[str, list[tuple[str, str]]]:
+    """Return WRC semantic champion-trait observations cached with matchup pages."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT champion_id,traits_json FROM matchup_page_cache "
+            "WHERE source=? AND patch=?",
+            (source, patch or ""),
+        ).fetchall()
+    out: dict[str, list[tuple[str, str]]] = {}
+    for row in rows:
+        try:
+            raw = json.loads(row["traits_json"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        parsed: list[tuple[str, str]] = []
+        for item in raw:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                continue
+            cid, trait = str(item[0]), str(item[1])
+            if cid and trait:
+                parsed.append((cid, trait))
+        if parsed:
+            out[str(row["champion_id"])] = parsed
+    return out
+
+
 def upsert_matchup_page_cache(
-    source: str, patch: str, champion_id: str, rows: Iterable[tuple[str, str, str, float]], source_url: str = ""
+    source: str, patch: str, champion_id: str,
+    rows: Iterable[tuple[str, str, str, float]], source_url: str = "",
+    traits: Iterable[tuple[str, str]] = (),
 ) -> None:
     """Persist one successfully parsed page immediately so interrupted updates can resume."""
     payload = json.dumps(list(rows), ensure_ascii=False, separators=(",", ":"))
+    trait_payload = json.dumps(list(traits), ensure_ascii=False, separators=(",", ":"))
     with connect() as con:
         con.execute(
-            """INSERT INTO matchup_page_cache(source,patch,champion_id,rows_json,source_url,fetched_at)
-               VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+            """INSERT INTO matchup_page_cache(
+                   source,patch,champion_id,rows_json,traits_json,source_url,fetched_at
+               ) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
                ON CONFLICT(source,patch,champion_id) DO UPDATE SET
-               rows_json=excluded.rows_json, source_url=excluded.source_url, fetched_at=CURRENT_TIMESTAMP""",
-            (source, patch or "", champion_id, payload, source_url or ""),
+               rows_json=excluded.rows_json, traits_json=excluded.traits_json,
+               source_url=excluded.source_url, fetched_at=CURRENT_TIMESTAMP""",
+            (
+                source, patch or "", champion_id, payload, trait_payload,
+                source_url or "",
+            ),
+        )
+
+
+def replace_source_champion_traits(
+    source: str,
+    rows: Iterable[tuple[str, str, float, int, int]],
+    patch: str = "",
+) -> None:
+    clean_rows = []
+    for champion_id, trait, confidence, evidence_count, mentions in rows:
+        cid = str(champion_id or "").strip()
+        tag = str(trait or "").strip()
+        if not cid or not tag:
+            continue
+        clean_rows.append((
+            cid, tag, float(confidence or 0.0), int(evidence_count or 0),
+            int(mentions or 0), source, patch or "",
+        ))
+    if not clean_rows:
+        return
+    with connect() as con:
+        con.execute("DELETE FROM champion_traits WHERE source=?", (source,))
+        con.executemany(
+            """INSERT OR REPLACE INTO champion_traits(
+                   champion_id,trait,confidence,evidence_count,mentions,source,patch
+               ) VALUES(?,?,?,?,?,?,?)""",
+            clean_rows,
         )
 
 
@@ -1192,6 +1271,10 @@ def load_runtime_snapshot() -> dict:
         champion_rows = con.execute("SELECT * FROM champions ORDER BY name COLLATE NOCASE").fetchall()
         alias_rows = con.execute("SELECT champion_id,alias_norm FROM champion_aliases").fetchall()
         matchup_rows = con.execute("SELECT champion_id,enemy_id,role,score FROM matchups").fetchall()
+        trait_rows = con.execute(
+            "SELECT champion_id,trait,confidence,evidence_count,mentions,source,patch "
+            "FROM champion_traits"
+        ).fetchall()
         tier_rows = con.execute("SELECT champion_id,role,tier,source,patch FROM champion_tiers").fetchall()
         stat_rows = con.execute("SELECT * FROM stats").fetchall()
         pool_rows = con.execute("SELECT champion_id,item_name,category,priority,source FROM item_pools ORDER BY champion_id,priority ASC,item_name").fetchall()
@@ -1241,6 +1324,10 @@ def load_runtime_snapshot() -> dict:
     matchups: dict[tuple[str, str], list[tuple[str, float]]] = {}
     for row in matchup_rows:
         matchups.setdefault((row["champion_id"], row["enemy_id"]), []).append((row["role"], float(row["score"])))
+
+    champion_traits: dict[str, list[dict]] = {}
+    for row in trait_rows:
+        champion_traits.setdefault(str(row["champion_id"]), []).append(dict(row))
 
     tiers: dict[tuple[str, str], str] = {}
     # Prefer WildRiftCore when multiple sources happen to contain the same role.
@@ -1311,6 +1398,7 @@ def load_runtime_snapshot() -> dict:
         "champion_aliases": champion_aliases,
         "champion_alias_ids": alias_ids,
         "matchups": matchups,
+        "champion_traits": champion_traits,
         "tiers": tiers,
         "stats": stats,
         "item_pools": item_pools,
