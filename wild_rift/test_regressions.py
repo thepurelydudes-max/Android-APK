@@ -481,6 +481,69 @@ class RecommendationRegressionTests(unittest.TestCase):
         self.assertIn("— Zyra", joined)
 
 
+class WildRiftCoreReaderCoverageRegressionTests(unittest.TestCase):
+    def test_reader_markdown_counter_table_parses_role_edges(self):
+        text = """
+Title: Malphite Wild Rift Counters Guide
+Markdown Content:
+## How to counter Malphite in Top: the essentials
+
+Matchup | Verdict | Edge | Win rate | Pick rate
+--- | --- | --- | --- | ---
+Olaf | Hard Counters | +3 | 49.2% | 1.1%
+Irelia | Favorable | −1 | 47.4% | 1.8%
+
+## Unfavorable
+"""
+        mapping = {"olaf": "Olaf", "irelia": "Irelia"}
+        resolve = lambda value: mapping.get(sources.slugish(value))
+        rows = sources._parse_wildriftcore_counter_page(
+            text, "Malphite", resolve
+        )
+        self.assertIn(("Malphite", "Olaf", "Барон", -3.0), rows)
+        self.assertIn(("Malphite", "Irelia", "Барон", 1.0), rows)
+
+    def test_reader_markdown_tier_page_parses_cards_and_integrity_links(self):
+        text = """
+Title: Wild Rift Baron Lane Tier List
+Markdown Content:
+## Every Baron Lane champion ranked, S+ to C
+
+S+
+
+[S+ Malphite 58.1% WR 8.6% PR](https://wildriftcore.com/en/champions/malphite/)
+[S+ Jax 52.6% WR 4.0% PR](https://wildriftcore.com/en/champions/jax/)
+
+S
+
+[S Volibear 50.1% WR 7.1% PR](https://wildriftcore.com/en/champions/volibear/)
+
+## How do we calculate this tier list?
+"""
+        mapping = {
+            "malphite": "Malphite",
+            "jax": "Jax",
+            "volibear": "Volibear",
+        }
+        resolve = lambda value: mapping.get(sources.slugish(value))
+        rows = sources._parse_wildriftcore_tier_page(
+            text, "Барон", resolve
+        )
+        self.assertEqual(
+            {(cid, role, tier) for cid, role, tier in rows},
+            {
+                ("Malphite", "Барон", "S+"),
+                ("Jax", "Барон", "S+"),
+                ("Volibear", "Барон", "S"),
+            },
+        )
+        expected, unresolved = sources._wildriftcore_ranked_section_ids(
+            text, resolve
+        )
+        self.assertEqual(expected, {"Malphite", "Jax", "Volibear"})
+        self.assertFalse(unresolved)
+
+
 class SourceIntegrityRegressionTests(unittest.TestCase):
     def test_trusted_icon_urls_are_name_addressed_for_reported_bad_items(self):
         expected = {
