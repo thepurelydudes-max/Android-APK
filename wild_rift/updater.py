@@ -609,6 +609,12 @@ def update_all(
 ) -> dict:
     _check_cancel(cancel_check)
     db.init_db()
+    # Repair obsolete source shorthands before any catalog/build/media work.
+    # This is network-independent, so an existing "Mercury Boots" row is folded
+    # into the real patch item even if the online sources are unavailable.
+    db.migrate_item_aliases({
+        "Mercury Boots": "Mercury's Treads",
+    })
     raw_progress = progress or (lambda s: None)
 
     def emit(message: str) -> None:
