@@ -98,7 +98,7 @@ def _seed_db_quality(
     runtime DB whose matchup matrix is fine but whose build tables are empty.
     """
     if not path.is_file():
-        return (0,), 0, 0, 0, 0, 0, 0, 0, 0, 0
+        return (0,), 0, 0, 0, 0, 0, 0, 0
     try:
         with sqlite3.connect(path) as con:
             patch_row = con.execute(
@@ -146,7 +146,7 @@ def _seed_db_quality(
                 opponent_adaptations, build_pages,
             )
     except sqlite3.Error:
-        return (0,), 0, 0, 0, 0, 0
+        return (0,), 0, 0, 0, 0, 0, 0, 0
 
 
 def _copy_seed_if_better(seed_db: Path, database: Path) -> None:
