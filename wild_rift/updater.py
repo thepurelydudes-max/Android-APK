@@ -18,12 +18,12 @@ from sources import (
     fetch_wildriftcore_item_metadata,
     slugish, clean_item_name, clean_wrpocket_item_stats,
     clean_wrpocket_item_effect, _item_dataset_hash, canonical_item_name, is_finished_item_tier,
-    trusted_item_icon_urls, is_dns_resolution_error,
+    trusted_item_icon_urls, fetch_verified_item_icon_urls, is_dns_resolution_error,
 )
 
 
 ITEM_DATA_SCHEMA_VERSION = "4"
-ITEM_ICON_SCHEMA_VERSION = "5"
+ITEM_ICON_SCHEMA_VERSION = "6"
 
 
 class UpdateCancelled(RuntimeError):
@@ -488,77 +488,89 @@ def _cache_media(
         existing = db.get_item(name)
         asset_key = f"item:{name}"
 
-        # Item art has a stricter trust policy than ordinary media. WR Pocket
-        # supplied the wrong art for several correctly named Wild Rift items
-        # (notably Kaenic Rookern and Sundered Sky), so never fall back to its
-        # card/detail-page image here. Try two independent, name-addressed WR
-        # icon mirrors instead. A missing icon is preferable to a wrong icon.
+        # Final item art must come from a source tied to this exact item name.
+        # Start with cheap name-addressed URLs; if they all fail, resolve the
+        # actual image src from the exact WRC/WRMeta item page.
         candidates = trusted_item_icon_urls(name)
-        if not candidates:
-            item_failures += 1
-            item_media_issues.append(f"Item image {name}: no trusted icon URL")
-            db.clear_item_icon_path(name)
-            db.delete_media_asset(asset_key)
-            progress(update_text("cache_items", lang, current=idx, total=len(items)))
-            continue
-
         manifest = db.get_media_asset(asset_key)
         manifest_url = str((manifest or {}).get("source_url") or "")
-        # If this installation already verified one of the trusted mirrors,
-        # prefer it first so a mirror that was previously unavailable is not
-        # retried before every cached item on every update.
         if manifest_url in candidates:
             candidates = [manifest_url] + [u for u in candidates if u != manifest_url]
 
         chosen = None
         last_status = "failed"
         last_exc = ""
-        for candidate_index, icon_url in enumerate(candidates):
-            # Respect the image hosts. The v5 repair may touch the whole catalog
-            # once, so do not fire 100+ icon requests as a burst.
-            last_icon_request = float(getattr(net, "_item_icon_last_request", 0.0))
-            elapsed = time.monotonic() - last_icon_request
-            if elapsed < 0.35:
-                time.sleep(0.35 - elapsed)
-            record = _seed_media_record(
-                asset_key, icon_url, existing, target, previous_patch, current_patch
-            )
-            record_url = str((record or {}).get("source_url") or "")
-            existing_path = str((existing or {}).get("icon_path") or "")
-            force_this_item = bool(
-                force_item_refresh
-                or candidate_index > 0
-                or not existing_path
-                or (record_url and record_url != icon_url)
-                or not (record or {}).get("sha256")
-            )
-            try:
-                result = sync_cached_image(
-                    net, icon_url, target, record,
-                    current_patch=current_patch, previous_patch=previous_patch,
-                    force_refresh=force_this_item,
-                )
-                net._item_icon_last_request = time.monotonic()
-            except Exception as exc:
-                net._item_icon_last_request = time.monotonic()
-                last_exc = str(exc)
-                last_status = "exception"
-                continue
 
-            last_status = result.status
-            if result.status in {"failed", "stale_kept", "missing_url"}:
-                continue
-            if result.path:
-                chosen = (icon_url, result)
-                break
+        def try_icon_candidates(urls: list[str], start_index: int = 0):
+            nonlocal chosen, last_status, last_exc
+            for offset, icon_url in enumerate(urls):
+                candidate_index = start_index + offset
+                last_icon_request = float(getattr(net, "_item_icon_last_request", 0.0))
+                elapsed = time.monotonic() - last_icon_request
+                if elapsed < 0.35:
+                    time.sleep(0.35 - elapsed)
+                record = _seed_media_record(
+                    asset_key, icon_url, existing, target, previous_patch, current_patch
+                )
+                record_url = str((record or {}).get("source_url") or "")
+                existing_path = str((existing or {}).get("icon_path") or "")
+                force_this_item = bool(
+                    force_item_refresh
+                    or candidate_index > 0
+                    or not existing_path
+                    or (record_url and record_url != icon_url)
+                    or not (record or {}).get("sha256")
+                )
+                try:
+                    result = sync_cached_image(
+                        net, icon_url, target, record,
+                        current_patch=current_patch, previous_patch=previous_patch,
+                        force_refresh=force_this_item,
+                    )
+                    net._item_icon_last_request = time.monotonic()
+                except Exception as exc:
+                    net._item_icon_last_request = time.monotonic()
+                    last_exc = str(exc)
+                    last_status = "exception"
+                    continue
+
+                last_status = result.status
+
+                # A previously verified file from this exact trusted URL is still
+                # valid when only the revalidation request failed. This is the
+                # legitimate Immortal Boots stale_kept case from the device log.
+                if (
+                    result.status == "stale_kept"
+                    and result.path
+                    and record_url == icon_url
+                    and icon_url in trusted_item_icon_urls(name)
+                ):
+                    chosen = (icon_url, result)
+                    return
+
+                if result.status in {"failed", "stale_kept", "missing_url"}:
+                    continue
+                if result.path:
+                    chosen = (icon_url, result)
+                    return
+
+        if candidates:
+            try_icon_candidates(candidates)
+
+        if chosen is None:
+            page_candidates = [
+                url for url in fetch_verified_item_icon_urls(net, name, progress)
+                if url not in candidates
+            ]
+            if page_candidates:
+                try_icon_candidates(page_candidates, start_index=len(candidates))
 
         if chosen is None:
             item_failures += 1
             detail = last_exc or last_status
             item_media_issues.append(f"Item image {name}: {detail}")
-            # Critical invariant: never show an old untrusted PNG after both
-            # trusted sources failed. The file may remain on disk, but clearing
-            # icon_path makes the UI render a neutral placeholder instead.
+            # Never keep a file that belongs to another/unverified source under
+            # the requested item name.
             db.clear_item_icon_path(name)
             db.delete_media_asset(asset_key)
         else:
