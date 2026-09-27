@@ -1,0 +1,31 @@
+Wild Rift Counter Assistant 3.6.0
+====================================
+
+Major recommendation architecture rework.
+
+Champion recommendations
+------------------------
+- The selected lane/role is a hard eligibility gate.
+- Mirror-role matchup now outranks team-wide secondary value:
+  positive mirror matchup > neutral/unknown > negative.
+- The rest of the enemy five still affects the score inside the same mirror bucket.
+
+Item builds
+-----------
+- Removed global-shop style item selection from the active builder.
+- Core build comes only from WildRiftCore for the exact champion + selected role.
+- Situational items come only from that same champion+role page.
+- Enemy analysis is now only a trigger system: it decides which already-approved
+  situational item to use; it cannot invent a tank/ADC/mage item from elsewhere.
+- At most two tail slots are adapted, preserving at least the first three core items.
+- Boots come from the same role build. Champion-approved alternative boots may
+  replace them only when their own source trigger matches the enemy draft.
+- The UI no longer fills missing slots with hard-coded mage/tank/ADC fallback items.
+
+Update pipeline
+---------------
+- Added a new cached WildRiftCore champion+role build stage.
+- Build pages are cached per patch/champion and partial failures keep last known-good data.
+- Item/portrait cache progress updates immediately and per item/champion so stale
+  text such as "Zyra" cannot remain visible throughout the media-cache stage.
+- Update pipeline now has 8 top-level stages.
