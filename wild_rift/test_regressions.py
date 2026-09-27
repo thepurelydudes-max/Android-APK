@@ -457,6 +457,45 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
             self.assertIsNone(seeded)
 
 
+class PerformanceRegressionTests(unittest.TestCase):
+    def test_enemy_role_inference_is_cached_for_same_snapshot_and_draft(self):
+        champions = [
+            {"id": "A", "name": "A", "name_ru": "A", "roles": ["fighter"], "lanes": ["top"], "damage_type": "Physical"},
+            {"id": "B", "name": "B", "name_ru": "B", "roles": ["assassin"], "lanes": ["jungle"], "damage_type": "Physical"},
+            {"id": "C", "name": "C", "name_ru": "C", "roles": ["mage"], "lanes": ["mid"], "damage_type": "Magic"},
+            {"id": "D", "name": "D", "name_ru": "D", "roles": ["marksman"], "lanes": ["ad"], "damage_type": "Physical"},
+            {"id": "E", "name": "E", "name_ru": "E", "roles": ["support"], "lanes": ["support"], "damage_type": "Magic"},
+        ]
+        snapshot = make_snapshot(champions)
+        draft = [(champ, "") for champ in champions]
+
+        original = engine._role_evidence
+        calls = {"count": 0}
+
+        def counted(*args, **kwargs):
+            calls["count"] += 1
+            return original(*args, **kwargs)
+
+        engine._role_evidence = counted
+        try:
+            first = engine._infer_enemy_roles(draft, snapshot)
+            first_calls = calls["count"]
+            second = engine._infer_enemy_roles(draft, snapshot)
+            self.assertGreater(first_calls, 0)
+            self.assertEqual(calls["count"], first_calls)
+            self.assertEqual(
+                [(row[0]["id"], row[1]) for row in first],
+                [(row[0]["id"], row[1]) for row in second],
+            )
+        finally:
+            engine._role_evidence = original
+
+    def test_item_tag_lookup_preserves_known_semantics(self):
+        self.assertIn("anti_magic", engine.tags_for("Kaenic Rookern"))
+        self.assertIn("anti_crit", engine.tags_for("Randuin's Omen"))
+        self.assertFalse(engine.tags_for("Definitely Not An Item"))
+
+
 class NetworkResilienceRegressionTests(unittest.TestCase):
     def test_dns_error_detector_matches_android_name_resolution_error(self):
         message = (
