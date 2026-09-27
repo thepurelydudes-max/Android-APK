@@ -850,8 +850,9 @@ def _generic_threat_tags(enemy: dict, snapshot: dict | None = None) -> set[str]:
         tags |= {"anti_crit", "anti_auto"}
     if "assassin" in roles:
         tags |= {"anti_burst", "anti_dive"}
-    if "fighter" in roles and "tank" not in roles:
-        tags.add("anti_duelist")
+    # Fighter is deliberately NOT synonymous with duelist. WRC's counter
+    # labels / example drafts provide that semantic signal directly; treating
+    # every fighter as a duelist made Sustain variants over-trigger.
     if "tank" in roles:
         tags.add("anti_tank")
     return tags
@@ -1101,6 +1102,75 @@ def _wrc_example_threat_tags(
     return tags
 
 
+def _wrc_counter_trait_tags(
+    enemy: dict,
+    snapshot: dict | None = None,
+) -> set[str]:
+    """Map patch-native WRC Counter labels onto build-condition tags."""
+    if snapshot is None:
+        return set()
+    rows = list((snapshot.get("champion_traits") or {}).get(
+        str(enemy.get("id") or ""), []
+    ))
+    mapping = {
+        "tank": "anti_tank",
+        "duelist": "anti_duelist",
+        "dive": "anti_dive",
+        "burst": "anti_burst",
+        "poke": "anti_poke",
+        "engage": "anti_engage",
+        "cc": "anti_cc",
+        "healing": "anti_heal",
+        "shield": "anti_shield",
+        "mobility": "anti_mobility",
+        "physical": "anti_physical",
+        "magic": "anti_magic",
+    }
+    out: set[str] = set()
+    for row in rows:
+        try:
+            confidence = float(row.get("confidence") or 0.0)
+            evidence = int(row.get("evidence_count") or 0)
+        except (TypeError, ValueError):
+            continue
+        # A repeated WRC label is enough even when a champion appears in many
+        # matchup pages; a single observation is accepted only when it is a
+        # large share of that champion's source descriptions.
+        if not (
+            (evidence >= 2 and confidence >= 0.08)
+            or confidence >= 0.30
+        ):
+            continue
+        mapped = mapping.get(str(row.get("trait") or ""))
+        if mapped:
+            out.add(mapped)
+    return out
+
+
+def _wrc_opponent_reason_threat_tags(
+    enemy: dict,
+    snapshot: dict | None = None,
+) -> set[str]:
+    """Learn threat semantics from WRC Adaptations-by-opponent globally."""
+    if snapshot is None:
+        return set()
+    wanted = {
+        norm_item(str(enemy.get("id") or "")),
+        norm_item(str(enemy.get("name") or "")),
+        norm_item(str(enemy.get("name_ru") or "")),
+    }
+    wanted.discard("")
+    tags: set[str] = set()
+    for rows in (snapshot.get("role_opponent_adaptations", {}) or {}).values():
+        for row in rows:
+            enemy_name = norm_item(str(
+                row.get("enemy_name") or row.get("enemy_name_norm") or ""
+            ))
+            if enemy_name and enemy_name in wanted:
+                tags |= _trigger_tags_from_text(str(row.get("reason") or ""))
+    return tags
+
+
 def _select_role_variant(
     rows: list[dict], threat_counts: Counter,
     enemy_objs: list[tuple[dict, str]] | None = None,
@@ -1126,9 +1196,18 @@ def _select_role_variant(
         trigger = str(row.get("trigger_text") or "")
         example_text = str(row.get("example_text") or "")
         trigger_folded = trigger.casefold()
-        # The current UI has no ally draft input. Preserve ally-dependent WRC
-        # variants in the database but do not pretend enemy data satisfies them.
-        if "allied" in trigger_folded:
+        # Pure ally-dependent variants cannot be inferred from WRCA's current
+        # enemy-only input. Mixed rules still use their observable enemy clause,
+        # e.g. "2+ dive threats 2+ allied carries to protect".
+        pure_allied_rule = (
+            "allied" in trigger_folded
+            and not any(token in trigger_folded for token in (
+                "dive threat", "enemy tank", "poke champion",
+                "hard engage", "crowd-control", "crowd control",
+                "mostly physical", "mostly magic",
+            ))
+        )
+        if pure_allied_rule:
             continue
         tags = _variant_tags(name, f"{trigger} {example_text}")
         if not tags:
@@ -1137,14 +1216,14 @@ def _select_role_variant(
         example_matches = _variant_example_matches(row, enemy_objs)
         score = 0.0
         if "anti_physical" in tags:
-            # WRC's "Vs AD comps" is a composition-level override, not "there
-            # are a couple of AD champions". Require overwhelming physical
-            # dominance; mixed/hybrid drafts stay on Standard.
-            if physical < 4 or magic > 1:
+            # WRC examples for "Mostly physical damage" commonly identify three
+            # dominant physical threats. Require a majority, not an arbitrary
+            # 4/5 composition.
+            if physical < 3 or physical <= magic:
                 continue
             score += 10.0 + physical * 2.0 - magic
         if "anti_magic" in tags:
-            if magic < 4 or physical > 1:
+            if magic < 3 or magic <= physical:
                 continue
             score += 10.0 + magic * 2.0 - physical
 
@@ -1221,9 +1300,15 @@ def _trigger_tags_from_text(value: str) -> set[str]:
         tags.add("anti_crit")
     if any(token in text for token in ("attack speed", "auto attack", "basic attack", "on-hit")):
         tags |= {"anti_attack_speed", "anti_auto"}
-    if any(token in text for token in ("ap burst", "magic damage", "magical damage", "ability power")):
+    if any(token in text for token in (
+        "ap burst", "magic damage", "magical damage", "ability power",
+        "vs ap", "vs magic",
+    )):
         tags.add("anti_magic")
-    if any(token in text for token in ("ad burst", "physical damage", "physical burst")):
+    if any(token in text for token in (
+        "ad burst", "physical damage", "physical burst",
+        "vs ad", "vs physical",
+    )):
         tags.add("anti_physical")
     if any(token in text for token in ("crowd control", "hard cc", " cc", "tenacity")):
         tags.add("anti_cc")
@@ -1293,8 +1378,10 @@ def _enemy_threat_profile(
 
     for enemy, enemy_role in enemy_objs:
         tags = set(_direct_need_tags(_counter_items(enemy["id"], snapshot)))
-        tags |= _generic_threat_tags(enemy, snapshot)
+        tags |= _wrc_counter_trait_tags(enemy, snapshot)
+        tags |= _wrc_opponent_reason_threat_tags(enemy, snapshot)
         tags |= _wrc_example_threat_tags(enemy, snapshot)
+        tags |= _generic_threat_tags(enemy, snapshot)
         if enemy_role:
             tags |= _enemy_role_build_threat_tags(enemy, enemy_role, snapshot)
 
@@ -1337,9 +1424,23 @@ def _trigger_is_active(trigger_text: str, tags: set[str], threat_counts: Counter
         ):
             return False
 
-    if "2+" in folded or "two or more" in folded or "multiple" in folded:
-        return max((int(threat_counts.get(tag, 0)) for tag in tags), default=0) >= 2
-    return any(int(threat_counts.get(tag, 0)) > 0 for tag in tags)
+    # WRC's generic situational rules have stable thresholds across the full
+    # database. Exact opponent adaptations bypass this function and can activate
+    # with a single named enemy.
+    required = 1
+    if (
+        "2+" in folded
+        or "two or more" in folded
+        or "multiple" in folded
+        or "heavy mobility" in folded
+        or "cc chains" in folded
+        or "lockdown" in folded
+    ):
+        required = 2
+    return max(
+        (int(threat_counts.get(tag, 0)) for tag in tags),
+        default=0,
+    ) >= required
 
 
 def _source_item_score(
@@ -1560,16 +1661,18 @@ def recommend_build(
         variant_rows, threat_counts, enemy_objs
     )
     selected_variant_name = ""
+    variant_core_available = False
     if selected_variant:
+        selected_variant_name = str(
+            selected_variant.get("variant_name") or ""
+        ).strip()
         variant_items = _finished_only(
             [str(x) for x in (selected_variant.get("items") or [])],
             snapshot,
         )
-        if len(variant_items) >= 3:
+        if len(variant_items) == 5:
             core = variant_items[:5]
-            selected_variant_name = str(
-                selected_variant.get("variant_name") or ""
-            ).strip()
+            variant_core_available = True
 
     core_reason = (
         f"WildRiftCore: вариант {selected_variant_name} для роли {effective_role}"
@@ -1756,6 +1859,7 @@ def recommend_build(
         "source_url": str((source_row or {}).get("source_url") or ""),
         "source_missing": source_row is None,
         "selected_variant": selected_variant_name,
+        "selected_variant_core_available": variant_core_available,
         "selected_variant_trigger": str(
             (selected_variant or {}).get("trigger_text") or ""
         ),
