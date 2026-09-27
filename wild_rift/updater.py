@@ -18,6 +18,7 @@ from sources import (
 
 
 ITEM_DATA_SCHEMA_VERSION = "4"
+ITEM_ICON_SCHEMA_VERSION = "2"
 
 
 class UpdateCancelled(RuntimeError):
@@ -195,8 +196,16 @@ def _catalog_finished_items() -> list[tuple[str, str, str]]:
     return rows
 
 
-def _replace_finished_catalog(records: list[dict], pc_ru: dict[str, str]) -> bool:
-    """Prune stale/components only when the full catalog parse looks complete."""
+def _replace_finished_catalog(
+    records: list[dict], pc_ru: dict[str, str], preserve_names: set[str] | None = None,
+) -> bool:
+    """Refresh the finished catalog without deleting source-referenced items.
+
+    The catalog index and champion Build Trends are separate pages. If the index
+    parser temporarily misses an item that current champion pages still reference
+    (notably a boot), preserve the last known-good finished catalog row until the
+    detail fallback can repair it.
+    """
     rows = []
     seen = set()
     for row in records:
@@ -212,7 +221,23 @@ def _replace_finished_catalog(records: list[dict], pc_ru: dict[str, str]) -> boo
             str(row.get("icon_url") or ""), "Upgraded",
         ))
 
-    # WR currently has far more than fifty final items.  If a layout change makes
+    preserve_slugs = {slugish(canonical_item_name(name)) for name in (preserve_names or set()) if canonical_item_name(name)}
+    if preserve_slugs:
+        for item in db.item_catalog_rows():
+            name = canonical_item_name(item.get("name", ""))
+            key = slugish(name)
+            if not name or key in seen or key not in preserve_slugs:
+                continue
+            if not is_finished_item_tier(str(item.get("tier") or "")):
+                continue
+            seen.add(key)
+            rows.append((
+                name, str(item.get("category") or ""),
+                str(item.get("name_ru") or item_name_ru(name, pc_ru) or ""),
+                str(item.get("icon_url") or ""), "Upgraded",
+            ))
+
+    # WR currently has far more than fifty final items. If a layout change makes
     # the parser see only a fragment, keep the previous catalog instead of
     # destructively deleting most known-good rows.
     existing_count = len(_catalog_finished_items())
@@ -287,10 +312,12 @@ def _cache_media(
     net: Net, champs: list[dict], items: list[tuple], version: str, progress: Callable[[str], None],
     lang: str = "ru", current_patch: str = "", previous_patch: str = "",
     errors: list[str] | None = None, cancel_check: Callable[[], bool] | None = None,
-) -> tuple[int, int]:
+    force_item_refresh: bool = False,
+) -> tuple[int, int, int]:
     ensure_cache_dirs()
     champ_count = 0
     item_count = 0
+    item_failures = 0
     errors = errors if errors is not None else []
     for idx, c in enumerate(champs, 1):
         _check_cancel(cancel_check)
@@ -329,14 +356,17 @@ def _cache_media(
         try:
             result = sync_cached_image(
                 net, icon_url, target, record, current_patch=current_patch, previous_patch=previous_patch,
+                force_refresh=force_item_refresh,
             )
             if result.status in {"failed", "stale_kept"}:
+                item_failures += 1
                 errors.append(f"Item image {name}: {result.status}")
             _store_media_result(f"item:{name}", result)
             if result.path:
                 db.update_item_media(name, result.source_url or icon_url, _portable_path(result.path))
                 item_count += 1
         except Exception as exc:
+            item_failures += 1
             errors.append(f"Item image {name}: {exc}")
         if idx % 30 == 0:
             progress(update_text("cache_items", lang, current=idx, total=len(items)))
@@ -348,7 +378,7 @@ def _cache_media(
             db.set_meta("brand_logo_path", _portable_path(logo_path))
     except Exception:
         pass
-    return champ_count, item_count
+    return champ_count, item_count, item_failures
 
 
 def update_all(
@@ -368,6 +398,7 @@ def update_all(
     summary = {"champions": 0, "stats": 0, "tiers": 0, "matchups": 0, "item_pool": 0, "counter_items": 0, "champion_images": 0, "item_images": 0, "item_details_changed": 0, "patch": "", "errors": []}
     previous_patch = db.get_meta("patch_version", "")
     current_patch = previous_patch
+    force_item_icon_refresh = db.get_meta("item_icon_schema_version", "") != ITEM_ICON_SCHEMA_VERSION
 
     emit(update_text("loading_champions", lang))
     en_champs = fetch_champions_locale(net, "en_US")
@@ -509,7 +540,7 @@ def update_all(
                 summary["item_details_changed"] += changed
                 if parsed_items:
                     items = parsed_items
-                    if not _replace_finished_catalog(parsed_rows, pc_ru):
+                    if not _replace_finished_catalog(parsed_rows, pc_ru, wanted_items):
                         summary["errors"].append("WR Pocket item catalog parse was incomplete; previous final-item catalog was kept.")
             if dataset.dataset_hash:
                 db.set_meta("item_dataset_hash", dataset.dataset_hash)
@@ -578,13 +609,15 @@ def update_all(
     if not items:
         items = [(row["name"], row.get("name_ru", ""), row.get("icon_url", ""))
                  for row in db.item_catalog_rows()]
-    ci, ii = _cache_media(
+    ci, ii, item_icon_failures = _cache_media(
         net, champs, items, ddragon_version, emit, lang,
         current_patch=current_patch, previous_patch=previous_patch, errors=summary["errors"],
-        cancel_check=cancel_check,
+        cancel_check=cancel_check, force_item_refresh=force_item_icon_refresh,
     )
     summary["champion_images"] = ci
     summary["item_images"] = ii
+    if force_item_icon_refresh and item_icon_failures == 0:
+        db.set_meta("item_icon_schema_version", ITEM_ICON_SCHEMA_VERSION)
 
     _check_cancel(cancel_check)
     stamp = format_update_timestamp(now)
