@@ -291,16 +291,11 @@ def main() -> int:
             "Refusing to package champions without WildRiftCore role builds: "
             + ", ".join(audit["champions_without_role_build"])
         )
-    if audit["roles_without_variants"]:
-        raise RuntimeError(
-            "Refusing to package role builds without variants: "
-            + ", ".join(audit["roles_without_variants"])
-        )
-    if audit["roles_with_incomplete_variant_count"]:
-        raise RuntimeError(
-            "Refusing to package role builds with incomplete variant sets: "
-            + ", ".join(audit["roles_with_incomplete_variant_count"])
-        )
+    # Variant blocks are optional enrichment. WildRiftCore's public
+    # representation exposes full variant item lists for some champions but
+    # only variant names/triggers for others. Never reject a complete source
+    # Standard build merely because optional variants are not machine-readable.
+    # Any variant that *is* stored must still be a complete five-item block.
     if audit["incomplete_role_builds"] or audit["incomplete_variants"]:
         raise RuntimeError(
             "Refusing to package incomplete WildRiftCore build blocks: "
