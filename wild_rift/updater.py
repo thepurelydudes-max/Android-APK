@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 import db
-from localization import COMMON_CHAMPION_ALIASES
+from localization import COMMON_CHAMPION_ALIASES, champion_name_ru
 from media_cache import BRAND_DIR, CHAMPION_DIR, ITEM_DIR, cache_brand_logo, ensure_cache_dirs, safe_name, sync_cached_image, _valid_image
 from sources import (
     DDRAGON_CHAMPION_ICON, Net, fetch_champions_locale, fetch_wildriftmeta_champion_roster, fetch_counter_item_pages,
@@ -80,8 +80,58 @@ def merge_champion_locales(en_rows: list[dict], ru_rows: list[dict]) -> list[dic
     out = []
     for row in en_rows:
         merged = dict(row)
-        merged["name_ru"] = (ru_by_id.get(row["id"]) or {}).get("name", "")
+        merged["name_ru"] = (
+            (ru_by_id.get(row["id"]) or {}).get("name", "")
+            or champion_name_ru(str(row.get("id") or ""), str(row.get("name") or ""))
+        )
         out.append(merged)
+    return out
+
+
+def merge_champion_roster_supplement(
+    champions: list[dict], roster_rows: list[dict],
+) -> list[dict]:
+    """Add genuinely new WR identities without duplicating known champions.
+
+    Supplemental profile slugs can spell an existing champion differently
+    ("Nunu And Willump" vs canonical id "Nunu"). Treat all known aliases as
+    identity keys before deciding that a roster row is new.
+    """
+    out = [dict(row) for row in champions]
+    known: dict[str, str] = {}
+
+    def register(champ: dict) -> None:
+        cid = str(champ.get("id") or "")
+        values = [
+            cid,
+            str(champ.get("name") or ""),
+            str(champ.get("name_ru") or ""),
+            *COMMON_CHAMPION_ALIASES.get(cid, ()),
+        ]
+        for value in values:
+            key = slugish(value)
+            if key:
+                known.setdefault(key, cid)
+
+    for champ in out:
+        register(champ)
+
+    for raw in roster_rows:
+        row = dict(raw)
+        identity_values = (
+            str(row.get("id") or ""),
+            str(row.get("name") or ""),
+            str(row.get("profile_slug") or "").replace("-", " "),
+        )
+        if any(slugish(value) in known for value in identity_values if slugish(value)):
+            continue
+        row["name_ru"] = (
+            str(row.get("name_ru") or "")
+            or champion_name_ru(str(row.get("id") or ""), str(row.get("name") or ""))
+        )
+        out.append(row)
+        register(row)
+
     return out
 
 
@@ -722,14 +772,7 @@ def update_all(
     # patch 7.3 while the merged feed can lag behind.
     try:
         roster_rows = fetch_wildriftmeta_champion_roster(net)
-        known = {slugish(str(c.get("id") or "")) for c in champs}
-        known |= {slugish(str(c.get("name") or "")) for c in champs}
-        for row in roster_rows:
-            key = slugish(str(row.get("id") or row.get("name") or ""))
-            if not key or key in known:
-                continue
-            champs.append(row)
-            known.add(key)
+        champs = merge_champion_roster_supplement(champs, roster_rows)
     except Exception as e:
         # Roster supplement is non-destructive; the primary structured feed is
         # still usable when the supplementary site is temporarily unavailable.
