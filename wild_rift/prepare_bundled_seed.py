@@ -40,6 +40,38 @@ def _audit() -> dict:
                 "WHERE lower(tier)='upgraded' ORDER BY name"
             ).fetchall()
         ]
+        role_build_rows = [
+            dict(row) for row in con.execute(
+                "SELECT champion_id,role,items_json,boot_name,source "
+                "FROM role_builds WHERE source='wildriftcore.com' "
+                "ORDER BY champion_id,role"
+            ).fetchall()
+        ]
+        role_variant_rows = [
+            dict(row) for row in con.execute(
+                "SELECT champion_id,role,variant_name,items_json,source "
+                "FROM role_build_variants WHERE source='wildriftcore.com' "
+                "ORDER BY champion_id,role,priority,variant_name"
+            ).fetchall()
+        ]
+        build_cache_rows = int(con.execute(
+            "SELECT COUNT(*) FROM build_page_cache "
+            "WHERE source='wildriftcore.com'"
+        ).fetchone()[0])
+        block_counts = {}
+        for table, id_col in (
+            ("stats", "champion_id"),
+            ("champion_tiers", "champion_id"),
+            ("matchups", "champion_id"),
+            ("item_pools", "champion_id"),
+            ("counter_items", "enemy_id"),
+            ("role_builds", "champion_id"),
+        ):
+            block_counts[table] = {
+                str(row[0]) for row in con.execute(
+                    f"SELECT DISTINCT {id_col} FROM {table}"
+                ).fetchall()
+            }
 
     missing_champions = []
     for row in champions:
@@ -53,6 +85,49 @@ def _audit() -> dict:
         if not icon_path or not _valid_image(resolve_media_path(icon_path)):
             missing_items.append(str(row.get("name") or "?"))
 
+    champion_ids = {str(row.get("id") or "") for row in champions}
+    role_build_keys = {
+        (str(row.get("champion_id") or ""), str(row.get("role") or ""))
+        for row in role_build_rows
+    }
+    variant_keys = {
+        (str(row.get("champion_id") or ""), str(row.get("role") or ""))
+        for row in role_variant_rows
+    }
+    champions_without_role_build = sorted(
+        champion_ids - {cid for cid, _role in role_build_keys}
+    )
+    roles_without_variants = sorted(
+        f"{cid}:{role}" for cid, role in (role_build_keys - variant_keys)
+    )
+
+    incomplete_role_builds = []
+    for row in role_build_rows:
+        try:
+            names = json.loads(row.get("items_json") or "[]")
+        except Exception:
+            names = []
+        if len(names) != 5 or not str(row.get("boot_name") or "").strip():
+            incomplete_role_builds.append(
+                f"{row.get('champion_id')}:{row.get('role')}"
+            )
+
+    incomplete_variants = []
+    for row in role_variant_rows:
+        try:
+            names = json.loads(row.get("items_json") or "[]")
+        except Exception:
+            names = []
+        if len(names) != 5:
+            incomplete_variants.append(
+                f"{row.get('champion_id')}:{row.get('role')}:{row.get('variant_name')}"
+            )
+
+    data_gaps = {
+        table: sorted(champion_ids - ids)
+        for table, ids in block_counts.items()
+    }
+
     return {
         "champions_total": len(champions),
         "champions_cached": len(champions) - len(missing_champions),
@@ -60,6 +135,14 @@ def _audit() -> dict:
         "items_total": len(items),
         "items_cached": len(items) - len(missing_items),
         "items_missing": missing_items,
+        "wrc_role_builds": len(role_build_rows),
+        "wrc_role_variants": len(role_variant_rows),
+        "wrc_build_cache_pages": build_cache_rows,
+        "champions_without_role_build": champions_without_role_build,
+        "roles_without_variants": roles_without_variants,
+        "incomplete_role_builds": incomplete_role_builds,
+        "incomplete_variants": incomplete_variants,
+        "data_gaps": data_gaps,
     }
 
 
@@ -142,6 +225,28 @@ def main() -> int:
             flush=True,
         )
 
+    print(
+        f"WildRiftCore: {audit['wrc_role_builds']} role builds, "
+        f"{audit['wrc_role_variants']} variants, "
+        f"{audit['wrc_build_cache_pages']} cached champion pages",
+        flush=True,
+    )
+    for key in (
+        "champions_without_role_build",
+        "roles_without_variants",
+        "incomplete_role_builds",
+        "incomplete_variants",
+    ):
+        values = audit.get(key) or []
+        if values:
+            print(f"{key}: " + ", ".join(values[:40]), flush=True)
+    for block, values in (audit.get("data_gaps") or {}).items():
+        if values:
+            print(
+                f"Data gap {block}: {len(values)} — " + ", ".join(values[:20]),
+                flush=True,
+            )
+
     warnings = manifest["warnings"]
     if warnings:
         print(f"Updater completed with {len(warnings)} warning block(s):", flush=True)
@@ -159,6 +264,31 @@ def main() -> int:
         )
     if audit["champions_cached"] == 0:
         raise RuntimeError("Refusing to package a seed with no champion portraits.")
+
+    expected_profiles = int(summary.get("wrc_build_profiles_total") or 0)
+    successful_profiles = int(summary.get("wrc_build_pages_success") or 0)
+    if expected_profiles <= 0 or successful_profiles != expected_profiles:
+        raise RuntimeError(
+            "Refusing to package incomplete WildRiftCore pages: "
+            f"{successful_profiles}/{expected_profiles}"
+        )
+    if audit["champions_without_role_build"]:
+        raise RuntimeError(
+            "Refusing to package champions without WildRiftCore role builds: "
+            + ", ".join(audit["champions_without_role_build"])
+        )
+    if audit["roles_without_variants"]:
+        raise RuntimeError(
+            "Refusing to package role builds without variants: "
+            + ", ".join(audit["roles_without_variants"])
+        )
+    if audit["incomplete_role_builds"] or audit["incomplete_variants"]:
+        raise RuntimeError(
+            "Refusing to package incomplete WildRiftCore build blocks: "
+            + ", ".join(
+                audit["incomplete_role_builds"] + audit["incomplete_variants"]
+            )
+        )
 
     return 0
 
