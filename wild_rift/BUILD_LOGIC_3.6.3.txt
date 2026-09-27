@@ -1,0 +1,13 @@
+Wild Rift Counter Assistant 3.6.3
+====================================
+
+WR Pocket champion identity fix:
+- Item-pool pages now resolve champion identity from the profile URL slug first.
+- Raw card text is no longer used as the primary resolver input.
+- This fixes the failure mode where decorated card text could fuzzy-resolve many
+  different profile links to one champion (observed as Zyra throughout the update).
+- A duplicate-ID guard aborts the refresh if different profile URLs resolve to the
+  same champion ID.
+- A 70% coverage guard refuses to replace the previous known-good pool if the
+  profile resolver suddenly collapses or becomes incomplete.
+- Progress now reflects the champion actually resolved from each profile URL.
