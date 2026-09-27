@@ -50,6 +50,7 @@ WR_CORE_TIERLISTS = {
 }
 WR_POCKET_CHAMPS = "https://wrpocket.app/en/champions"
 WR_POCKET_ITEMS = "https://wrpocket.app/en/items"
+WR_META_CHAMPS = "https://www.wildriftmeta.com/champions/"
 WR_POCKET_PATCH = "https://wrpocket.app/en/patch/7"
 RIOT_PATCH_NOTES = "https://wildrift.leagueoflegends.com/en-us/news/tags/patch-notes/"
 
@@ -246,6 +247,47 @@ def fetch_champions_locale(net: Net, locale: str = "en_US") -> list[dict]:
 
 def fetch_champions(net: Net) -> list[dict]:
     return fetch_champions_locale(net, "en_US")
+
+
+def fetch_wildriftmeta_champion_roster(net: Net) -> list[dict]:
+    """Supplement the master champion feed with current WR-only roster entries.
+
+    The ry2x merged feed can lag a newly released Wild Rift champion. WildRiftMeta
+    currently exposes the complete live roster as canonical /champions/<slug>/
+    links. We use it only to add missing identities; existing champion metadata
+    from the structured feed always wins.
+    """
+    soup = BeautifulSoup(net.get(WR_META_CHAMPS).text, "html.parser")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for a in soup.find_all("a", href=True):
+        href = str(a.get("href") or "")
+        m = re.fullmatch(r"/champions/([^/?#]+)/?", href)
+        if not m:
+            continue
+        slug = clean(m.group(1))
+        key = slugish(slug)
+        if not key or key in seen:
+            continue
+        label = clean(a.get_text(" ", strip=True))
+        # Navigation/card anchors may include decorations; a short plain label
+        # is preferred, otherwise the URL slug remains the identity.
+        name = label if label and len(label) <= 40 else slug.replace("-", " ").title()
+        name = clean(name)
+        if not name:
+            continue
+        seen.add(key)
+        out.append({
+            "id": name,
+            "name": name,
+            "name_ru": "",
+            "roles": [],
+            "lanes": [],
+            "damage_type": "",
+            "icon_url": f"https://www.wildriftmeta.com/assets/champion/icon/champion-{slug}-icon.png",
+            "profile_slug": slug,
+        })
+    return out
 
 
 def fetch_ddragon_version(net: Net) -> str:
