@@ -174,8 +174,12 @@ def upsert_item(
             """INSERT INTO items(name,category,source,name_ru,icon_url,icon_path,tier) VALUES(?,?,?,?,?,?,?)
             ON CONFLICT(name) DO UPDATE SET category=excluded.category, source=excluded.source,
             name_ru=CASE WHEN excluded.name_ru<>'' THEN excluded.name_ru ELSE items.name_ru END,
+            icon_path=CASE
+                WHEN excluded.icon_url<>'' AND excluded.icon_url<>items.icon_url THEN ''
+                WHEN excluded.icon_path<>'' THEN excluded.icon_path
+                ELSE items.icon_path
+            END,
             icon_url=CASE WHEN excluded.icon_url<>'' THEN excluded.icon_url ELSE items.icon_url END,
-            icon_path=CASE WHEN excluded.icon_path<>'' THEN excluded.icon_path ELSE items.icon_path END,
             tier=CASE WHEN excluded.tier<>'' THEN excluded.tier ELSE items.tier END""",
             (name, category or "", source or "", name_ru or "", icon_url or "", icon_path or "", tier or ""),
         )
