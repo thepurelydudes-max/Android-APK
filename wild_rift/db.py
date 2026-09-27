@@ -439,6 +439,17 @@ def update_item_media(item_name: str, icon_url: str = "", icon_path: str = "") -
     with connect() as con:
         con.execute("UPDATE items SET icon_url=COALESCE(NULLIF(?,''),icon_url), icon_path=COALESCE(NULLIF(?,''),icon_path) WHERE name=?", (icon_url, icon_path, item_name))
 
+def clear_item_icon_path(item_name: str) -> None:
+    """Forget a stale local item image without discarding the verified remote URL."""
+    with connect() as con:
+        con.execute("UPDATE items SET icon_path='' WHERE name=?", (item_name,))
+
+
+def delete_media_asset(asset_key: str) -> None:
+    with connect() as con:
+        con.execute("DELETE FROM media_assets WHERE asset_key=?", (asset_key,))
+
+
 def upsert_media_asset(
     asset_key: str, *, source_url: str = "", etag: str = "", last_modified: str = "",
     content_length: int = 0, sha256: str = "", local_path: str = "",
