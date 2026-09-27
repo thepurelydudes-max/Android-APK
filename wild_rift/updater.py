@@ -748,7 +748,14 @@ def update_all(
         raw_progress(message)
 
     net = Net()
-    summary = {"champions": 0, "stats": 0, "tiers": 0, "matchups": 0, "item_pool": 0, "role_builds": 0, "counter_items": 0, "champion_images": 0, "item_images": 0, "item_details_changed": 0, "patch": "", "errors": []}
+    summary = {
+        "champions": 0, "stats": 0, "tiers": 0, "matchups": 0,
+        "item_pool": 0, "role_builds": 0, "role_build_variants": 0,
+        "wrc_build_profiles_total": 0, "wrc_build_pages_success": 0,
+        "wrc_build_failed_profiles": [], "counter_items": 0,
+        "champion_images": 0, "item_images": 0, "item_details_changed": 0,
+        "patch": "", "errors": [],
+    }
     previous_patch = db.get_meta("patch_version", "")
     current_patch = previous_patch
     force_item_icon_refresh = db.get_meta("item_icon_schema_version", "") != ITEM_ICON_SCHEMA_VERSION
@@ -975,14 +982,36 @@ def update_all(
 
     emit(update_text("loading_role_builds", lang))
     try:
-        role_builds, role_situational, role_boots, role_build_errors = fetch_wildriftcore_role_builds(
-            net, resolve, known_items, emit
-        )
+        (
+            role_builds, role_situational, role_boots, role_variants,
+            role_build_errors, role_build_coverage,
+        ) = fetch_wildriftcore_role_builds(net, resolve, known_items, emit)
         _check_cancel(cancel_check)
         db.replace_source_role_builds_partial(
-            "wildriftcore.com", role_builds, role_situational, role_boots
+            "wildriftcore.com", role_builds, role_situational, role_boots,
+            role_variants,
         )
         summary["role_builds"] = len(role_builds)
+        summary["role_build_variants"] = len(role_variants)
+        summary["wrc_build_profiles_total"] = int(
+            role_build_coverage.get("profiles_total") or 0
+        )
+        summary["wrc_build_pages_success"] = int(
+            role_build_coverage.get("pages_success") or 0
+        )
+        summary["wrc_build_failed_profiles"] = list(
+            role_build_coverage.get("failed_profiles") or []
+        )
+        db.set_meta(
+            "wrc_build_profiles_total",
+            str(summary["wrc_build_profiles_total"]),
+        )
+        db.set_meta(
+            "wrc_build_pages_success",
+            str(summary["wrc_build_pages_success"]),
+        )
+        db.set_meta("wrc_build_roles_total", str(len(role_builds)))
+        db.set_meta("wrc_build_variants_total", str(len(role_variants)))
 
         # WildRiftCore can publish a current role item before WR Pocket exposes
         # it in the local catalog (support gold/new patch items are common).
@@ -1003,6 +1032,11 @@ def update_all(
             canonical_item_name(row[2])
             for row in role_situational if canonical_item_name(row[2])
         )
+        for _cid, _role, _variant_name, variant_items, _trigger, _priority, _patch, _url in role_variants:
+            role_item_names.update(
+                canonical_item_name(x)
+                for x in variant_items if canonical_item_name(x)
+            )
         for row in role_boots:
             boot = canonical_item_name(row[2])
             if boot:
@@ -1088,7 +1122,9 @@ def update_all(
             detail = "; ".join(role_build_errors[:3])
             summary["errors"].append(
                 f"WildRiftCore builds: {len(role_build_errors)} страниц не обновлены; "
-                f"сохранены предыдущие данные" + (f" ({detail})" if detail else "")
+                f"покрытие {summary['wrc_build_pages_success']}/"
+                f"{summary['wrc_build_profiles_total']}; сохранены предыдущие данные"
+                + (f" ({detail})" if detail else "")
             )
     except UpdateCancelled:
         raise
