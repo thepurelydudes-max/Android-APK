@@ -104,7 +104,10 @@ def _result_from_record(target: Path, record: dict, *, status: str, downloaded: 
     )
 
 
-def sync_cached_image(net, url: str, target_path: str | Path, record: dict | None = None, *, current_patch: str = "", previous_patch: str = "") -> SyncResult:
+def sync_cached_image(
+    net, url: str, target_path: str | Path, record: dict | None = None, *,
+    current_patch: str = "", previous_patch: str = "", force_refresh: bool = False,
+) -> SyncResult:
     """Synchronize one cached image without risking the last known-good file.
 
     Network policy:
@@ -139,12 +142,12 @@ def sync_cached_image(net, url: str, target_path: str | Path, record: dict | Non
 
     # A migrated old cache with no manifest validators should not be re-downloaded
     # repeatedly during the same patch.
-    if existing_valid and same_url and not has_validators and same_patch:
+    if existing_valid and same_url and not has_validators and same_patch and not force_refresh:
         record["source_url"] = url
         return _result_from_record(target, record, status="cached", downloaded=False, checked_patch=current_patch, last_checked=now)
 
     headers = {}
-    if existing_valid and same_url:
+    if existing_valid and same_url and not force_refresh:
         if old_etag:
             headers["If-None-Match"] = old_etag
         if old_modified:
