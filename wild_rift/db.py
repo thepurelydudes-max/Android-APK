@@ -596,7 +596,7 @@ def replace_source_role_builds_partial(
         variant_rows.append((
             cid, role_value, variant_name,
             json.dumps(clean_items[:5], ensure_ascii=False),
-            str(trigger or ""), int(priority or 999), source,
+            str(trigger or ""), int(priority if priority is not None else 999), source,
             str(patch or ""), str(source_url or ""),
         ))
 
