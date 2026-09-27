@@ -31,6 +31,7 @@ def make_snapshot(
     role_variants=None,
     role_situational=None,
     role_boots=None,
+    role_opponent_adaptations=None,
 ):
     by_id = {c["id"]: dict(c) for c in champions}
     aliases = {}
@@ -56,6 +57,7 @@ def make_snapshot(
         "role_variants": role_variants or {},
         "role_situational": role_situational or {},
         "role_boots": role_boots or {},
+        "role_opponent_adaptations": role_opponent_adaptations or {},
     }
 
 
@@ -247,16 +249,25 @@ Best Malphite build (Baron Lane): Randuin's Omen › Thornmail › Sunfire Aegis
 [Randuin's Omen](https://wildriftcore.com/en/items/randuins-omen/)›[Thornmail](https://wildriftcore.com/en/items/thornmail/)›[Sunfire Aegis](https://wildriftcore.com/en/items/sunfire-aegis/)›[Radiant Virtue](https://wildriftcore.com/en/items/radiant-virtue/)›[Amaranth's Twinguard](https://wildriftcore.com/en/items/amaranths-twinguard/)
 When to pick it
 Balanced draft, no strong signal
+Example enemy draft
+![Image: Ryze](https://example.invalid/ryze.png) ![Image: Master Yi](https://example.invalid/master-yi.png) ![Image: Lucian](https://example.invalid/lucian.png) ![Image: Kai'Sa](https://example.invalid/kaisa.png) ![Image: Lulu](https://example.invalid/lulu.png)
+Nothing dominates on the other side.
 
 #### Vs AD comps
 [Randuin's Omen](https://wildriftcore.com/en/items/randuins-omen/)›[Iceborn Gauntlet](https://wildriftcore.com/en/items/iceborn-gauntlet/)›[Amaranth's Twinguard](https://wildriftcore.com/en/items/amaranths-twinguard/)›[Thornmail](https://wildriftcore.com/en/items/thornmail/)›[Unending Despair](https://wildriftcore.com/en/items/unending-despair/)
 When to pick it
 Mostly physical damage
+Example enemy draft
+![Image: Riven](https://example.invalid/riven.png) ![Image: Lee Sin](https://example.invalid/lee-sin.png) ![Image: Zed](https://example.invalid/zed.png) ![Image: Lucian](https://example.invalid/lucian.png) ![Image: Nautilus](https://example.invalid/nautilus.png)
+Physical damage dominates the enemy draft.
 
 #### Vs AP comps
 [Force of Nature](https://wildriftcore.com/en/items/force-of-nature/)›[Kaenic Rookern](https://wildriftcore.com/en/items/kaenic-rookern/)›[Amaranth's Twinguard](https://wildriftcore.com/en/items/amaranths-twinguard/)›[Randuin's Omen](https://wildriftcore.com/en/items/randuins-omen/)›[Unending Despair](https://wildriftcore.com/en/items/unending-despair/)
 When to pick it
 Mostly magic damage
+Example enemy draft
+![Image: Gwen](https://example.invalid/gwen.png) ![Image: Evelynn](https://example.invalid/evelynn.png) ![Image: Syndra](https://example.invalid/syndra.png) ![Image: Kai'Sa](https://example.invalid/kaisa.png) ![Image: Karma](https://example.invalid/karma.png)
+Magic damage dominates the enemy draft.
 
 ### Situational adaptations
 **Mantle of the Twelfth Hour**_Against AD burst (assassins)_
@@ -277,12 +288,25 @@ Mostly magic damage
         ad = next(row for row in payload["variants"] if row["name"] == "Vs AD comps")
         self.assertEqual(ad["trigger"], "Mostly physical damage")
         self.assertIn("Iceborn Gauntlet", ad["items"])
+        standard = next(
+            row for row in payload["variants"]
+            if row["name"] == "Standard — frontline"
+        )
+        self.assertIn("Ryze", standard["example_enemies"])
+        self.assertIn("Master Yi", standard["example_enemies"])
         mantle_rows = [
             row for row in payload["situational"]
             if row["item"] == "Mantle of the Twelfth Hour"
         ]
         self.assertTrue(mantle_rows)
         self.assertTrue(any("Olaf" in row["trigger"] for row in mantle_rows))
+        self.assertTrue(
+            any(
+                row["enemy"] == "Olaf"
+                and row["item"] == "Mantle of the Twelfth Hour"
+                for row in payload["opponent_adaptations"]
+            )
+        )
 
     def test_variant_selector_prefers_ad_variant_for_physical_team(self):
         rows = [
@@ -455,6 +479,82 @@ class RecommendationRegressionTests(unittest.TestCase):
         self.assertFalse(build.get("fallback_used", False))
         self.assertEqual(build.get("source"), "wildriftcore.com")
         self.assertEqual(build.get("ordered"), core + [boot])
+
+    def test_exact_wrc_opponent_adaptation_outranks_generic_rule(self):
+        champions = [
+            {"id": "Ahri", "name": "Ahri", "name_ru": "Ари", "roles": ["Mage"], "lanes": ["mid"], "damage_type": "Magic"},
+            {"id": "Irelia", "name": "Irelia", "name_ru": "Ирелия", "roles": ["Fighter"], "lanes": ["mid"], "damage_type": "Physical"},
+        ]
+        core = [
+            "Infinity Orb", "Rabadon's Deathcap", "Void Staff",
+            "Stormsurge", "Hextech Rocketbelt",
+        ]
+        boot = "Boots of Mana"
+        zhonya = "Zhonya's Hourglass"
+        items = {
+            name: {
+                "name": name,
+                "category": "Boots" if name == boot else "Magic",
+                "tier": "Upgraded",
+                "stats_json": "[]",
+                "effect_en": "",
+            }
+            for name in [*core, boot, zhonya]
+        }
+        snapshot = make_snapshot(
+            champions,
+            items=items,
+            role_builds={
+                ("Ahri", "Мид"): {
+                    "champion_id": "Ahri",
+                    "role": "Мид",
+                    "items": core,
+                    "boot_name": boot,
+                    "source": "wildriftcore.com",
+                    "source_url": "https://wildriftcore.com/en/champions/ahri/builds/",
+                }
+            },
+            role_variants={
+                ("Ahri", "Мид"): [{
+                    "variant_name": "Standard — AP burst",
+                    "items": core,
+                    "trigger_text": "Balanced draft, no strong signal",
+                    "example_enemies": ["Ryze", "Master Yi", "Lucian", "Kai'Sa", "Lulu"],
+                    "example_text": "Nothing dominates on the other side.",
+                    "priority": 0,
+                }]
+            },
+            role_situational={
+                ("Ahri", "Мид"): [{
+                    "item_name": zhonya,
+                    "trigger_text": "Against AD burst",
+                    "priority": 1,
+                    "source": "wildriftcore.com",
+                }]
+            },
+            role_opponent_adaptations={
+                ("Ahri", "Мид"): [{
+                    "enemy_name": "Irelia",
+                    "enemy_name_norm": db.normalize_search("Irelia"),
+                    "item_name": zhonya,
+                    "reason": "Physical damage",
+                    "priority": 100,
+                    "source": "wildriftcore.com",
+                }]
+            },
+        )
+
+        build = engine.recommend_build(
+            "Ahri", [("Irelia", "Мид")], role_ru="Мид", snapshot=snapshot
+        )
+        self.assertIn(zhonya, build["ordered"])
+        self.assertTrue(build["exact_opponent_adaptations"])
+        self.assertEqual(
+            build["exact_opponent_adaptations"][0]["enemy"], "Irelia"
+        )
+        self.assertEqual(
+            build["exact_opponent_adaptations"][0]["item"], zhonya
+        )
 
     def test_wrpocket_profile_identity_does_not_collapse_to_zyra(self):
         index_html = """
