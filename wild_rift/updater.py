@@ -688,6 +688,8 @@ def update_all(
     # into the real patch item even if the online sources are unavailable.
     db.migrate_item_aliases({
         "Mercury Boots": "Mercury's Treads",
+        "Mercury Treads": "Mercury's Treads",
+        "Mercurys Treads": "Mercury's Treads",
     })
     raw_progress = progress or (lambda s: None)
 
