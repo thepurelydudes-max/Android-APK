@@ -647,7 +647,16 @@ def replace_source_role_builds_partial(
         clean_examples = list(dict.fromkeys(
             str(x).strip() for x in (example_enemies or []) if str(x).strip()
         ))[:5]
-        if (cid, role_value) not in touched or not variant_name or len(clean_items) < 3:
+        # WRC sometimes exposes only the variant name + "When to pick it"
+        # while keeping its separate five-item row client-side/private. Store
+        # those metadata-only variants as [] so the engine can still select the
+        # correct strategy and safely retain the known Standard core.
+        if (
+            (cid, role_value) not in touched
+            or not variant_name
+            or not str(trigger or "").strip()
+            or len(clean_items) not in {0, 5}
+        ):
             continue
         variant_rows.append((
             cid, role_value, variant_name,
