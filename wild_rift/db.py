@@ -607,6 +607,122 @@ def get_item(item_name: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def migrate_item_aliases(aliases: dict[str, str]) -> None:
+    """Merge obsolete scraped item names into their canonical item identity.
+
+    This keeps cached/role-build references usable even when an older app version
+    stored an upstream shorthand (for example "Mercury Boots") as a standalone
+    item. The migration is network-independent and safe to run on every update.
+    """
+    if not aliases:
+        return
+    with connect() as con:
+        for raw_alias, raw_canonical in aliases.items():
+            alias = str(raw_alias or "").strip()
+            canonical = str(raw_canonical or "").strip()
+            if not alias or not canonical or alias == canonical:
+                continue
+
+            old = con.execute("SELECT * FROM items WHERE name=?", (alias,)).fetchone()
+            current = con.execute("SELECT * FROM items WHERE name=?", (canonical,)).fetchone()
+            if old is not None and current is None:
+                con.execute("UPDATE items SET name=? WHERE name=?", (canonical, alias))
+            elif old is not None and current is not None:
+                # Preserve useful legacy fields only when the canonical row does
+                # not already have a value.
+                oldd = dict(old)
+                con.execute(
+                    """UPDATE items SET
+                       category=CASE WHEN category='' THEN ? ELSE category END,
+                       source=CASE WHEN source='' THEN ? ELSE source END,
+                       name_ru=CASE WHEN name_ru='' THEN ? ELSE name_ru END,
+                       icon_url=CASE WHEN icon_url='' THEN ? ELSE icon_url END,
+                       icon_path=CASE WHEN icon_path='' THEN ? ELSE icon_path END,
+                       price=CASE WHEN price=0 THEN ? ELSE price END,
+                       stats_json=CASE WHEN stats_json IN ('','[]') THEN ? ELSE stats_json END,
+                       effect_en=CASE WHEN effect_en='' THEN ? ELSE effect_en END,
+                       data_hash=CASE WHEN data_hash='' THEN ? ELSE data_hash END,
+                       data_patch=CASE WHEN data_patch='' THEN ? ELSE data_patch END,
+                       data_source_url=CASE WHEN data_source_url='' THEN ? ELSE data_source_url END,
+                       tier=CASE WHEN tier='' THEN ? ELSE tier END
+                       WHERE name=?""",
+                    (
+                        oldd.get("category", ""), oldd.get("source", ""), oldd.get("name_ru", ""),
+                        oldd.get("icon_url", ""), oldd.get("icon_path", ""), int(oldd.get("price", 0) or 0),
+                        oldd.get("stats_json", "[]"), oldd.get("effect_en", ""), oldd.get("data_hash", ""),
+                        oldd.get("data_patch", ""), oldd.get("data_source_url", ""), oldd.get("tier", ""),
+                        canonical,
+                    ),
+                )
+                con.execute("DELETE FROM items WHERE name=?", (alias,))
+
+            # Tables keyed by item name: insert canonical copies first to avoid
+            # primary-key conflicts, then remove the obsolete alias rows.
+            for table, columns in (
+                ("item_pools", "champion_id,item_name,category,priority,source"),
+                ("counter_items", "enemy_id,item_name,reason,source"),
+                ("role_build_situational", "champion_id,role,item_name,trigger_text,priority,source"),
+                ("role_build_boots", "champion_id,role,item_name,trigger_text,priority,source"),
+            ):
+                rows = con.execute(
+                    f"SELECT {columns} FROM {table} WHERE item_name=?", (alias,)
+                ).fetchall()
+                if rows:
+                    names = columns.split(",")
+                    placeholders = ",".join("?" for _ in names)
+                    for row in rows:
+                        values = [row[name] for name in names]
+                        values[names.index("item_name")] = canonical
+                        con.execute(
+                            f"INSERT OR IGNORE INTO {table}({columns}) VALUES({placeholders})",
+                            values,
+                        )
+                    con.execute(f"DELETE FROM {table} WHERE item_name=?", (alias,))
+
+            # Role core builds store item names as JSON and the boot separately.
+            for row in con.execute(
+                "SELECT champion_id,role,source,items_json,boot_name FROM role_builds"
+            ).fetchall():
+                try:
+                    items = json.loads(row["items_json"] or "[]")
+                except Exception:
+                    items = []
+                changed = False
+                replaced = []
+                for item in items:
+                    value = canonical if str(item) == alias else str(item)
+                    changed = changed or value != str(item)
+                    if value not in replaced:
+                        replaced.append(value)
+                boot = canonical if str(row["boot_name"] or "") == alias else str(row["boot_name"] or "")
+                changed = changed or boot != str(row["boot_name"] or "")
+                if changed:
+                    con.execute(
+                        """UPDATE role_builds SET items_json=?,boot_name=?
+                           WHERE champion_id=? AND role=? AND source=?""",
+                        (
+                            json.dumps(replaced, ensure_ascii=False), boot,
+                            row["champion_id"], row["role"], row["source"],
+                        ),
+                    )
+
+            old_key = f"item:{alias}"
+            new_key = f"item:{canonical}"
+            old_media = con.execute(
+                "SELECT 1 FROM media_assets WHERE asset_key=?", (old_key,)
+            ).fetchone()
+            new_media = con.execute(
+                "SELECT 1 FROM media_assets WHERE asset_key=?", (new_key,)
+            ).fetchone()
+            if old_media and not new_media:
+                con.execute(
+                    "UPDATE media_assets SET asset_key=? WHERE asset_key=?",
+                    (new_key, old_key),
+                )
+            elif old_media:
+                con.execute("DELETE FROM media_assets WHERE asset_key=?", (old_key,))
+
+
 def update_champion_media(champion_id: str, icon_url: str = "", icon_path: str = "") -> None:
     with connect() as con:
         con.execute("UPDATE champions SET icon_url=COALESCE(NULLIF(?,''),icon_url), icon_path=COALESCE(NULLIF(?,''),icon_path) WHERE id=?", (icon_url, icon_path, champion_id))
