@@ -167,7 +167,9 @@ def _wildriftcore_get(
             response = net.s.get(url, timeout=net.timeout, headers=headers or None)
         except requests.RequestException as exc:
             net._wildriftcore_last_request = time.monotonic()
-            net.note_request_error(url, exc)
+            note_error = getattr(net, "note_request_error", None)
+            if callable(note_error):
+                note_error(url, exc)
             # DNS/transport failures use short retries. The long waits below are
             # reserved for an explicit server-side 429 Retry-After response.
             if attempt < 2:
@@ -259,7 +261,9 @@ def _wildriftcounter_get(
         except requests.RequestException as exc:
             last_exc = exc
             net._wildriftcounter_last_request = time.monotonic()
-            net.note_request_error(url, exc)
+            note_error = getattr(net, "note_request_error", None)
+            if callable(note_error):
+                note_error(url, exc)
             # A DNS resolver failure will not be fixed by hammering the same
             # hostname five times. Two short retries are enough.
             if attempt >= len(waits) or (is_dns_resolution_error(exc) and attempt >= 2):
