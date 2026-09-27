@@ -83,8 +83,22 @@ jobs:
           set -euo pipefail
           python -m pip install "requests>=2.32.0" "Pillow>=10.4.0" "beautifulsoup4>=4.12.0"
           cd "$GITHUB_WORKSPACE/wild_rift"
-          python -m py_compile db.py engine.py sources.py updater.py main.py
+          python -m py_compile db.py engine.py sources.py updater.py main.py prepare_bundled_seed.py
           python -m unittest -v test_regressions.py
+
+      - name: Refresh bundled Wild Rift database and media
+        if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/wrca_bundled_seed
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+        run: |
+          set -euo pipefail
+          rm -rf "$FLET_APP_STORAGE_DATA"
+          cd "$GITHUB_WORKSPACE/wild_rift"
+          python prepare_bundled_seed.py
+          echo "Bundled seed manifest:"
+          cat "$GITHUB_WORKSPACE/wild_rift/assets/data/bundled_seed_manifest.json"
 
       - name: Build Wild Rift APK
         if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
