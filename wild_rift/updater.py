@@ -740,6 +740,8 @@ def _audit_wrc_build_integrity() -> dict:
     champion_ids = {str(row.get("id") or "") for row in champions if row.get("id")}
     role_builds = snapshot.get("role_builds", {}) or {}
     role_variants = snapshot.get("role_variants", {}) or {}
+    role_situational = snapshot.get("role_situational", {}) or {}
+    role_opponents = snapshot.get("role_opponent_adaptations", {}) or {}
 
     build_champions = {cid for cid, _role in role_builds}
     missing_champions = sorted(champion_ids - build_champions)
@@ -751,6 +753,16 @@ def _audit_wrc_build_integrity() -> dict:
         f"{cid}:{role}={len(role_variants.get((cid, role), []))}/3"
         for cid, role in role_builds
         if len(role_variants.get((cid, role), [])) < 3
+    )
+    missing_situational_roles = sorted(
+        f"{cid}:{role}"
+        for cid, role in role_builds
+        if not role_situational.get((cid, role))
+    )
+    missing_opponent_adaptation_roles = sorted(
+        f"{cid}:{role}"
+        for cid, role in role_builds
+        if not role_opponents.get((cid, role))
     )
 
     incomplete_builds: list[str] = []
@@ -782,6 +794,11 @@ def _audit_wrc_build_integrity() -> dict:
         "missing_champions": missing_champions,
         "missing_variant_roles": missing_variant_roles,
         "incomplete_variant_sets": incomplete_variant_sets,
+        "missing_situational_roles": missing_situational_roles,
+        "missing_opponent_adaptation_roles": missing_opponent_adaptation_roles,
+        "opponent_adaptations": sum(
+            len(rows) for rows in role_opponents.values()
+        ),
         "incomplete_builds": incomplete_builds,
         "incomplete_variants": incomplete_variants,
     }
@@ -1232,6 +1249,18 @@ def update_all(
         names = list(build_integrity["incomplete_variant_sets"])
         build_gap_parts.append(
             f"неполный набор вариантов {len(names)}: " + ", ".join(names[:8])
+            + ("…" if len(names) > 8 else "")
+        )
+    if build_integrity.get("missing_situational_roles"):
+        names = list(build_integrity["missing_situational_roles"])
+        build_gap_parts.append(
+            f"без situational {len(names)}: " + ", ".join(names[:8])
+            + ("…" if len(names) > 8 else "")
+        )
+    if build_integrity.get("missing_opponent_adaptation_roles"):
+        names = list(build_integrity["missing_opponent_adaptation_roles"])
+        build_gap_parts.append(
+            f"без opponent adaptations {len(names)}: " + ", ".join(names[:8])
             + ("…" if len(names) > 8 else "")
         )
     incomplete = list(build_integrity.get("incomplete_builds") or []) + list(
