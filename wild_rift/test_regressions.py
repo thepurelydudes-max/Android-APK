@@ -335,6 +335,31 @@ Magic damage dominates the enemy draft.
         )
         self.assertEqual(chosen["variant_name"], "Vs AD comps")
 
+    def test_standard_ap_burst_title_is_not_enemy_ap_signal(self):
+        rows = [
+            {
+                "variant_name": "Standard — AP burst",
+                "items": ["A", "B", "C", "D", "E"],
+                "trigger_text": "Balanced draft, no strong signal",
+                "example_enemies": ["Ryze", "Master Yi", "Lucian", "Kai'Sa", "Lulu"],
+                "example_text": "Nothing dominates on the other side.",
+                "priority": 0,
+            },
+            {
+                "variant_name": "Safety — Zhonya",
+                "items": ["F", "G", "H", "I", "J"],
+                "trigger_text": "2+ dive threats 2+ burst champions",
+                "example_enemies": ["Fiora", "Lee Sin", "Aurelion Sol", "Kai'Sa", "Lulu"],
+                "example_text": "Dive threat: Fiora, Lee Sin.",
+                "priority": 1,
+            },
+        ]
+        chosen = engine._select_role_variant(
+            rows,
+            engine.Counter({"anti_magic": 4}),
+        )
+        self.assertEqual(chosen["variant_name"], "Standard — AP burst")
+
     def test_variant_selector_uses_two_dive_threats(self):
         rows = [
             {
