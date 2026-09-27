@@ -578,10 +578,10 @@ def replace_source_role_builds_partial(
     builds: Iterable[tuple[str, str, list[str], str, str, str]],
     situational: Iterable[tuple[str, str, str, str, int]],
     boots: Iterable[tuple[str, str, str, str, int]],
+    variants: Iterable[tuple] = (),
     opponent_adaptations: Iterable[
         tuple[str, str, str, str, str, int]
     ] = (),
-    variants: Iterable[tuple] = (),
 ) -> None:
     """Replace role-build data only for champion/role pairs present in builds.
 
