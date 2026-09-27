@@ -2383,6 +2383,42 @@ def canonical_item_name(name: str) -> str:
     return value
 
 
+def canonical_completed_item_name(name: str) -> str:
+    """Normalize legacy/mid-tier boot names to the completed item shown by WRCA.
+
+    WildRiftCore can still phrase a build with Mercury's Treads, Plated
+    Steelcaps, etc. The assistant intentionally displays completed/upgraded
+    items, so those source names must never be seeded as fake Upgraded rows.
+    """
+    canonical = canonical_item_name(name)
+    mapped = BOOT_UPGRADE_MAP.get(clean_item_name(canonical).casefold(), canonical)
+    return canonical_item_name(mapped)
+
+
+def _public_item_asset_slug(name: str) -> str:
+    """Stable web/CDN slug from an English canonical item name."""
+    value = unicodedata.normalize("NFKD", canonical_item_name(name))
+    value = value.encode("ascii", "ignore").decode("ascii").casefold()
+    return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
+
+
+def trusted_item_icon_urls(name: str) -> list[str]:
+    """Independent WR icon mirrors keyed by the item's canonical English name.
+
+    Do not derive final icons from WR Pocket card/detail DOM: some current pages
+    expose generic/PC artwork under a valid Wild Rift item name. These two icon
+    endpoints are name-addressed; media_cache still validates that the response
+    is an actual image before it is accepted.
+    """
+    slug = _public_item_asset_slug(name)
+    if not slug:
+        return []
+    return [
+        f"https://www.wildriftmeta.com/assets/item/icon/item-{slug}-icon.png",
+        f"https://assets.riftgg.app/items/{slug}.webp",
+    ]
+
+
 def item_name_ru(name: str, ddragon_map: dict[str, str] | None = None) -> str:
     normalized = canonical_item_name(name).replace("’", "'")
     for key, value in WR_ITEM_RU_OVERRIDES.items():
