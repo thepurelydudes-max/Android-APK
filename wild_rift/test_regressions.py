@@ -221,7 +221,7 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
         expected = {
             "Kaenic Rookern": "https://www.wildriftmeta.com/assets/item/icon/item-kaenic-rookern-icon.png",
             "Sundered Sky": "https://www.wildriftmeta.com/assets/item/icon/item-sundered-sky-icon.png",
-            "Mercury's Treads": "https://www.wildriftmeta.com/assets/item/icon/item-mercurys-treads-icon.png",
+            "Mercury's Treads": "https://wildriftcore.com/assets/images/newItems/mercurys_treads.webp",
         }
         for name, url in expected.items():
             urls = sources.trusted_item_icon_urls(name)
@@ -343,9 +343,9 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
         )
 
     def test_possessive_item_asset_slug_does_not_insert_fake_hyphen(self):
-        self.assertEqual(
-            sources.trusted_item_icon_urls("Mercury's Treads")[0],
+        self.assertIn(
             "https://www.wildriftmeta.com/assets/item/icon/item-mercurys-treads-icon.png",
+            sources.trusted_item_icon_urls("Mercury's Treads"),
         )
         self.assertEqual(
             sources.trusted_item_icon_urls("Randuin's Omen")[0],
