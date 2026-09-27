@@ -30,6 +30,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "requests>=2.32.0" "Pillow>=10.4.0" "beautifulsoup4>=4.12.0"
 
+      - name: Run Wild Rift regression tests
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/wild_rift"
+          python -m py_compile db.py engine.py sources.py updater.py main.py diagnose_item_icons.py
+          python -m unittest -v test_regressions.py
+
       - name: Run real updater and audit every item icon
         id: audit
         continue-on-error: true
