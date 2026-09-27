@@ -10,6 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 import db
+import engine
 import updater
 from paths import ASSETS_DIR, RUNTIME_DIR, ensure_initial_data, resolve_media_path
 
@@ -223,6 +224,64 @@ def _audit() -> dict:
     }
 
 
+def _validate_wrc_formula() -> dict:
+    """Replay WRC's own enemy examples through the universal variant selector."""
+    snapshot = db.load_runtime_snapshot()
+    checked = 0
+    correct = 0
+    mismatches: list[str] = []
+
+    for (champion_id, role), rows in (
+        snapshot.get("role_variants", {}) or {}
+    ).items():
+        if len(rows) < 3:
+            continue
+        for expected in rows:
+            trigger = str(expected.get("trigger_text") or "")
+            examples = [
+                str(value).strip()
+                for value in (expected.get("example_enemies") or [])
+                if str(value).strip()
+            ]
+            # WRCA currently receives enemies only; ally-dependent WRC examples
+            # cannot be fairly replayed without inventing our own allied draft.
+            if not examples or "allied" in trigger.casefold():
+                continue
+
+            enemy_objs = []
+            for name in examples:
+                enemy = db.resolve_snapshot_champion(snapshot, name)
+                if enemy:
+                    enemy_objs.append((enemy, ""))
+            if len(enemy_objs) < 2:
+                continue
+
+            threat_counts, _by_tag = engine._enemy_threat_profile(
+                enemy_objs, snapshot
+            )
+            chosen = engine._select_role_variant(
+                rows, threat_counts, enemy_objs
+            )
+            checked += 1
+            expected_name = str(expected.get("variant_name") or "")
+            chosen_name = str((chosen or {}).get("variant_name") or "")
+            if chosen_name == expected_name:
+                correct += 1
+            elif len(mismatches) < 30:
+                mismatches.append(
+                    f"{champion_id}:{role}: expected={expected_name}; "
+                    f"chosen={chosen_name}; trigger={trigger}"
+                )
+
+    accuracy = (float(correct) / float(checked)) if checked else 0.0
+    return {
+        "checked": checked,
+        "correct": correct,
+        "accuracy": round(accuracy, 4),
+        "mismatches": mismatches,
+    }
+
+
 def _copy_runtime_into_bundle() -> None:
     runtime_db = RUNTIME_DIR / "data" / "wildrift.db"
     bundled_db = ASSETS_DIR / "data" / "wildrift.db"
@@ -264,6 +323,7 @@ def main() -> int:
 
     summary = updater.update_all(progress=progress, lang="ru")
     audit = _audit()
+    formula_validation = _validate_wrc_formula()
 
     _copy_runtime_into_bundle()
 
@@ -274,6 +334,7 @@ def main() -> int:
         "patch": summary.get("patch", ""),
         "last_update": summary.get("last_update", ""),
         "audit": audit,
+        "wrc_formula_validation": formula_validation,
         "warnings": [str(value) for value in summary.get("errors", [])],
     }
     manifest_path = ASSETS_DIR / "data" / "bundled_seed_manifest.json"
@@ -333,6 +394,19 @@ def main() -> int:
                 flush=True,
             )
 
+    print(
+        "WRC formula validation: "
+        f"{formula_validation['correct']}/{formula_validation['checked']} "
+        f"({formula_validation['accuracy']:.1%})",
+        flush=True,
+    )
+    if formula_validation["mismatches"]:
+        print(
+            "Formula mismatches: "
+            + " | ".join(formula_validation["mismatches"][:10]),
+            flush=True,
+        )
+
     warnings = manifest["warnings"]
     if warnings:
         print(f"Updater completed with {len(warnings)} warning block(s):", flush=True)
@@ -376,6 +450,15 @@ def main() -> int:
         raise RuntimeError(
             "Refusing to package incomplete WildRiftCore build/variant blocks: "
             + ", ".join(audit["incomplete_role_builds"] + variant_gaps)
+        )
+    if (
+        formula_validation["checked"] >= 20
+        and formula_validation["accuracy"] < 0.90
+    ):
+        raise RuntimeError(
+            "Refusing to package WRC formula regression: "
+            f"{formula_validation['correct']}/"
+            f"{formula_validation['checked']}"
         )
 
     return 0
