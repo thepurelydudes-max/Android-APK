@@ -2076,20 +2076,39 @@ def fetch_wrpocket_item_pools(net: Net, resolve: Callable[[str], str | None], pr
         filtered.append((text, url))
     rows = []
     visited = set()
+    resolved_urls: dict[str, str] = {}
+    resolved_count = 0
     for idx, (text, url) in enumerate(filtered, 1):
         if url in visited:
             continue
         visited.add(url)
-        slug_guess = url.rstrip("/").split("/")[-1].replace("-", " ")
-        champ_guess = text or slug_guess
-        cid = resolve(champ_guess) or resolve(slug_guess)
+
+        # The profile URL is the canonical champion identity. Never resolve the
+        # whole visible card text first: WR Pocket cards can contain tier/score
+        # decorations and neighboring text. A contaminated card string can still
+        # fuzzy-resolve to a valid champion (the last one used to be Zyra), which
+        # would then attach many champions' item pools to that one champion.
+        slug_raw = url.rstrip("/").split("/")[-1]
+        slug_guess = slug_raw.replace("-", " ")
+        cid = resolve(slug_guess)
+        if not cid:
+            # Safe fallback only for a compact anchor label, never a large card.
+            label = clean(text)
+            if label and len(label) <= 40:
+                cid = resolve(label)
         if not cid:
             continue
+
+        previous_url = resolved_urls.get(cid)
+        if previous_url and previous_url != url:
+            raise RuntimeError(
+                f"WR Pocket item pools: разные profile URL разрешились в одного чемпиона {cid}: "
+                f"{previous_url} / {url}"
+            )
+        resolved_urls[cid] = url
+        resolved_count += 1
+
         if progress:
-            # Never expose the raw WR Pocket card text in the UI. Champion cards
-            # can include tier/score decorations and occasionally mojibake from
-            # icon glyphs (for example "S â… 21.0 Zyra"). The resolved champion
-            # id is canonical and contains only the actual champion name.
             progress(f"Wild Rift Pocket: {idx}/{len(filtered)} — {cid}")
         psoup = BeautifulSoup(net.get(url).text, "html.parser")
         heading = None
@@ -2119,6 +2138,17 @@ def fetch_wrpocket_item_pools(net: Net, resolve: Callable[[str], str | None], pr
                 if item and 2 <= len(item) <= 55:
                     priority += 1
                     rows.append((cid, item, category, priority))
+    # Refuse to publish a suspiciously incomplete/collapsed refresh. The caller
+    # keeps the previous known-good pool when this raises.
+    unique_profiles = len(resolved_urls)
+    expected_profiles = len({url for _text, url in filtered})
+    min_profiles = min(expected_profiles, max(20, int(expected_profiles * 0.70)))
+    if expected_profiles and unique_profiles < min_profiles:
+        raise RuntimeError(
+            f"WR Pocket item pools: разрешено только {unique_profiles}/{expected_profiles} чемпионов; "
+            "старый пул сохранён"
+        )
+
     # de-duplicate while preserving first position
     dedup = {}
     for row in rows:
