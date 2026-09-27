@@ -661,7 +661,10 @@ class MobileAssistant:
 
     async def copy_update_log(self, _e=None) -> None:
         """Copy the last update warning log directly to the Android clipboard."""
-        log_path = RUNTIME_DIR / "logs" / "update-warnings.log"
+        log_dir = RUNTIME_DIR / "logs"
+        audit_path = log_dir / "update-audit.log"
+        warning_path = log_dir / "update-warnings.log"
+        log_path = audit_path if audit_path.is_file() else warning_path
         try:
             if not log_path.is_file():
                 self.status_text.value = self.t("log_missing")
@@ -1396,6 +1399,14 @@ class MobileAssistant:
             msg = self.t("updated")
             if summary.get("patch"):
                 msg += f" {self.t('patch')}: {summary['patch']}."
+            wrc_total = int(summary.get("wrc_build_profiles_total") or 0)
+            wrc_success = int(summary.get("wrc_build_pages_success") or 0)
+            if wrc_total:
+                msg += (
+                    f" WRC {wrc_success}/{wrc_total}; "
+                    f"{int(summary.get('role_builds') or 0)} builds; "
+                    f"{int(summary.get('role_build_variants') or 0)} variants."
+                )
             if not errors:
                 # Do not leave a stale warning log from an older update: the
                 # copy button must always represent the most recent run.
@@ -1403,6 +1414,39 @@ class MobileAssistant:
                     (RUNTIME_DIR / "logs" / "update-warnings.log").unlink(missing_ok=True)
                 except Exception:
                     pass
+
+            # Always leave an inspectable update audit, even after a completely
+            # successful refresh. The user can verify how much WRC data is
+            # actually present instead of having to trust a green status label.
+            try:
+                log_dir = RUNTIME_DIR / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                audit_lines = [
+                    f"Patch: {summary.get('patch') or '-'}",
+                    (
+                        "WildRiftCore builds: "
+                        f"{int(summary.get('wrc_build_pages_success') or 0)}/"
+                        f"{int(summary.get('wrc_build_profiles_total') or 0)} pages; "
+                        f"{int(summary.get('role_builds') or 0)} role builds; "
+                        f"{int(summary.get('role_build_variants') or 0)} variants"
+                    ),
+                ]
+                failed_profiles = list(summary.get("wrc_build_failed_profiles") or [])
+                if failed_profiles:
+                    audit_lines.append(
+                        "WildRiftCore missing profiles: " + ", ".join(failed_profiles)
+                    )
+                if errors:
+                    audit_lines.append("")
+                    audit_lines.append("Warnings:")
+                    audit_lines.extend(str(value) for value in errors)
+                else:
+                    audit_lines.append("Warnings: none")
+                (log_dir / "update-audit.log").write_text(
+                    "\n".join(audit_lines), encoding="utf-8"
+                )
+            except Exception:
+                pass
 
             if errors:
                 # A bare number such as "5 warnings" is not actionable. Show
