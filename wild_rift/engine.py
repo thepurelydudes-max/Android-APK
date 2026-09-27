@@ -109,12 +109,11 @@ def is_boot_item(name: str, category: str = "") -> bool:
     )
 
 
+_ITEM_TAGS_BY_NORM = {norm_item(name): frozenset(tags) for name, tags in ITEM_TAGS.items()}
+
+
 def tags_for(item: str) -> set[str]:
-    n = norm_item(item)
-    for k, tags in ITEM_TAGS.items():
-        if norm_item(k) == n:
-            return set(tags)
-    return set()
+    return set(_ITEM_TAGS_BY_NORM.get(norm_item(item), ()))
 
 
 def lane_ok(champ: dict, role_ru: str) -> bool:
@@ -211,17 +210,35 @@ def _role_evidence(champ: dict, role_ru: str, snapshot: dict | None = None) -> f
     return pick_rate + (2.0 if lane_known else 0.0) + (1.0 if tier else 0.0)
 
 
+_ENEMY_ROLE_CACHE: dict[tuple, tuple[tuple[str, str], ...]] = {}
+
+
 def _infer_enemy_roles(enemy_objs: list[tuple[dict, str]], snapshot: dict | None = None) -> list[tuple[dict, str]]:
     """Infer the most likely enemy positions from data already stored in the DB.
 
-    Explicit roles, if ever supplied by another UI, are preserved.  For the
-    current UI roles are blank, so the function chooses the most plausible
-    one-to-one role assignment when the composition supports it.  Flex picks are
-    resolved mostly by their role-specific pick rate.  If a clean assignment is
-    impossible (an off-meta draft), each remaining champion simply receives its
-    individually most plausible known role rather than inventing a role.
+    Role inference used to be repeated once for recommend_picks() and then again
+    for every one of the ten build previews. On mobile that means evaluating up
+    to 120 role permutations eleven times for the exact same enemy draft.
+    Cache only the resulting champion-id/role pairs for the lifetime of the
+    immutable runtime snapshot.
     """
     from itertools import permutations
+
+    cache_key = None
+    if snapshot is not None:
+        cache_key = (
+            id(snapshot),
+            tuple((str(champ.get("id") or ""), str(role or "")) for champ, role in enemy_objs),
+        )
+        cached = _ENEMY_ROLE_CACHE.get(cache_key)
+        if cached is not None:
+            by_id = snapshot.get("champions_by_id", {})
+            restored = [
+                (by_id.get(champion_id), role)
+                for champion_id, role in cached
+            ]
+            if all(champ is not None for champ, _role in restored):
+                return [(champ, role) for champ, role in restored if champ is not None]
 
     result: list[list] = [[champ, str(role or "")] for champ, role in enemy_objs]
     fixed_roles = {role for _champ, role in result if role in CANONICAL_ROLES}
@@ -263,7 +280,14 @@ def _infer_enemy_roles(enemy_objs: list[tuple[dict, str]], snapshot: dict | None
         if options:
             result[idx][1] = max(options)[2]
 
-    return [(champ, role) for champ, role in result]
+    final = [(champ, role) for champ, role in result]
+    if cache_key is not None:
+        if len(_ENEMY_ROLE_CACHE) >= 128:
+            _ENEMY_ROLE_CACHE.clear()
+        _ENEMY_ROLE_CACHE[cache_key] = tuple(
+            (str(champ.get("id") or ""), role) for champ, role in final
+        )
+    return final
 
 
 def _line_weight(my_role: str, enemy_role: str) -> float:
@@ -299,8 +323,11 @@ def _finished_item(item_name: str, snapshot: dict | None = None) -> bool:
         items = snapshot.get("items", {})
         row = items.get(item_name)
         if row is None:
-            wanted = norm_item(item_name)
-            row = next((v for k, v in items.items() if norm_item(k) == wanted), None)
+            index = snapshot.get("_items_by_engine_norm")
+            if index is None:
+                index = {norm_item(name): value for name, value in items.items()}
+                snapshot["_items_by_engine_norm"] = index
+            row = index.get(norm_item(item_name))
     else:
         row = db.get_item(item_name)
     return bool(row and str(row.get("tier") or "").strip().casefold() == "upgraded")
