@@ -658,6 +658,59 @@ def _parse_wildriftcore_counter_page(
             if not opponent_id or opponent_id == owner_id or edge_for_opponent is None:
                 continue
             rows.append((owner_id, opponent_id, role, -edge_for_opponent))
+
+    # Jina Reader representation: role heading followed by a Markdown matchup
+    # table. This keeps matchup updates working when Cloudflare challenges the
+    # Android/GitHub HTTP client.
+    if not rows and ("Markdown Content:" in str(html or "") or "| Matchup" in str(html or "")):
+        current_role = ""
+        in_table = False
+        for raw_line in str(html or "").splitlines():
+            line = clean(raw_line)
+            heading_match = re.search(
+                r"How to counter .+? in (.+?):\s*the essentials",
+                re.sub(r"^#{1,6}\s*", "", line),
+                flags=re.I,
+            )
+            if heading_match:
+                current_role = _wildriftcore_role(heading_match.group(1))
+                in_table = False
+                continue
+            if not current_role:
+                continue
+            if "Matchup" in line and "Edge" in line and "|" in line:
+                in_table = True
+                continue
+            if not in_table:
+                continue
+            if line.startswith("## "):
+                current_role = ""
+                in_table = False
+                continue
+            if "|" not in line or re.fullmatch(r"[|:\-\s]+", line):
+                continue
+            cells = [clean(cell) for cell in line.strip().strip("|").split("|")]
+            if len(cells) < 3:
+                continue
+            opponent_cell = cells[0]
+            edge_cell = cells[2]
+            # Remove images and markdown links while preserving their label.
+            opponent_cell = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", opponent_cell)
+            for _ in range(3):
+                updated = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", opponent_cell)
+                if updated == opponent_cell:
+                    break
+                opponent_cell = updated
+            opponent_name = clean(opponent_cell.replace("**", ""))
+            opponent_id = resolve(opponent_name)
+            edge_for_opponent = _wildriftcore_edge(edge_cell)
+            if (
+                opponent_id
+                and opponent_id != owner_id
+                and edge_for_opponent is not None
+            ):
+                rows.append((owner_id, opponent_id, current_role, -edge_for_opponent))
+
     return rows
 
 
@@ -715,7 +768,19 @@ def parse_wildriftcore_matchups(
             )
         counters_url = profile_url.rstrip("/") + "/counters/"
         try:
-            html = _wildriftcore_get(net, counters_url, progress).text
+            transport = "direct"
+            if bool(getattr(net, "_wildriftcore_reader_only", False)):
+                html = _jina_reader_get(net, counters_url, progress).text
+                transport = "reader"
+            else:
+                try:
+                    html = _wildriftcore_get(
+                        net, counters_url, progress, WR_CORE_HTML_HEADERS
+                    ).text
+                except Exception:
+                    net._wildriftcore_reader_only = True
+                    html = _jina_reader_get(net, counters_url, progress).text
+                    transport = "reader"
             page_rows = _parse_wildriftcore_counter_page(html, owner_id, resolve)
             if page_rows:
                 successful_pages += 1
@@ -803,7 +868,8 @@ def _wildriftcore_ranked_section_ids(
     section. Any resolvable champion link without a tier row means the refresh is
     incomplete and the updater must preserve the last known-good role table.
     """
-    soup = BeautifulSoup(html or "", "html.parser")
+    raw_page = str(html or "")
+    soup = BeautifulSoup(raw_page, "html.parser")
     start_node = None
     for node in soup.find_all(["h1", "h2", "h3", "h4", "div", "p"]):
         text = clean(node.get_text(" ", strip=True))
@@ -813,7 +879,36 @@ def _wildriftcore_ranked_section_ids(
             break
 
     if start_node is None:
-        return set(), []
+        # Reader Markdown has no DOM nodes, but canonical champion links are
+        # still present inside the same ranked section.
+        resolved: set[str] = set()
+        unresolved: list[str] = []
+        in_ranked = False
+        for raw_line in raw_page.splitlines():
+            line = clean(raw_line)
+            plain = clean(re.sub(r"^#{1,6}\s*", "", line))
+            folded = plain.casefold()
+            if "champion ranked" in folded and "s+" in folded and "to c" in folded:
+                in_ranked = True
+                continue
+            if not in_ranked:
+                continue
+            if (
+                "how do we calculate this tier list" in folded
+                or "now, prepare your next game" in folded
+            ):
+                break
+            for slug in re.findall(
+                r"(?:https?://(?:www\.)?wildriftcore\.com)?/en/champions/([^/?#)\s]+)",
+                line,
+                flags=re.I,
+            ):
+                cid = resolve(slug)
+                if cid:
+                    resolved.add(cid)
+                elif slug not in unresolved:
+                    unresolved.append(slug)
+        return resolved, unresolved
 
     resolved: set[str] = set()
     unresolved: list[str] = []
@@ -970,6 +1065,62 @@ def _parse_wildriftcore_tier_page(
         if cid:
             out.setdefault(cid, current_tier)
 
+    # Reader Markdown fallback. The public page preserves both tier headings
+    # and champion profile links/card text, so parse only the ranked section.
+    if not out and ("Markdown Content:" in str(html or "") or "champion ranked" in str(html or "").casefold()):
+        in_ranked = False
+        current_tier = ""
+        for raw_line in str(html or "").splitlines():
+            line = clean(raw_line)
+            plain = clean(re.sub(r"^#{1,6}\s*", "", line))
+            folded = plain.casefold()
+            if "champion ranked" in folded and "s+" in folded and "to c" in folded:
+                in_ranked = True
+                current_tier = ""
+                continue
+            if not in_ranked:
+                continue
+            if (
+                "how do we calculate this tier list" in folded
+                or "now, prepare your next game" in folded
+            ):
+                break
+            upper = plain.upper()
+            if upper in valid_tiers:
+                current_tier = upper
+                continue
+
+            # Many cards are emitted as "S+ Malphite 58.1% WR ...".
+            card_match = re.match(
+                r"^(S\+|S|A|B|C|D)\s+(.+?)(?:\s+\d+(?:\.\d+)?%\s+WR|$)",
+                plain,
+                flags=re.I,
+            )
+            tier = current_tier
+            candidate = plain
+            if card_match:
+                tier = card_match.group(1).upper()
+                candidate = clean(card_match.group(2))
+            if not tier:
+                continue
+
+            slug_match = re.search(
+                r"(?:https?://(?:www\.)?wildriftcore\.com)?/en/champions/([^/?#)\s]+)",
+                line,
+                flags=re.I,
+            )
+            cid = resolve(slug_match.group(1)) if slug_match else None
+            if not cid:
+                candidate = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", candidate)
+                for _ in range(3):
+                    updated = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", candidate)
+                    if updated == candidate:
+                        break
+                    candidate = updated
+                cid = resolve(clean(candidate.replace("**", "")))
+            if cid:
+                out[cid] = tier
+
     return [(champion_id, role, tier) for champion_id, tier in sorted(out.items())]
 
 
@@ -992,8 +1143,18 @@ def parse_wildriftcore_tiers(
         if progress:
             progress(f"WildRiftCore tiers: {idx}/{len(WR_CORE_TIERLISTS)} — {role}")
         try:
-            response = _wildriftcore_get(net, url, progress, headers=WR_CORE_HTML_HEADERS)
-            html = response.text
+            transport = "direct"
+            try:
+                response = _wildriftcore_get(
+                    net, url, progress, headers=WR_CORE_HTML_HEADERS
+                )
+                html = response.text
+            except Exception:
+                # The same Cloudflare challenge that blocks build pages can
+                # block tier lists. Use the read-only public representation
+                # rather than silently keeping stale tiers forever.
+                html = _jina_reader_get(net, url, progress).text
+                transport = "reader"
             parsed = _parse_wildriftcore_tier_page(html, role, resolve)
             expected_ids, unresolved_slugs = _wildriftcore_ranked_section_ids(html, resolve)
             parsed_ids = {champion_id for champion_id, _role, _tier in parsed}
