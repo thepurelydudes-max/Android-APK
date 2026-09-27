@@ -283,6 +283,10 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
             "roles": ["mage", "support"], "lanes": ["mid", "support"],
             "damage_type": "Mana",
         }]
+        champions.extend({
+            "id": f"Hero{i}", "name": f"Hero{i}", "name_ru": "",
+            "roles": ["mage"], "lanes": ["mid"], "damage_type": "Mana",
+        } for i in range(19))
         resolver = updater.build_resolver(champions)
         self.assertEqual(resolver("Norra"), "Zyra")  # loose text resolver may see the bad label
         self.assertIsNone(resolver.exact_id("norra"))
@@ -291,6 +295,10 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
         index_html = (
             '<a href="/en/champions/norra">Norra</a>'
             '<a href="/en/champions/zyra">Zyra</a>'
+            + "".join(
+                f'<a href="/en/champions/hero{i}">Hero{i}</a>'
+                for i in range(19)
+            )
         )
         page = (
             '<h2>Items</h2><h4>Magic</h4>'
@@ -310,7 +318,10 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
 
         progress = []
         rows = sources.fetch_wrpocket_item_pools(FakeNet(), resolver, progress.append)
-        self.assertEqual({row[0] for row in rows}, {"Zyra"})
+        self.assertEqual(
+            {row[0] for row in rows},
+            {"Zyra", *{f"Hero{i}" for i in range(19)}},
+        )
         self.assertIn("неизвестный профиль norra", "\n".join(progress))
 
     def test_wildriftcounter_retries_remote_disconnect(self):
