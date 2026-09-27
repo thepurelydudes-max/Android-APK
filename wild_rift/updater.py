@@ -323,6 +323,11 @@ def _cache_media(
     item_count = 0
     item_failures = 0
     errors = errors if errors is not None else []
+    # One unavailable CDN/source must not become 200+ user-facing warnings.
+    # Keep every per-asset detail for the log, but aggregate them into one
+    # warning per media class for the update summary.
+    champion_media_issues: list[str] = []
+    item_media_issues: list[str] = []
     progress(update_text("cache_champions", lang, current=0, total=len(champs)))
     for idx, c in enumerate(champs, 1):
         _check_cancel(cancel_check)
@@ -331,7 +336,7 @@ def _cache_media(
         url = (DDRAGON_CHAMPION_ICON.format(version=version, champion_id=c["id"])
                if version else (existing or {}).get("icon_url", ""))
         if not url:
-            errors.append(f"Portrait {c['id']}: no download URL")
+            champion_media_issues.append(f"Portrait {c['id']}: no download URL")
             continue
         record = _seed_media_record(f"champion:{c['id']}", url, existing, target, previous_patch, current_patch)
         try:
@@ -339,13 +344,13 @@ def _cache_media(
                 net, url, target, record, current_patch=current_patch, previous_patch=previous_patch,
             )
             if result.status in {"failed", "stale_kept"}:
-                errors.append(f"Portrait {c['id']}: {result.status}")
+                champion_media_issues.append(f"Portrait {c['id']}: {result.status}")
             _store_media_result(f"champion:{c['id']}", result)
             if result.path:
                 db.update_champion_media(c["id"], result.source_url or url, _portable_path(result.path))
                 champ_count += 1
         except Exception as exc:
-            errors.append(f"Portrait {c['id']}: {exc}")
+            champion_media_issues.append(f"Portrait {c['id']}: {exc}")
         progress(update_text("cache_champions", lang, current=idx, total=len(champs)))
 
     progress(update_text("cache_items", lang, current=0, total=len(items)))
@@ -381,7 +386,7 @@ def _cache_media(
             failed = result.status in {"failed", "stale_kept"}
             if failed:
                 item_failures += 1
-                errors.append(f"Item image {name}: {result.status}")
+                item_media_issues.append(f"Item image {name}: {result.status}")
                 # Never roll a newly verified URL back to an old cached asset.
                 # Leave icon_path empty so the UI can use the verified remote URL,
                 # and keep the old manifest out of the next retry decision.
@@ -395,11 +400,22 @@ def _cache_media(
                     item_count += 1
         except Exception as exc:
             item_failures += 1
-            errors.append(f"Item image {name}: {exc}")
+            item_media_issues.append(f"Item image {name}: {exc}")
             if record_url and record_url != icon_url:
                 db.clear_item_icon_path(name)
                 db.delete_media_asset(asset_key)
         progress(update_text("cache_items", lang, current=idx, total=len(items)))
+
+    if champion_media_issues:
+        errors.append(
+            f"Champion media cache: {len(champion_media_issues)} проблем\n"
+            + "\n".join(champion_media_issues)
+        )
+    if item_media_issues:
+        errors.append(
+            f"Item media cache: {len(item_media_issues)} проблем\n"
+            + "\n".join(item_media_issues)
+        )
 
     _check_cancel(cancel_check)
     try:
