@@ -30,6 +30,8 @@ jobs:
           echo "=== BARON TIER READER SAMPLE ==="
           grep -n -E 'ranked|S\+|Tier|Malphite|Aatrox' /tmp/wrc-tier-baron.txt | head -100 || true
           head -100 /tmp/wrc-tier-baron.txt
+          echo "=== BARON TIER RANKING BLOCK ==="
+          sed -n '100,175p' /tmp/wrc-tier-baron.txt
           grep -o -E 'https://wildriftcore\.com/en/champions/[^/?#)]+/builds/?' /tmp/wrc-builds.txt \
             | sed -E 's#https://wildriftcore\.com/en/champions/([^/]+)/builds/?#\1#' \
             | sort -u > /tmp/slugs.txt
