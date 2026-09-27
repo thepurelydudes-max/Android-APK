@@ -1613,6 +1613,9 @@ def parse_wildriftcore_build_page(
                                 candidate_plain
                                 and "Image:" not in candidate_plain
                                 and not candidate_plain.casefold().startswith("example enemy draft")
+                                and candidate_plain.casefold() not in {
+                                    "your allies", "allies", "ally draft",
+                                }
                                 and not item_links(candidate)
                                 and not example_text
                             ):
