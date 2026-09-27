@@ -229,6 +229,77 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
             self.assertEqual(urls[0], url)
             self.assertNotIn("wrpocket.app", " ".join(urls))
 
+    def test_mercury_boots_shorthand_maps_to_real_patch_item(self):
+        self.assertEqual(
+            sources.canonical_item_name("Mercury Boots"),
+            "Mercury's Treads",
+        )
+        self.assertEqual(
+            sources.canonical_item_name("Mercury Treads"),
+            "Mercury's Treads",
+        )
+
+    def test_reported_patch_73_icon_failures_have_third_wr_native_candidate(self):
+        names = [
+            "Fiendhunter Bolts",
+            "Rapid Firecannon",
+            "Whispering Circlet",
+            "Yun Tal Wildarrows",
+        ]
+        for name in names:
+            urls = sources.trusted_item_icon_urls(name)
+            self.assertGreaterEqual(len(urls), 3)
+            self.assertIn(
+                "https://wildriftcore.com/assets/images/items-cn/",
+                urls[2],
+            )
+            self.assertTrue(urls[2].endswith(".webp"))
+
+    def test_verified_icon_fallback_reads_exact_wrc_item_image(self):
+        html = (
+            '<html><body>'
+            '<img src="/assets/images/items-cn/fiendhunter-bolts.webp" '
+            'alt="Fiendhunter Bolts">'
+            '<h1>Fiendhunter Bolts</h1>'
+            '<p>Cost: 2650 Category: Damage Patch: 7.3</p>'
+            '</body></html>'
+        )
+
+        class Response:
+            status_code = 200
+            headers = {}
+            text = html
+            def raise_for_status(self):
+                return None
+
+        class FakeNet:
+            timeout = 1
+            _wildriftcore_gap = 0.0
+            _wildriftcore_last_request = 0.0
+            def __init__(self):
+                self.s = self
+            def get(self, url, *args, **kwargs):
+                if "wildriftcore.com" in url:
+                    return Response()
+                return type("MetaResponse", (), {
+                    "text": "<html><h1>Fiendhunter Bolts</h1></html>"
+                })()
+
+        urls = sources.fetch_verified_item_icon_urls(
+            FakeNet(), "Fiendhunter Bolts"
+        )
+        self.assertIn(
+            "https://wildriftcore.com/assets/images/items-cn/fiendhunter-bolts.webp",
+            urls,
+        )
+
+    def test_placeholder_svg_is_not_accepted_as_item_art(self):
+        self.assertFalse(
+            sources._usable_item_icon_url(
+                "https://wildriftcore.com/assets/images/placeholders/item.svg"
+            )
+        )
+
     def test_current_patch_boot_names_keep_their_identity(self):
         self.assertEqual(
             sources.canonical_completed_item_name("Mercury's Treads"),
@@ -494,6 +565,36 @@ class PerformanceRegressionTests(unittest.TestCase):
         self.assertIn("anti_magic", engine.tags_for("Kaenic Rookern"))
         self.assertIn("anti_crit", engine.tags_for("Randuin's Omen"))
         self.assertFalse(engine.tags_for("Definitely Not An Item"))
+
+
+class ItemAliasMigrationRegressionTests(unittest.TestCase):
+    def test_item_alias_migration_preserves_existing_media_identity(self):
+        db.init_db()
+        alias = "Legacy Regression Boots"
+        canonical = "Canonical Regression Boots"
+        db.upsert_item(
+            alias,
+            "Boots",
+            "regression",
+            icon_url="https://example.invalid/legacy.png",
+            icon_path="cache/items/legacy.png",
+            tier="Upgraded",
+        )
+        db.upsert_media_asset(
+            f"item:{alias}",
+            source_url="https://example.invalid/legacy.png",
+            local_path="cache/items/legacy.png",
+            sha256="abc",
+        )
+
+        db.migrate_item_aliases({alias: canonical})
+
+        self.assertIsNone(db.get_item(alias))
+        row = db.get_item(canonical)
+        self.assertIsNotNone(row)
+        self.assertEqual(row.get("tier"), "Upgraded")
+        self.assertIsNone(db.get_media_asset(f"item:{alias}"))
+        self.assertIsNotNone(db.get_media_asset(f"item:{canonical}"))
 
 
 class NetworkResilienceRegressionTests(unittest.TestCase):
