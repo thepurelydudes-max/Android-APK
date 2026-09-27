@@ -1284,13 +1284,35 @@ def parse_wildriftcore_build_page(
         return clean(re.sub(r"^#{1,6}\s*", "", str(value or "")))
 
     def item_links(value: str) -> list[str]:
-        slugs = re.findall(
-            r"https?://(?:www\.)?wildriftcore\.com/en/items/([^/?#)]+)/?",
-            str(value or ""),
+        raw = str(value or "")
+        out: list[str] = []
+
+        # Jina preserves WRC's image-inside-link markup. Prefer the visible item
+        # label because a future item may not yet exist in our local name map.
+        label_pairs = re.findall(
+            r"\)([^\]\n]{1,80})\]\(https?://(?:www\.)?wildriftcore\.com/en/items/([^/?#)]+)/?",
+            raw,
             flags=re.I,
         )
-        out: list[str] = []
-        for slug in slugs:
+        label_pairs += re.findall(
+            r"\[([^\[\]\n]{1,80})\]\(https?://(?:www\.)?wildriftcore\.com/en/items/([^/?#)]+)/?",
+            raw,
+            flags=re.I,
+        )
+        seen_slugs: set[str] = set()
+        for label, slug in label_pairs:
+            seen_slugs.add(slug.casefold())
+            item = _canonical_known_item(clean_item_name(label), lookup)
+            if item and item not in out:
+                out.append(item)
+
+        for slug in re.findall(
+            r"https?://(?:www\.)?wildriftcore\.com/en/items/([^/?#)]+)/?",
+            raw,
+            flags=re.I,
+        ):
+            if slug.casefold() in seen_slugs:
+                continue
             item = _canonical_known_item(slug.replace("-", " "), lookup)
             if item and item not in out:
                 out.append(item)
