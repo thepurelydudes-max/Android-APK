@@ -2021,7 +2021,10 @@ def fetch_wildriftcore_item_metadata(
         if progress:
             progress(f"WildRiftCore items: {idx}/{total} — {name}")
         try:
-            html = _wildriftcore_get(net, url, progress).text
+            # Item detail pages are protected by the same Cloudflare challenge
+            # as champion build pages. Reuse the direct->Reader transport so a
+            # missing WRC-only item does not stay permanently metadata-empty.
+            html, _transport = _wildriftcore_build_text(net, url, progress)
             row = parse_wildriftcore_item_page(html, url, name)
             if not row.get("name"):
                 raise RuntimeError("item name not found")
