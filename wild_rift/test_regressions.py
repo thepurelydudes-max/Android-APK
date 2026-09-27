@@ -836,6 +836,39 @@ class RecommendationRegressionTests(unittest.TestCase):
 
 
 class WildRiftCoreReaderCoverageRegressionTests(unittest.TestCase):
+    def test_current_seo_counter_cards_parse_general_edges_and_traits(self):
+        text = """Title: Garen Wild Rift Counters Guide
+
+Markdown Content:
+## Hard Counters
+### [Vayne](https://wildriftcore.com/en/champions/vayne/)+3
+
+Mobility Burst[Vayne build →](https://wildriftcore.com/en/champions/vayne/builds/)See details
+
+## Favorable
+### [Dr. Mundo](https://wildriftcore.com/en/champions/dr-mundo/)−1
+
+Tanks Sustain[Dr. Mundo build →](https://wildriftcore.com/en/champions/dr-mundo/builds/)See details
+"""
+        mapping = {
+            "vayne": "Vayne",
+            "drmundo": "DrMundo",
+        }
+        def resolve(value):
+            return mapping.get(sources.slugish(value))
+
+        rows = sources._parse_wildriftcore_counter_page(
+            text, "Garen", resolve
+        )
+        self.assertIn(("Garen", "Vayne", "", -3.0), rows)
+        self.assertIn(("Garen", "DrMundo", "", 1.0), rows)
+
+        traits = sources._parse_wildriftcore_counter_traits(text, resolve)
+        self.assertIn(("Vayne", "mobility"), traits)
+        self.assertIn(("Vayne", "burst"), traits)
+        self.assertIn(("DrMundo", "tank"), traits)
+        self.assertIn(("DrMundo", "healing"), traits)
+
     def test_reader_markdown_counter_table_parses_role_edges(self):
         text = """
 Title: Malphite Wild Rift Counters Guide
