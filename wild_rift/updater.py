@@ -18,7 +18,7 @@ from sources import (
     fetch_wildriftcore_item_metadata,
     slugish, clean_item_name, clean_wrpocket_item_stats,
     clean_wrpocket_item_effect, _item_dataset_hash, canonical_item_name, is_finished_item_tier,
-    trusted_item_icon_urls,
+    trusted_item_icon_urls, is_dns_resolution_error,
 )
 
 
@@ -340,6 +340,37 @@ def _apply_item_dataset(records: list[dict], patch: str, pc_ru: dict[str, str]) 
     return items, changed
 
 
+def _collapse_dns_warnings(errors: list[str], net: Net) -> list[str]:
+    """Collapse one device DNS outage into one actionable warning.
+
+    The detailed per-source failures all describe the same resolver problem and
+    otherwise make the Android UI look as if four independent parsers broke.
+    """
+    if not getattr(net, "dns_outage", False):
+        return errors
+    dns_entries = [str(value) for value in errors if is_dns_resolution_error(value)]
+    if not dns_entries:
+        return errors
+
+    affected: list[str] = []
+    for value in dns_entries:
+        prefix = value.split(":", 1)[0].strip()
+        if prefix and prefix not in affected:
+            affected.append(prefix)
+    hosts = list(getattr(net, "dns_failed_hosts", ()) or ())
+    message = (
+        "Network/DNS: Android не смог разрешить имена "
+        + (", ".join(hosts) if hosts else "нескольких источников")
+        + ". Предыдущие данные сохранены."
+    )
+    if affected:
+        message += "\nЗатронуто: " + ", ".join(affected)
+
+    return [message] + [
+        str(value) for value in errors if not is_dns_resolution_error(value)
+    ]
+
+
 def _cache_media(
     net: Net, champs: list[dict], items: list[tuple], version: str, progress: Callable[[str], None],
     lang: str = "ru", current_patch: str = "", previous_patch: str = "",
@@ -356,6 +387,32 @@ def _cache_media(
     # warning per media class for the update summary.
     champion_media_issues: list[str] = []
     item_media_issues: list[str] = []
+
+    # If two unrelated source domains already failed DNS earlier in this same
+    # update, do not turn that one resolver outage into 100+ image refresh
+    # attempts. Keep every existing cache file untouched and leave a pending
+    # icon-schema migration pending for the next successful network run.
+    if getattr(net, "dns_outage", False):
+        cached_champs = sum(
+            1
+            for champ in champs
+            if (CHAMPION_DIR / f"{safe_name(champ['id'])}.png").is_file()
+        )
+        cached_items = sum(
+            1
+            for row in items
+            if row and (ITEM_DIR / f"{safe_name(canonical_item_name(str(row[0] or '')))}.png").is_file()
+        )
+        errors.append(
+            "Media refresh skipped: DNS недоступен; "
+            f"сохранён локальный кэш чемпионов {cached_champs}/{len(champs)}, "
+            f"предметов {cached_items}/{len(items)}."
+        )
+        progress(update_text("cache_champions", lang, current=len(champs), total=len(champs)))
+        progress(update_text("cache_items", lang, current=len(items), total=len(items)))
+        # A forced icon migration must not be marked complete while offline.
+        return cached_champs, cached_items, (1 if force_item_refresh else 0)
+
     progress(update_text("cache_champions", lang, current=0, total=len(champs)))
     for idx, c in enumerate(champs, 1):
         _check_cancel(cancel_check)
@@ -392,7 +449,13 @@ def _cache_media(
                 last_status = str(exc)
                 continue
             last_status = result.status
-            if result.status in {"failed", "stale_kept", "missing_url"}:
+            if result.status == "stale_kept" and result.path:
+                # The local portrait is still valid; a failed conditional refresh
+                # is not a broken image. Keep it without turning one network
+                # interruption into a warning for every champion.
+                chosen = (str(result.source_url or url), result)
+                break
+            if result.status in {"failed", "missing_url"}:
                 continue
             if result.path:
                 chosen = (url, result)
@@ -915,5 +978,9 @@ def update_all(
     db.set_meta("last_update", stamp)
     db.set_meta("last_update_iso", now_iso)
     db.set_meta("source_note", "Champions/stats: ry2x; tiers/matchups/role-builds: WildRiftCore; counter-signals: WildRiftCounter; item catalog/media: Wild Rift Pocket; RU shared item names: Riot Data Dragon + Wild Rift overrides")
+    summary["errors"] = _collapse_dns_warnings(
+        [str(value) for value in summary.get("errors", [])],
+        net,
+    )
     raw_progress(update_text("done", lang))
     return summary
