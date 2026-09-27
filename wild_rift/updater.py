@@ -1003,7 +1003,7 @@ def update_all(
     stamp = format_update_timestamp(now)
     db.set_meta("last_update", stamp)
     db.set_meta("last_update_iso", now_iso)
-    db.set_meta("source_note", "Champions/stats: ry2x; tiers/matchups/role-builds: WildRiftCore; counter-signals: WildRiftCounter; item catalog/media: Wild Rift Pocket; RU shared item names: Riot Data Dragon + Wild Rift overrides")
+    db.set_meta("source_note", "Champions/stats: ry2x; tiers/matchups/role-builds: WildRiftCore; counter-signals: WildRiftCounter; item catalog: Wild Rift Pocket; item media: WildRiftMeta + RiftGG + WildRiftCore exact-item fallback; RU shared item names: Riot Data Dragon + Wild Rift overrides")
     summary["errors"] = _collapse_dns_warnings(
         [str(value) for value in summary.get("errors", [])],
         net,
