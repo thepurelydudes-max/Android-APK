@@ -69,6 +69,23 @@ jobs:
             sed -n "${start},${end}p" /tmp/malphite-jina.txt
           fi
 
+      - name: Probe Malphite variant structure
+        shell: bash
+        run: |
+          curl -L -sS --max-time 60 \
+            'https://r.jina.ai/https://wildriftcore.com/en/champions/malphite/builds/' \
+            -o /tmp/malphite-jina.txt
+          echo "=== variant markers ==="
+          grep -n -Ei 'variant|vs[ ._-]*(ad|ap)|physical|magic|situational adaptations|adaptations by opponent' \
+            /tmp/malphite-jina.txt | head -80 || true
+          echo "=== selected context ==="
+          LINE="$(grep -n -m1 -Ei 'vs[ ._-]*ad|physical.*comp' /tmp/malphite-jina.txt | cut -d: -f1 || true)"
+          if [[ -n "$LINE" ]]; then
+            START=$((LINE>20 ? LINE-20 : 1))
+            END=$((LINE+80))
+            sed -n "${START},${END}p" /tmp/malphite-jina.txt
+          fi
+
       - name: Probe with real headless Chrome
         shell: bash
         run: |
