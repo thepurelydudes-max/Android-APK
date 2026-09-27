@@ -1019,11 +1019,19 @@ def _role_variant_rows(champion_id: str, role_ru: str, snapshot: dict | None = N
 
 
 def _variant_tags(name: str, trigger: str) -> set[str]:
-    text = f"{name} {trigger}".casefold()
-    tags = _trigger_tags_from_text(text)
-    if any(token in text for token in ("vs ad", "physical damage", "physical comp", "ad comp")):
+    """Extract enemy conditions, never our build style, from a WRC variant.
+
+    Titles such as "Standard — AP burst" or "Sustain — brawler" describe what
+    *our champion* is building, not what the enemy team is doing. The source's
+    "When to pick it" / example explanation is authoritative for enemy signals.
+    Only explicit "Vs AD/AP comps" wording in the title is itself a condition.
+    """
+    trigger_text = str(trigger or "")
+    tags = _trigger_tags_from_text(trigger_text)
+    title = str(name or "").casefold()
+    if any(token in title for token in ("vs ad", "vs physical")):
         tags.add("anti_physical")
-    if any(token in text for token in ("vs ap", "magic damage", "magical damage", "ap comp")):
+    if any(token in title for token in ("vs ap", "vs magic")):
         tags.add("anti_magic")
     return tags
 
