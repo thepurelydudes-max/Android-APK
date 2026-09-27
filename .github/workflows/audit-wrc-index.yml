@@ -45,6 +45,8 @@ jobs:
           echo "=== AATROX PAGE MARKERS ==="
           curl -L -sS --max-time 60 'https://r.jina.ai/https://wildriftcore.com/en/champions/aatrox/builds/' -o /tmp/aatrox.txt
           grep -n -E 'recommended build|^#### |Situational adaptations|When to pick it|Best Aatrox build' /tmp/aatrox.txt | head -120 || true
+          echo "=== AATROX RAW VARIANT BLOCK ==="
+          sed -n '24,62p' /tmp/aatrox.txt
 
           cd "$GITHUB_WORKSPACE/wild_rift"
           echo "=== AATROX PARSER RESULT ==="
