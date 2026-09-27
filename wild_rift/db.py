@@ -156,6 +156,157 @@ def init_db() -> None:
                     )
 
 
+    # Repair the duplicate WildRiftMeta identity introduced by older builds.
+    # This runs on app start, so users do not have to press "Update" to lose the
+    # duplicate English "Nunu And Willump" row.
+    migrate_champion_identities({
+        "Nunu And Willump": "Nunu",
+    })
+
+
+def migrate_champion_identities(aliases: dict[str, str]) -> None:
+    """Merge obsolete champion IDs into one canonical identity.
+
+    The migration preserves any source rows that only existed under the alias,
+    rewrites direct champion/enemy references, and then removes the duplicate
+    champion row. It is intentionally safe to run repeatedly.
+    """
+    if not aliases:
+        return
+
+    with connect() as con:
+        for raw_alias, raw_canonical in aliases.items():
+            alias = str(raw_alias or "").strip()
+            canonical = str(raw_canonical or "").strip()
+            if not alias or not canonical or alias == canonical:
+                continue
+
+            old = con.execute("SELECT * FROM champions WHERE id=?", (alias,)).fetchone()
+            if old is None:
+                continue
+            current = con.execute("SELECT * FROM champions WHERE id=?", (canonical,)).fetchone()
+            if current is None:
+                # Current migrations only target identities where canonical
+                # already exists; avoid inventing partial champion rows.
+                continue
+
+            oldd = dict(old)
+            con.execute(
+                """UPDATE champions SET
+                   name_ru=CASE WHEN name_ru='' THEN ? ELSE name_ru END,
+                   icon_url=CASE WHEN icon_url='' THEN ? ELSE icon_url END,
+                   icon_path=CASE WHEN icon_path='' THEN ? ELSE icon_path END
+                   WHERE id=?""",
+                (
+                    oldd.get("name_ru", ""),
+                    oldd.get("icon_url", ""),
+                    oldd.get("icon_path", ""),
+                    canonical,
+                ),
+            )
+
+            # Preserve search aliases before the duplicate champion is deleted.
+            for row in con.execute(
+                "SELECT alias,alias_norm FROM champion_aliases WHERE champion_id=?",
+                (alias,),
+            ).fetchall():
+                con.execute(
+                    "INSERT OR IGNORE INTO champion_aliases(champion_id,alias,alias_norm) VALUES(?,?,?)",
+                    (canonical, row["alias"], row["alias_norm"]),
+                )
+            for value in (alias, oldd.get("name", ""), oldd.get("name_ru", "")):
+                norm = normalize_search(str(value or ""))
+                if norm:
+                    con.execute(
+                        "INSERT OR IGNORE INTO champion_aliases(champion_id,alias,alias_norm) VALUES(?,?,?)",
+                        (canonical, str(value), norm),
+                    )
+
+            # Tables keyed by one champion ID.
+            table_specs = (
+                ("stats", "champion_id,lane,rank_segment,win_rate,pick_rate,ban_rate,date", "champion_id"),
+                ("champion_tiers", "champion_id,role,tier,source,patch,updated_at", "champion_id"),
+                ("item_pools", "champion_id,item_name,category,priority,source", "champion_id"),
+                ("role_builds", "champion_id,role,items_json,boot_name,source,patch,source_url,updated_at", "champion_id"),
+                ("role_build_situational", "champion_id,role,item_name,trigger_text,priority,source", "champion_id"),
+                ("role_build_boots", "champion_id,role,item_name,trigger_text,priority,source", "champion_id"),
+                ("matchup_page_cache", "source,patch,champion_id,rows_json,source_url,fetched_at", "champion_id"),
+                ("build_page_cache", "source,patch,champion_id,payload_json,source_url,fetched_at", "champion_id"),
+            )
+            for table, columns, id_column in table_specs:
+                names = columns.split(",")
+                rows = con.execute(
+                    f"SELECT {columns} FROM {table} WHERE {id_column}=?",
+                    (alias,),
+                ).fetchall()
+                for row in rows:
+                    values = [row[name] for name in names]
+                    values[names.index(id_column)] = canonical
+                    placeholders = ",".join("?" for _ in names)
+                    con.execute(
+                        f"INSERT OR IGNORE INTO {table}({columns}) VALUES({placeholders})",
+                        values,
+                    )
+                con.execute(f"DELETE FROM {table} WHERE {id_column}=?", (alias,))
+
+            # Counter items use enemy_id rather than champion_id.
+            rows = con.execute(
+                "SELECT enemy_id,item_name,reason,source FROM counter_items WHERE enemy_id=?",
+                (alias,),
+            ).fetchall()
+            for row in rows:
+                con.execute(
+                    "INSERT OR IGNORE INTO counter_items(enemy_id,item_name,reason,source) VALUES(?,?,?,?)",
+                    (canonical, row["item_name"], row["reason"], row["source"]),
+                )
+            con.execute("DELETE FROM counter_items WHERE enemy_id=?", (alias,))
+
+            # Matchups can reference the duplicate on either side.
+            rows = con.execute(
+                """SELECT champion_id,enemy_id,role,score,source FROM matchups
+                   WHERE champion_id=? OR enemy_id=?""",
+                (alias, alias),
+            ).fetchall()
+            for row in rows:
+                champion_id = canonical if row["champion_id"] == alias else row["champion_id"]
+                enemy_id = canonical if row["enemy_id"] == alias else row["enemy_id"]
+                con.execute(
+                    """INSERT OR IGNORE INTO matchups(champion_id,enemy_id,role,score,source)
+                       VALUES(?,?,?,?,?)""",
+                    (champion_id, enemy_id, row["role"], row["score"], row["source"]),
+                )
+            con.execute("DELETE FROM matchups WHERE champion_id=? OR enemy_id=?", (alias, alias))
+
+            # Keep a previously downloaded portrait manifest if canonical lacks one.
+            old_key = f"champion:{alias}"
+            new_key = f"champion:{canonical}"
+            old_media = con.execute(
+                "SELECT * FROM media_assets WHERE asset_key=?", (old_key,)
+            ).fetchone()
+            new_media = con.execute(
+                "SELECT 1 FROM media_assets WHERE asset_key=?", (new_key,)
+            ).fetchone()
+            if old_media and not new_media:
+                names = [
+                    "asset_key", "source_url", "etag", "last_modified",
+                    "content_length", "sha256", "local_path",
+                    "checked_patch", "last_checked",
+                ]
+                values = [old_media[name] for name in names]
+                values[0] = new_key
+                con.execute(
+                    """INSERT OR REPLACE INTO media_assets(
+                       asset_key,source_url,etag,last_modified,content_length,sha256,
+                       local_path,checked_patch,last_checked
+                       ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    values,
+                )
+            con.execute("DELETE FROM media_assets WHERE asset_key=?", (old_key,))
+
+            # Delete last so FK-backed rows have already been copied.
+            con.execute("DELETE FROM champions WHERE id=?", (alias,))
+
+
 def set_meta(key: str, value: str) -> None:
     with connect() as con:
         con.execute("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
