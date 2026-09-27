@@ -49,7 +49,8 @@ def _audit() -> dict:
         ]
         role_variant_rows = [
             dict(row) for row in con.execute(
-                "SELECT champion_id,role,variant_name,items_json,source "
+                "SELECT champion_id,role,variant_name,items_json,trigger_text,"
+                "example_enemies_json,example_text,source "
                 "FROM role_build_variants WHERE source='wildriftcore.com' "
                 "ORDER BY champion_id,role,priority,variant_name"
             ).fetchall()
@@ -130,7 +131,15 @@ def _audit() -> dict:
             names = json.loads(row.get("items_json") or "[]")
         except Exception:
             names = []
-        if len(names) != 5:
+        try:
+            example_enemies = json.loads(row.get("example_enemies_json") or "[]")
+        except Exception:
+            example_enemies = []
+        if (
+            len(names) != 5
+            or not str(row.get("trigger_text") or "").strip()
+            or not [x for x in example_enemies if str(x).strip()]
+        ):
             incomplete_variants.append(
                 f"{row.get('champion_id')}:{row.get('role')}:{row.get('variant_name')}"
             )
@@ -291,17 +300,19 @@ def main() -> int:
             "Refusing to package champions without WildRiftCore role builds: "
             + ", ".join(audit["champions_without_role_build"])
         )
-    # Variant blocks are optional enrichment. WildRiftCore's public
-    # representation exposes full variant item lists for some champions but
-    # only variant names/triggers for others. Never reject a complete source
-    # Standard build merely because optional variants are not machine-readable.
-    # Any variant that *is* stored must still be a complete five-item block.
-    if audit["incomplete_role_builds"] or audit["incomplete_variants"]:
+    # The local draft advisor now relies on all three WRC variants, their
+    # "When to pick it" rules and example enemy drafts. Never ship an APK that
+    # silently falls back to a one-size-fits-all core because one of these
+    # source blocks failed to parse.
+    variant_gaps = (
+        audit["roles_without_variants"]
+        + audit["roles_with_incomplete_variant_count"]
+        + audit["incomplete_variants"]
+    )
+    if audit["incomplete_role_builds"] or variant_gaps:
         raise RuntimeError(
-            "Refusing to package incomplete WildRiftCore build blocks: "
-            + ", ".join(
-                audit["incomplete_role_builds"] + audit["incomplete_variants"]
-            )
+            "Refusing to package incomplete WildRiftCore build/variant blocks: "
+            + ", ".join(audit["incomplete_role_builds"] + variant_gaps)
         )
 
     return 0
