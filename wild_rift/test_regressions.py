@@ -64,84 +64,29 @@ def make_snapshot(
     }
 
 
-class SeedUpgradeRegressionTests(unittest.TestCase):
-    def test_same_patch_richer_bundled_wrc_builds_replace_old_runtime(self):
-        root = tempfile.mkdtemp(prefix="wrca-seed-upgrade-")
+class FreshInstallSeedRegressionTests(unittest.TestCase):
+    def test_fresh_install_copies_bundled_database_verbatim(self):
+        root = tempfile.mkdtemp(prefix="wrca-fresh-seed-")
         seed = paths.Path(root) / "seed.db"
         runtime = paths.Path(root) / "runtime.db"
 
-        schema = """
-        CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE matchups(champion_id TEXT,enemy_id TEXT,role TEXT,score REAL,source TEXT);
-        CREATE TABLE matchup_page_cache(source TEXT,patch TEXT,champion_id TEXT,rows_json TEXT,source_url TEXT,fetched_at TEXT);
-        CREATE TABLE role_builds(champion_id TEXT,role TEXT,items_json TEXT,boot_name TEXT,source TEXT,patch TEXT,source_url TEXT,updated_at TEXT);
-        CREATE TABLE role_build_variants(champion_id TEXT,role TEXT,variant_name TEXT,items_json TEXT,trigger_text TEXT,priority INTEGER,source TEXT,patch TEXT,source_url TEXT,updated_at TEXT);
-        CREATE TABLE build_page_cache(source TEXT,patch TEXT,champion_id TEXT,payload_json TEXT,source_url TEXT,fetched_at TEXT);
-        """
+        seed.write_bytes(b"WRCA-CANONICAL-SEED")
+        paths._copy_seed_on_fresh_install(seed, runtime)
 
-        for target in (seed, runtime):
-            with sqlite3.connect(target) as con:
-                con.executescript(schema)
-                con.execute("INSERT INTO meta(key,value) VALUES('patch_version','7.3')")
-                con.execute(
-                    "INSERT INTO matchups VALUES(?,?,?,?,?)",
-                    ("A", "B", "Барон", 1.0, "wildriftcore.com"),
-                )
-                con.execute(
-                    "INSERT INTO matchup_page_cache VALUES(?,?,?,?,?,?)",
-                    ("wildriftcore.com", "7.3", "A", "[]", "", ""),
-                )
-            con.close()
+        self.assertTrue(runtime.is_file())
+        self.assertEqual(runtime.read_bytes(), seed.read_bytes())
 
-        with sqlite3.connect(runtime) as con:
-            con.execute("INSERT INTO meta(key,value) VALUES('lang','en')")
-        con.close()
+    def test_existing_runtime_is_never_overwritten_on_normal_launch(self):
+        root = tempfile.mkdtemp(prefix="wrca-runtime-preserve-")
+        seed = paths.Path(root) / "seed.db"
+        runtime = paths.Path(root) / "runtime.db"
 
-        with sqlite3.connect(seed) as con:
-            con.execute(
-                "INSERT INTO role_builds VALUES(?,?,?,?,?,?,?,?)",
-                (
-                    "A", "Барон", '["I1","I2","I3","I4","I5"]', "Boot",
-                    "wildriftcore.com", "7.3", "", "",
-                ),
-            )
-            for priority, name in enumerate(("Standard", "Vs AD comps", "Vs AP comps")):
-                con.execute(
-                    "INSERT INTO role_build_variants VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        "A", "Барон", name, '["I1","I2","I3","I4","I5"]',
-                        "", priority, "wildriftcore.com", "7.3", "", "",
-                    ),
-                )
-            con.execute(
-                "INSERT INTO build_page_cache VALUES(?,?,?,?,?,?)",
-                (
-                    "wildriftcore.com", "7.3", "A",
-                    '{"builds":[{"role":"Барон"}]}', "", "",
-                ),
-            )
-        con.close()
+        seed.write_bytes(b"NEW-APK-SEED")
+        runtime.write_bytes(b"UPDATED-RUNTIME-DATABASE")
 
-        paths._copy_seed_if_better(seed, runtime)
+        paths._copy_seed_on_fresh_install(seed, runtime)
 
-        with sqlite3.connect(runtime) as con:
-            self.assertEqual(
-                con.execute(
-                    "SELECT COUNT(*) FROM role_builds WHERE source='wildriftcore.com'"
-                ).fetchone()[0],
-                1,
-            )
-            self.assertEqual(
-                con.execute(
-                    "SELECT COUNT(*) FROM role_build_variants WHERE source='wildriftcore.com'"
-                ).fetchone()[0],
-                3,
-            )
-            self.assertEqual(
-                con.execute("SELECT value FROM meta WHERE key='lang'").fetchone()[0],
-                "en",
-            )
-        con.close()
+        self.assertEqual(runtime.read_bytes(), b"UPDATED-RUNTIME-DATABASE")
 
 
 class ResolverRegressionTests(unittest.TestCase):
