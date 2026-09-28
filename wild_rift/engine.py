@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 import re
 
 import db
+from draft_matrix_engine import DraftEdge, DraftMatrixEngine
 
 ROLE_TO_LANES = {
     "Барон": {"top", "baron"},
@@ -14,17 +15,11 @@ ROLE_TO_LANES = {
 }
 ROLE_TO_STAT = {"Барон": "top", "Лес": "jungle", "Мид": "mid", "ADC": "ad", "Саппорт": "support"}
 
-# Balanced recommendation model for a counter-pick assistant.  Every component
-# is normalized to 0..100 before weighting so the final score stays interpretable.
-# The draft itself is the main signal: matchup strength + multi-target coverage
-# account for 80% of the recommendation.  Meta tier and role win rate are
-# deliberately secondary tie-breakers.
-FINAL_WEIGHTS = {
-    "matchup": 0.60,
-    "coverage": 0.20,
-    "tier": 0.15,
-    "winrate": 0.05,
-}
+# One shared matrix scorer is the only authority for the documented 60/20/15/5
+# recommendation formula. Role filtering/data lookup stay in this module while
+# the pure math lives in draft_matrix_engine.py and is regression-tested alone.
+DRAFT_MATRIX = DraftMatrixEngine()
+FINAL_WEIGHTS = dict(DRAFT_MATRIX.weights)
 
 # WildRiftCore tiers are ordinal, so use equal steps rather than inventing
 # nonlinear distances between neighbouring labels.  Unknown tier is treated as
@@ -350,17 +345,17 @@ def _counter_items(enemy_id: str, snapshot: dict | None = None) -> list[dict]:
 
 
 def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
-    """Rank champions for the selected role against the entered enemy draft.
+    """Rank legal role candidates against the complete entered enemy draft.
 
-    Final score is always on a 0..100-ish scale and follows the agreed model:
-      60% role-correct matchup strength against the draft
-      20% number of enemies the candidate actually counters
+    DraftMatrixEngine is the single scoring authority:
+      60% role-correct matchup matrix strength
+      20% weighted multi-target coverage
       15% current role tier
        5% current role win-rate percentile
 
-    Enemy roles are inferred automatically from the champion data already stored
-    in the database.  Roles only change matchup *weight*; every entered enemy is
-    still included in the calculation.
+    The likely lane opponent receives extra weight, but every enemy remains in
+    the matrix. The final visible score is the ranking authority; secondary
+    fields below are deterministic tie-breakers only.
     """
     raw_enemy_objs: list[tuple[dict, str]] = []
     for name, enemy_role in enemies:
@@ -374,20 +369,14 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
     enemy_ids = {enemy["id"] for enemy, _enemy_role in enemy_objs if enemy.get("id")}
     stat_lane = ROLE_TO_STAT.get(role_ru, "")
 
-    # Build the legal candidate pool first.  Stats/tier rows are accepted as
-    # role evidence as well as the champion lane list, because the source may
-    # learn a new flex role before the static lane metadata is refreshed.
     candidate_rows: list[tuple[dict, str, dict | None]] = []
     for cand in (snapshot.get("champions", []) if snapshot is not None else db.champions()):
         if cand.get("id") in enemy_ids:
             continue
         tier = _tier(cand.get("id", ""), role_ru, snapshot)
         st = _stat(cand.get("id", ""), stat_lane, "all", snapshot) if stat_lane else None
-
-        # The selected role is a hard eligibility filter. Role-specific stats and
-        # tier rows can rank a champion only after the champion is known to belong
-        # to that lane. This prevents niche/off-meta samples and noisy tier rows
-        # from leaking tanks/supports into Mid, ADC, etc.
+        # Selected role is a hard eligibility gate. Niche/noisy stat rows can
+        # rank a legal flex pick but can never invent a role for that champion.
         if not lane_ok(cand, role_ru):
             continue
         candidate_rows.append((cand, tier, st))
@@ -401,59 +390,26 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
                 pass
 
     out = []
-    enemy_count = max(1, len(enemy_objs))
-
     for cand, tier, st in candidate_rows:
-        positives: list[str] = []
-        negatives: list[str] = []
-        neutral: list[str] = []
-        positive_strength = 0.0
-        negative_strength = 0.0
-        hard_counters = 0
-        direct_lane_edges: list[float] = []
+        matrix_edges: list[DraftEdge] = []
         mirror_edge: float | None = None
 
-        weighted_edge_sum = 0.0
-        total_weight = 0.0
-
         for enemy, inferred_role in enemy_objs:
-            # Always use the candidate's selected role.  This prevents a flex
-            # champion's ADC matchup, for example, from being used to rank that
-            # champion while the user has selected Support.
             edge = float(_matchup_score(cand["id"], enemy["id"], role_ru, snapshot))
-            edge = max(-3.0, min(3.0, edge))
-            weight = _line_weight(role_ru, inferred_role)
-            total_weight += weight
-            weighted_edge_sum += (edge / 3.0) * weight
-
+            edge = DRAFT_MATRIX.clamp_edge(edge)
+            weight = DRAFT_MATRIX.lane_weight(role_ru, inferred_role)
             if inferred_role == role_ru:
                 mirror_edge = edge
-            if weight > 1.0:
-                direct_lane_edges.append(edge)
+            matrix_edges.append(DraftEdge(
+                enemy_id=str(enemy.get("id") or ""),
+                enemy_name=str(enemy.get("name") or enemy.get("id") or ""),
+                enemy_role=str(inferred_role or ""),
+                edge=edge,
+                weight=weight,
+            ))
 
-            if edge > 0:
-                positives.append(enemy["name"])
-                positive_strength += edge * weight
-                if edge >= 2.0:
-                    hard_counters += 1
-            elif edge < 0:
-                negatives.append(enemy["name"])
-                negative_strength += abs(edge) * weight
-            else:
-                neutral.append(enemy["name"])
-
-        # Missing matchup data and explicit skill matchups both behave neutrally
-        # (Edge 0).  They still occupy their share of the five-enemy draft, so a
-        # single +3 cannot masquerade as perfect coverage of the whole team.
-        avg_edge = weighted_edge_sum / total_weight if total_weight > 0 else 0.0
-        avg_edge = max(-1.0, min(1.0, avg_edge))
-        matchup_score = 50.0 + 50.0 * avg_edge
-
-        # Coverage is intentionally linear: it answers only "how many of the
-        # entered enemies does this champion beat?".  Strength is already
-        # represented by MATCHUP, so nonlinear bonuses would double-count it.
-        coverage_count = len(positives)
-        coverage_score = 100.0 * coverage_count / enemy_count
+        matrix = DRAFT_MATRIX.analyze_row(matrix_edges)
+        matrix["mirror_edge"] = mirror_edge
 
         tier_score = TIER_SCORE.get(tier, 50.0)
 
@@ -465,56 +421,51 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
                 wr = None
         winrate_score = _winrate_percentile(wr, role_win_rates)
 
-        matchup_contribution = FINAL_WEIGHTS["matchup"] * matchup_score
-        coverage_contribution = FINAL_WEIGHTS["coverage"] * coverage_score
-        tier_contribution = FINAL_WEIGHTS["tier"] * tier_score
-        winrate_contribution = FINAL_WEIGHTS["winrate"] * winrate_score
-        score = matchup_contribution + coverage_contribution + tier_contribution + winrate_contribution
+        final = DRAFT_MATRIX.final_score(
+            matchup_score=matrix["matchup_score"],
+            coverage_score=matrix["coverage_score"],
+            tier_score=tier_score,
+            winrate_score=winrate_score,
+        )
 
-        # Guardrail agreed for a counter-pick tool: a champion with a known hard
-        # losing lane (Edge <= -2 against a likely lane opponent) must not float
-        # above safe candidates merely because of S/S+ meta status.
+        direct_lane_edges = matrix["direct_lane_edges"]
         lane_hard_loss = any(edge <= -2.0 for edge in direct_lane_edges)
 
         out.append({
             "champion": cand,
-            "score": score,
-            "positive": positives,
-            "negative": negatives,
-            "neutral": neutral,
-            "positive_strength": positive_strength,
-            "negative_strength": negative_strength,
-            "hard_counters": hard_counters,
-            "coverage_count": coverage_count,
-            "coverage_total": len(enemy_objs),
-            "coverage_score": coverage_score,
-            # Keep the old field name for compatibility with diagnostics/tests;
-            # it now means the actual 20% contribution, not an arbitrary bonus.
-            "coverage_bonus": coverage_contribution,
+            "score": final["score"],
+            "positive": matrix["positive"],
+            "negative": matrix["negative"],
+            "neutral": matrix["neutral"],
+            "positive_strength": matrix["positive_strength"],
+            "negative_strength": matrix["negative_strength"],
+            "hard_counters": matrix["hard_counters"],
+            "coverage_count": matrix["coverage_count"],
+            "coverage_total": matrix["coverage_total"],
+            "coverage_score": matrix["coverage_score"],
+            "coverage_bonus": final["coverage"],
+            "coverage_weight": matrix["positive_weight"],
+            "draft_weight": matrix["total_weight"],
             "tier": tier,
             "tier_score": tier_score,
-            "tier_bonus": tier_contribution,
+            "tier_bonus": final["tier"],
             "win_rate": wr,
             "winrate_score": winrate_score,
-            "matchup_score": matchup_score,
-            "matchup_contribution": matchup_contribution,
-            "winrate_bonus": winrate_contribution,
+            "matchup_score": matrix["matchup_score"],
+            "matchup_contribution": final["matchup"],
+            "winrate_bonus": final["winrate"],
             "lane_hard_loss": lane_hard_loss,
             "mirror_edge": mirror_edge,
             "mirror_bucket": 2 if (mirror_edge is not None and mirror_edge > 0) else (1 if mirror_edge is None or mirror_edge == 0 else 0),
-            "enemy_roles": {enemy["id"]: inferred_role for enemy, inferred_role in enemy_objs},
+            "enemy_roles": matrix["enemy_roles"],
+            "matrix_row": matrix["matrix_row"],
         })
 
-    # The visible overall score is the single ranking authority. Matchups,
-    # coverage, tier and win rate already contribute to that score above; putting
-    # any one of those signals in front of it would silently create a second
-    # ranking system (and can show a lower-score champion above a higher-score
-    # champion). Everything after score is only a deterministic tie-breaker.
     out.sort(
         key=lambda x: (
             x["score"],
             x["matchup_score"],
-            x["coverage_count"],
+            x["coverage_score"],
             TIER_ORDER.get(x.get("tier", ""), 0),
             x["winrate_score"],
             not x.get("lane_hard_loss", False),
