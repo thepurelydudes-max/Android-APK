@@ -6,6 +6,7 @@ import math
 import re
 import time
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Iterable
 from urllib.parse import urljoin, urlparse
