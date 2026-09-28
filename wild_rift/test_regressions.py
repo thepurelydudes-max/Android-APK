@@ -91,9 +91,11 @@ class SeedUpgradeRegressionTests(unittest.TestCase):
                     "INSERT INTO matchup_page_cache VALUES(?,?,?,?,?,?)",
                     ("wildriftcore.com", "7.3", "A", "[]", "", ""),
                 )
+            con.close()
 
         with sqlite3.connect(runtime) as con:
             con.execute("INSERT INTO meta(key,value) VALUES('lang','en')")
+        con.close()
 
         with sqlite3.connect(seed) as con:
             con.execute(
@@ -118,6 +120,7 @@ class SeedUpgradeRegressionTests(unittest.TestCase):
                     '{"builds":[{"role":"Барон"}]}', "", "",
                 ),
             )
+        con.close()
 
         paths._copy_seed_if_better(seed, runtime)
 
@@ -138,6 +141,7 @@ class SeedUpgradeRegressionTests(unittest.TestCase):
                 con.execute("SELECT value FROM meta WHERE key='lang'").fetchone()[0],
                 "en",
             )
+        con.close()
 
 
 class ResolverRegressionTests(unittest.TestCase):
