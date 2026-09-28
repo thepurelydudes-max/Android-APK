@@ -1,0 +1,29 @@
+name: Export Wild Rift Source
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".export-source-trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack current Wild Rift source
+        run: |
+          mkdir -p export
+          zip -r export/wild_rift_source.zip wild_rift             -x "wild_rift/.venv*"                "wild_rift/build/*"                "wild_rift/dist/*"                "wild_rift/release/*"                "wild_rift/__pycache__/*"
+      - name: Upload source
+        uses: actions/upload-artifact@v4
+        with:
+          name: WRCA-Current-GitHub-Source
+          path: export/wild_rift_source.zip
+          if-no-files-found: error
+          retention-days: 2
