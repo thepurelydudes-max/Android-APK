@@ -6,12 +6,8 @@ and seeds them from bundled Flet assets on first launch.
 """
 from __future__ import annotations
 
-import gc
 import os
-import re
 import shutil
-import sqlite3
-import time
 from pathlib import Path
 
 MODULE_DIR = Path(__file__).resolve().parent
@@ -84,192 +80,31 @@ def _copy_tree_once(source: Path, target: Path) -> None:
             shutil.copy2(item, dst)
 
 
-def _patch_key(value: str) -> tuple[int, ...]:
-    """Comparable numeric patch key: 7.10 sorts after 7.9; suffixes are ignored."""
-    parts = re.findall(r"\d+", str(value or ""))
-    return tuple(int(x) for x in parts[:3]) if parts else (0,)
+def _copy_seed_on_fresh_install(seed_db: Path, database: Path) -> None:
+    """Install the bundled database only when writable runtime DB is absent.
 
-
-def _seed_db_quality(
-    path: Path,
-) -> tuple[tuple[int, ...], int, int, int, int, int, int, int]:
-    """Return WRC data richness used when an APK/portable seed replaces runtime.
-
-    Explicitly close SQLite on every platform. Windows will otherwise keep a
-    file handle alive long enough to block the atomic seed replacement that
-    follows immediately after this quality check.
-    """
-    if not path.is_file():
-        return (0,), 0, 0, 0, 0, 0, 0, 0
-
-    con = None
-    try:
-        con = sqlite3.connect(path)
-        patch_row = con.execute(
-            "SELECT value FROM meta WHERE key='patch_version'"
-        ).fetchone()
-        patch = _patch_key(patch_row[0] if patch_row else "")
-
-        def count(sql: str) -> int:
-            try:
-                return int(con.execute(sql).fetchone()[0])
-            except sqlite3.Error:
-                return 0
-
-        matchups = count(
-            "SELECT COUNT(*) FROM matchups WHERE source='wildriftcore.com'"
-        )
-        matchup_pages = count(
-            "SELECT COUNT(*) FROM matchup_page_cache "
-            "WHERE source='wildriftcore.com'"
-        )
-        role_builds = count(
-            "SELECT COUNT(*) FROM role_builds WHERE source='wildriftcore.com'"
-        )
-        role_variants = count(
-            "SELECT COUNT(*) FROM role_build_variants "
-            "WHERE source='wildriftcore.com'"
-        )
-        complete_variant_rules = count(
-            "SELECT COUNT(*) FROM role_build_variants "
-            "WHERE source='wildriftcore.com' "
-            "AND length(trim(trigger_text))>0 "
-            "AND example_enemies_json NOT IN ('','[]')"
-        )
-        opponent_adaptations = count(
-            "SELECT COUNT(*) FROM role_build_opponent_adaptations "
-            "WHERE source='wildriftcore.com'"
-        )
-        build_pages = count(
-            "SELECT COUNT(*) FROM build_page_cache "
-            "WHERE source='wildriftcore.com'"
-        )
-        return (
-            patch, matchups, matchup_pages,
-            role_builds, role_variants, complete_variant_rules,
-            opponent_adaptations, build_pages,
-        )
-    except sqlite3.Error:
-        return (0,), 0, 0, 0, 0, 0, 0, 0
-    finally:
-        if con is not None:
-            con.close()
-
-
-def _copy_seed_if_better(seed_db: Path, database: Path) -> None:
-    """Seed/upgrade Android DB without overwriting a newer downloaded database.
-
-    This matters when an APK is installed over an older release: Android preserves
-    app storage, so merely bundling a new SQLite file would otherwise leave the old
-    runtime DB in place forever.
+    A clean Android uninstall removes app storage, so the first launch of a
+    newly installed APK always starts from the exact wildrift.db bundled in that
+    APK. Later launches never overwrite the writable runtime database, allowing
+    the in-app updater to keep newer downloaded data.
     """
     if not seed_db.is_file():
         raise FileNotFoundError(f"Bundled database is missing: {seed_db}")
-    if not database.exists():
-        shutil.copy2(seed_db, database)
+    if database.exists():
         return
 
-    seed_quality = _seed_db_quality(seed_db)
-    runtime_quality = _seed_db_quality(database)
-    (
-        seed_patch, seed_matchups, seed_matchup_pages,
-        seed_role_builds, seed_role_variants, seed_complete_variant_rules,
-        seed_opponent_adaptations, seed_build_pages,
-    ) = seed_quality
-    (
-        run_patch, run_matchups, run_matchup_pages,
-        run_role_builds, run_role_variants, run_complete_variant_rules,
-        run_opponent_adaptations, run_build_pages,
-    ) = runtime_quality
-
-    should_upgrade = False
-    if seed_patch > run_patch:
-        should_upgrade = True
-    elif seed_patch == run_patch:
-        # Build-table repairs must reach users who install over an older APK.
-        # Prefer the validated bundled seed whenever it has richer WRC build
-        # coverage. If build coverage is equal, fall back to matchup richness.
-        seed_build_quality = (
-            seed_role_builds,
-            seed_role_variants,
-            seed_complete_variant_rules,
-            seed_opponent_adaptations,
-            seed_build_pages,
-        )
-        run_build_quality = (
-            run_role_builds,
-            run_role_variants,
-            run_complete_variant_rules,
-            run_opponent_adaptations,
-            run_build_pages,
-        )
-        if seed_build_quality > run_build_quality:
-            should_upgrade = True
-        elif seed_build_quality == run_build_quality:
-            should_upgrade = (
-                seed_matchups, seed_matchup_pages
-            ) > (
-                run_matchups, run_matchup_pages
-            )
-
-    if should_upgrade:
-        # Preserve lightweight user-facing settings stored in meta.
-        preserved: dict[str, str] = {}
-        con = None
-        try:
-            con = sqlite3.connect(database)
-            for key in ("lang", "layout_mode"):
-                row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
-                if row:
-                    preserved[key] = str(row[0])
-        except sqlite3.Error:
-            preserved = {}
-        finally:
-            if con is not None:
-                con.close()
-
-        # Windows refuses os.replace() while SQLite still holds the destination
-        # open. Close the preservation connection explicitly before swapping the
-        # richer bundled seed into place.
-        tmp = database.with_suffix(database.suffix + ".seed-new")
-        shutil.copy2(seed_db, tmp)
-
-        # Windows can briefly retain a SQLite handle after the final close.
-        # Retry only this atomic replacement; Android/Linux normally succeeds
-        # on the first attempt and pays no delay.
-        last_error = None
-        for attempt in range(6):
-            try:
-                tmp.replace(database)
-                last_error = None
-                break
-            except PermissionError as exc:
-                last_error = exc
-                if os.name != "nt" or attempt >= 5:
-                    raise
-                gc.collect()
-                time.sleep(0.08 * (attempt + 1))
-        if last_error is not None:
-            raise last_error
-        if preserved:
-            con = None
-            try:
-                con = sqlite3.connect(database)
-                for key, value in preserved.items():
-                    con.execute(
-                        "INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
-                        (key, value),
-                    )
-                con.commit()
-            except sqlite3.Error:
-                pass
-            finally:
-                if con is not None:
-                    con.close()
-
+    database.parent.mkdir(parents=True, exist_ok=True)
+    tmp = database.with_suffix(database.suffix + ".seed-new")
+    shutil.copy2(seed_db, tmp)
+    tmp.replace(database)
 
 def ensure_initial_data() -> Path:
-    """Create/upgrade writable Android data/cache from the immutable bundled seed."""
+    """Create writable Android data/cache from the immutable bundled seed.
+
+    There is deliberately no database-quality comparison here. On a clean
+    install the bundled DB is copied verbatim; after that the runtime DB is
+    preserved until Android app data is removed or the user updates it in-app.
+    """
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     APP_DIR.mkdir(parents=True, exist_ok=True)
     seed_db = ASSETS_DIR / "data" / "wildrift.db"
@@ -283,7 +118,7 @@ def ensure_initial_data() -> Path:
     except Exception:
         same_db = False
     if not same_db:
-        _copy_seed_if_better(seed_db, database)
+        _copy_seed_on_fresh_install(seed_db, database)
     elif not database.is_file():
         raise FileNotFoundError(f"Portable database is missing: {database}")
 
