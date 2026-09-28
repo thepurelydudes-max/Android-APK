@@ -1457,6 +1457,14 @@ class BundledDatabaseSmokeTests(unittest.TestCase):
         self.assertFalse(empty, "Empty/incomplete item previews: " + ", ".join(empty))
 
 
+class BootsOfManaLocalizationRegressionTests(unittest.TestCase):
+    def test_boots_of_mana_has_russian_name(self):
+        self.assertEqual(
+            sources.item_name_ru("Boots of Mana"),
+            "Сапоги маны",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
