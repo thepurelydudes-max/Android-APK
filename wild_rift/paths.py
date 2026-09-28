@@ -208,25 +208,40 @@ def _copy_seed_if_better(seed_db: Path, database: Path) -> None:
     if should_upgrade:
         # Preserve lightweight user-facing settings stored in meta.
         preserved: dict[str, str] = {}
+        con = None
         try:
-            with sqlite3.connect(database) as con:
-                for key in ("lang", "layout_mode"):
-                    row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
-                    if row:
-                        preserved[key] = str(row[0])
+            con = sqlite3.connect(database)
+            for key in ("lang", "layout_mode"):
+                row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+                if row:
+                    preserved[key] = str(row[0])
         except sqlite3.Error:
             preserved = {}
+        finally:
+            if con is not None:
+                con.close()
 
+        # Windows refuses os.replace() while SQLite still holds the destination
+        # open. Close the preservation connection explicitly before swapping the
+        # richer bundled seed into place.
         tmp = database.with_suffix(database.suffix + ".seed-new")
         shutil.copy2(seed_db, tmp)
         tmp.replace(database)
         if preserved:
+            con = None
             try:
-                with sqlite3.connect(database) as con:
-                    for key, value in preserved.items():
-                        con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", (key, value))
+                con = sqlite3.connect(database)
+                for key, value in preserved.items():
+                    con.execute(
+                        "INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
+                        (key, value),
+                    )
+                con.commit()
             except sqlite3.Error:
                 pass
+            finally:
+                if con is not None:
+                    con.close()
 
 
 def ensure_initial_data() -> Path:
