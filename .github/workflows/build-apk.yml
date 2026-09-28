@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -43,7 +44,21 @@ jobs:
           else
             echo "project=both" >> "$GITHUB_OUTPUT"
           fi
+          if grep -qi "preseeded" .build-trigger 2>/dev/null; then
+            echo "preseeded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "preseeded=false" >> "$GITHUB_OUTPUT"
+          fi
 
+      - name: Download canonical 3.7.12 APK seed
+        if: ${{ (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: FARLINER-Wild-Rift-APK
+          path: ${{ runner.temp }}/wrca_base_apk
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 36425019210
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
@@ -77,6 +92,86 @@ jobs:
             test -d mlbb/assets || { echo "mlbb/assets is missing."; exit 1; }
           fi
 
+      - name: Restore updated 3.7.12 preseed without network refresh
+        if: ${{ (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "${{ runner.temp }}/wrca_base_apk" -type f -name '*.apk' -print -quit)"
+          test -n "$APK" && test -f "$APK" || { echo "::error::Base 3.7.12 APK artifact not found."; exit 1; }
+
+          cp "$GITHUB_WORKSPACE/wild_rift/assets/cache/items/Soul_Transfer.png" "${{ runner.temp }}/Soul_Transfer.png"
+          unzip -p "$APK" assets/app.zip > "${{ runner.temp }}/wrca_app.zip"
+          rm -rf "$GITHUB_WORKSPACE/wild_rift/assets/cache" "$GITHUB_WORKSPACE/wild_rift/assets/data"
+          rm -rf "${{ runner.temp }}/wrca_app"
+          mkdir -p "${{ runner.temp }}/wrca_app"
+          unzip -q "${{ runner.temp }}/wrca_app.zip" 'assets/cache/*' 'assets/data/*' -d "${{ runner.temp }}/wrca_app"
+          cp -a "${{ runner.temp }}/wrca_app/assets/cache" "$GITHUB_WORKSPACE/wild_rift/assets/"
+          cp -a "${{ runner.temp }}/wrca_app/assets/data" "$GITHUB_WORKSPACE/wild_rift/assets/"
+          cp "${{ runner.temp }}/Soul_Transfer.png" "$GITHUB_WORKSPACE/wild_rift/assets/cache/items/Soul_Transfer.png"
+
+          python - <<'PY'
+          from pathlib import Path
+          import base64, datetime, hashlib, json, lzma, sqlite3
+
+          root = Path("wild_rift")
+          db_path = root / "assets" / "data" / "wildrift.db"
+          patch_path = root / "preseed" / "pc_updated_3_7_12.sql.xz.b64"
+          sql = lzma.decompress(base64.b64decode(patch_path.read_text(encoding="ascii"))).decode("utf-8")
+
+          con = sqlite3.connect(db_path)
+          con.executescript(sql)
+          con.commit()
+          assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+          assert con.execute("SELECT COUNT(*) FROM champions").fetchone()[0] == 142
+          assert con.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 118
+          assert con.execute("SELECT COUNT(*) FROM matchups").fetchone()[0] == 9606
+          assert con.execute("SELECT COUNT(*) FROM role_builds").fetchone()[0] == 226
+          assert con.execute("SELECT COUNT(*) FROM role_build_variants").fetchone()[0] == 678
+          assert con.execute("SELECT COUNT(*) FROM build_page_cache").fetchone()[0] == 142
+          assert con.execute("SELECT COUNT(*) FROM matchup_page_cache").fetchone()[0] == 142
+          assert con.execute("SELECT name_ru FROM items WHERE name='Boots of Mana'").fetchone()[0] == "Сапоги маны"
+          meta = dict(con.execute("SELECT key,value FROM meta"))
+          audit = {
+              "champions_total": con.execute("SELECT COUNT(*) FROM champions").fetchone()[0],
+              "items_total": con.execute("SELECT COUNT(*) FROM items").fetchone()[0],
+              "matchups": con.execute("SELECT COUNT(*) FROM matchups").fetchone()[0],
+              "champion_tiers": con.execute("SELECT COUNT(*) FROM champion_tiers").fetchone()[0],
+              "stats": con.execute("SELECT COUNT(*) FROM stats").fetchone()[0],
+              "wrc_role_builds": con.execute("SELECT COUNT(*) FROM role_builds").fetchone()[0],
+              "wrc_role_variants": con.execute("SELECT COUNT(*) FROM role_build_variants").fetchone()[0],
+              "wrc_situational": con.execute("SELECT COUNT(*) FROM role_build_situational").fetchone()[0],
+              "wrc_opponent_adaptations": con.execute("SELECT COUNT(*) FROM role_build_opponent_adaptations").fetchone()[0],
+              "wrc_champion_traits": con.execute("SELECT COUNT(*) FROM champion_traits").fetchone()[0],
+              "wrc_build_cache_pages": con.execute("SELECT COUNT(*) FROM build_page_cache").fetchone()[0],
+              "matchup_cache_pages": con.execute("SELECT COUNT(*) FROM matchup_page_cache").fetchone()[0],
+              "item_pools": con.execute("SELECT COUNT(*) FROM item_pools").fetchone()[0],
+              "counter_items": con.execute("SELECT COUNT(*) FROM counter_items").fetchone()[0],
+              "boots_of_mana_ru": "Сапоги маны",
+          }
+          con.close()
+
+          champ_icons = len(list((root / "assets" / "cache" / "champions").glob("*.png")))
+          item_icons = len(list((root / "assets" / "cache" / "items").glob("*.png")))
+          assert champ_icons == 142, champ_icons
+          assert item_icons == 118, item_icons
+
+          manifest = {
+              "generated_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "source": "updated PC 3.7.12 database/cache; no external data refresh during build",
+              "base_apk_run": 36425019210,
+              "patch": meta.get("patch_version", "7.3"),
+              "last_update": meta.get("last_update", ""),
+              "database_sha256": hashlib.sha256(db_path.read_bytes()).hexdigest(),
+              "audit": audit,
+          }
+          (root / "assets" / "data" / "bundled_seed_manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(manifest, ensure_ascii=False, indent=2))
+          PY
+
       - name: Test Wild Rift recommendation engine
         if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
         shell: bash
@@ -88,7 +183,7 @@ jobs:
           python -m unittest -v test_regressions.py
 
       - name: Refresh bundled Wild Rift database and media
-        if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
+        if: ${{ (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded != 'true' }}
         shell: bash
         env:
           FLET_APP_STORAGE_DATA: ${{ runner.temp }}/wrca_bundled_seed
