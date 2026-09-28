@@ -3359,6 +3359,7 @@ def fetch_wrpocket_item_pools(net: Net, resolve: Callable[[str], str | None], pr
 
 
 WR_ITEM_RU_OVERRIDES = {
+    "Boots of Mana": "Сапоги маны",
     "Thornmail": "Шипованный доспех",
     "Mortal Reminder": "Глашатай смерти",
     "Morellonomicon": "Мореллономикон",
