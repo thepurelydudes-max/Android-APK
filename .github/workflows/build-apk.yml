@@ -83,7 +83,7 @@ jobs:
           set -euo pipefail
           python -m pip install "requests>=2.32.0" "Pillow>=10.4.0" "beautifulsoup4>=4.12.0"
           cd "$GITHUB_WORKSPACE/wild_rift"
-          python -m py_compile db.py engine.py sources.py updater.py main.py prepare_bundled_seed.py
+          python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py main.py prepare_bundled_seed.py
           python -m unittest -v test_regressions.py
 
       - name: Refresh bundled Wild Rift database and media
