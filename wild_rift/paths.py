@@ -235,7 +235,27 @@ def ensure_initial_data() -> Path:
     APP_DIR.mkdir(parents=True, exist_ok=True)
     seed_db = ASSETS_DIR / "data" / "wildrift.db"
     database = APP_DIR / "wildrift.db"
-    _copy_seed_if_better(seed_db, database)
-    _copy_tree_once(ASSETS_DIR / "cache", RUNTIME_DIR / "cache")
+
+    # Android uses separate immutable assets and writable app storage. Windows
+    # portable mode deliberately points both roots at the EXE folder. Avoid
+    # copying a file/tree onto itself in that case.
+    try:
+        same_db = seed_db.resolve() == database.resolve()
+    except Exception:
+        same_db = False
+    if not same_db:
+        _copy_seed_if_better(seed_db, database)
+    elif not database.is_file():
+        raise FileNotFoundError(f"Portable database is missing: {database}")
+
+    seed_cache = ASSETS_DIR / "cache"
+    runtime_cache = RUNTIME_DIR / "cache"
+    try:
+        same_cache = seed_cache.resolve() == runtime_cache.resolve()
+    except Exception:
+        same_cache = False
+    if not same_cache:
+        _copy_tree_once(seed_cache, runtime_cache)
+
     (RUNTIME_DIR / "logs").mkdir(parents=True, exist_ok=True)
     return APP_DIR
