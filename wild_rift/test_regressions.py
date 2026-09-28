@@ -12,6 +12,7 @@ os.environ["FLET_APP_STORAGE_DATA"] = _TEST_RUNTIME
 
 import db
 import engine
+from draft_matrix_engine import DraftEdge, DraftMatrixEngine
 import sources
 import updater
 import paths
@@ -1509,3 +1510,71 @@ class BundledDatabaseSmokeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class DraftMatrixEngineRegressionTests(unittest.TestCase):
+    def test_full_positive_matrix_row_is_perfect_matchup_and_coverage(self):
+        matrix = DraftMatrixEngine()
+        row = [
+            DraftEdge(str(i), f"E{i}", "", 3.0, 1.0)
+            for i in range(5)
+        ]
+        result = matrix.analyze_row(row)
+        self.assertAlmostEqual(result["matchup_score"], 100.0)
+        self.assertAlmostEqual(result["coverage_score"], 100.0)
+        self.assertEqual(result["coverage_count"], 5)
+
+    def test_lane_opponent_is_weighted_in_matchup_and_coverage(self):
+        matrix = DraftMatrixEngine()
+        row = [
+            DraftEdge("lane", "Lane", "Мид", 3.0, matrix.lane_weight("Мид", "Мид")),
+            DraftEdge("a", "A", "Барон", 0.0, matrix.lane_weight("Мид", "Барон")),
+            DraftEdge("b", "B", "Лес", 0.0, matrix.lane_weight("Мид", "Лес")),
+            DraftEdge("c", "C", "ADC", 0.0, matrix.lane_weight("Мид", "ADC")),
+            DraftEdge("d", "D", "Саппорт", 0.0, matrix.lane_weight("Мид", "Саппорт")),
+        ]
+        result = matrix.analyze_row(row)
+        # 2 weighted positive shares out of total draft weight 6.
+        self.assertAlmostEqual(result["coverage_score"], 100.0 / 3.0, places=5)
+        # Weighted edge: (3/3 * 2) / 6 = 1/3 -> score 66.666...
+        self.assertAlmostEqual(result["matchup_score"], 200.0 / 3.0, places=5)
+
+    def test_inverse_matrix_edge_penalizes_candidate(self):
+        matrix = DraftMatrixEngine()
+        result = matrix.analyze_row([
+            DraftEdge("enemy", "Enemy", "Барон", -3.0, 2.0),
+        ])
+        self.assertAlmostEqual(result["matchup_score"], 0.0)
+        self.assertAlmostEqual(result["coverage_score"], 0.0)
+        self.assertEqual(result["negative"], ["Enemy"])
+
+    def test_final_formula_is_exact_60_20_15_5(self):
+        matrix = DraftMatrixEngine()
+        result = matrix.final_score(
+            matchup_score=80.0,
+            coverage_score=60.0,
+            tier_score=100.0,
+            winrate_score=40.0,
+        )
+        self.assertAlmostEqual(result["matchup"], 48.0)
+        self.assertAlmostEqual(result["coverage"], 12.0)
+        self.assertAlmostEqual(result["tier"], 15.0)
+        self.assertAlmostEqual(result["winrate"], 2.0)
+        self.assertAlmostEqual(result["score"], 77.0)
+
+    def test_build_feature_vector_uses_same_draft_signal_names(self):
+        matrix = DraftMatrixEngine()
+        features = matrix.feature_vector(
+            Counter({
+                "anti_tank": 2,
+                "anti_dive": 3,
+                "anti_burst": 2,
+                "anti_magic": 1,
+                "anti_cc": 2,
+            })
+        )
+        self.assertEqual(features["tanks"], 2)
+        self.assertEqual(features["dive"], 3)
+        self.assertEqual(features["burst"], 2)
+        self.assertEqual(features["magic"], 1)
+        self.assertEqual(features["cc"], 2)
