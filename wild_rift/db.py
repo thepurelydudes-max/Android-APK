@@ -180,6 +180,13 @@ def init_db() -> None:
         _ensure_column(con, "items", "data_patch", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "data_source_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "tier", "TEXT NOT NULL DEFAULT ''")
+        # 3.7.12 hotfix: fix the one missing RU item name locally.
+        # This also repairs an existing runtime DB when the APK is installed
+        # over 3.7.12, so another internet update is not required.
+        con.execute(
+            "UPDATE items SET name_ru=? WHERE name=? AND COALESCE(name_ru,'')=''",
+            ("Сапоги маны", "Boots of Mana"),
+        )
         _ensure_column(
             con, "matchup_page_cache", "traits_json",
             "TEXT NOT NULL DEFAULT '[]'",
