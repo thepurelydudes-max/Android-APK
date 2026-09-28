@@ -119,6 +119,24 @@ jobs:
           echo '=== googlebot Garen variant block ==='
           sed -n '20,115p' /tmp/garen-googlebot.txt
 
+      - name: Probe current WRC tier Reader structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L -sS --max-time 90 \
+            -H 'X-No-Cache: true' \
+            -H 'X-Cache-Tolerance: 0' \
+            'https://r.jina.ai/https://wildriftcore.com/en/tierlist/jungle/' \
+            -o /tmp/wrc-tier.txt
+          echo "bytes=$(wc -c < /tmp/wrc-tier.txt)"
+          grep -n -Ei 'Every Jungle champion ranked|^S\\+$|^S$|Rammus|Jarvan IV|Kayn' /tmp/wrc-tier.txt | head -100 || true
+          echo '=== ranked tier block ==='
+          LINE="$(grep -n -m1 'Every Jungle champion ranked' /tmp/wrc-tier.txt | cut -d: -f1 || true)"
+          if [[ -n "$LINE" ]]; then
+            START=$((LINE>5 ? LINE-5 : 1)); END=$((LINE+120))
+            sed -n "${START},${END}p" /tmp/wrc-tier.txt
+          fi
+
       - name: Probe with real headless Chrome
         shell: bash
         run: |
