@@ -6,10 +6,12 @@ and seeds them from bundled Flet assets on first launch.
 """
 from __future__ import annotations
 
+import gc
 import os
 import re
 import shutil
 import sqlite3
+import time
 from pathlib import Path
 
 MODULE_DIR = Path(__file__).resolve().parent
@@ -91,62 +93,67 @@ def _patch_key(value: str) -> tuple[int, ...]:
 def _seed_db_quality(
     path: Path,
 ) -> tuple[tuple[int, ...], int, int, int, int, int, int, int]:
-    """Return WRC data richness used when an APK replaces an older seed.
+    """Return WRC data richness used when an APK/portable seed replaces runtime.
 
-    Role builds/variants are included deliberately. A same-patch APK may contain
-    a repaired complete WRC build database while Android still preserves an old
-    runtime DB whose matchup matrix is fine but whose build tables are empty.
+    Explicitly close SQLite on every platform. Windows will otherwise keep a
+    file handle alive long enough to block the atomic seed replacement that
+    follows immediately after this quality check.
     """
     if not path.is_file():
         return (0,), 0, 0, 0, 0, 0, 0, 0
+
+    con = None
     try:
-        with sqlite3.connect(path) as con:
-            patch_row = con.execute(
-                "SELECT value FROM meta WHERE key='patch_version'"
-            ).fetchone()
-            patch = _patch_key(patch_row[0] if patch_row else "")
+        con = sqlite3.connect(path)
+        patch_row = con.execute(
+            "SELECT value FROM meta WHERE key='patch_version'"
+        ).fetchone()
+        patch = _patch_key(patch_row[0] if patch_row else "")
 
-            def count(sql: str) -> int:
-                try:
-                    return int(con.execute(sql).fetchone()[0])
-                except sqlite3.Error:
-                    return 0
+        def count(sql: str) -> int:
+            try:
+                return int(con.execute(sql).fetchone()[0])
+            except sqlite3.Error:
+                return 0
 
-            matchups = count(
-                "SELECT COUNT(*) FROM matchups WHERE source='wildriftcore.com'"
-            )
-            matchup_pages = count(
-                "SELECT COUNT(*) FROM matchup_page_cache "
-                "WHERE source='wildriftcore.com'"
-            )
-            role_builds = count(
-                "SELECT COUNT(*) FROM role_builds WHERE source='wildriftcore.com'"
-            )
-            role_variants = count(
-                "SELECT COUNT(*) FROM role_build_variants "
-                "WHERE source='wildriftcore.com'"
-            )
-            complete_variant_rules = count(
-                "SELECT COUNT(*) FROM role_build_variants "
-                "WHERE source='wildriftcore.com' "
-                "AND length(trim(trigger_text))>0 "
-                "AND example_enemies_json NOT IN ('','[]')"
-            )
-            opponent_adaptations = count(
-                "SELECT COUNT(*) FROM role_build_opponent_adaptations "
-                "WHERE source='wildriftcore.com'"
-            )
-            build_pages = count(
-                "SELECT COUNT(*) FROM build_page_cache "
-                "WHERE source='wildriftcore.com'"
-            )
-            return (
-                patch, matchups, matchup_pages,
-                role_builds, role_variants, complete_variant_rules,
-                opponent_adaptations, build_pages,
-            )
+        matchups = count(
+            "SELECT COUNT(*) FROM matchups WHERE source='wildriftcore.com'"
+        )
+        matchup_pages = count(
+            "SELECT COUNT(*) FROM matchup_page_cache "
+            "WHERE source='wildriftcore.com'"
+        )
+        role_builds = count(
+            "SELECT COUNT(*) FROM role_builds WHERE source='wildriftcore.com'"
+        )
+        role_variants = count(
+            "SELECT COUNT(*) FROM role_build_variants "
+            "WHERE source='wildriftcore.com'"
+        )
+        complete_variant_rules = count(
+            "SELECT COUNT(*) FROM role_build_variants "
+            "WHERE source='wildriftcore.com' "
+            "AND length(trim(trigger_text))>0 "
+            "AND example_enemies_json NOT IN ('','[]')"
+        )
+        opponent_adaptations = count(
+            "SELECT COUNT(*) FROM role_build_opponent_adaptations "
+            "WHERE source='wildriftcore.com'"
+        )
+        build_pages = count(
+            "SELECT COUNT(*) FROM build_page_cache "
+            "WHERE source='wildriftcore.com'"
+        )
+        return (
+            patch, matchups, matchup_pages,
+            role_builds, role_variants, complete_variant_rules,
+            opponent_adaptations, build_pages,
+        )
     except sqlite3.Error:
         return (0,), 0, 0, 0, 0, 0, 0, 0
+    finally:
+        if con is not None:
+            con.close()
 
 
 def _copy_seed_if_better(seed_db: Path, database: Path) -> None:
@@ -226,7 +233,24 @@ def _copy_seed_if_better(seed_db: Path, database: Path) -> None:
         # richer bundled seed into place.
         tmp = database.with_suffix(database.suffix + ".seed-new")
         shutil.copy2(seed_db, tmp)
-        tmp.replace(database)
+
+        # Windows can briefly retain a SQLite handle after the final close.
+        # Retry only this atomic replacement; Android/Linux normally succeeds
+        # on the first attempt and pays no delay.
+        last_error = None
+        for attempt in range(6):
+            try:
+                tmp.replace(database)
+                last_error = None
+                break
+            except PermissionError as exc:
+                last_error = exc
+                if os.name != "nt" or attempt >= 5:
+                    raise
+                gc.collect()
+                time.sleep(0.08 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
         if preserved:
             con = None
             try:
