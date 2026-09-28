@@ -1829,5 +1829,6 @@ def recommend_build(
         ),
         "exact_opponent_adaptations": exact_adaptation_hits,
         "threat_counts": dict(threat_counts),
+        "draft_features": DRAFT_MATRIX.feature_vector(threat_counts),
     }
 
