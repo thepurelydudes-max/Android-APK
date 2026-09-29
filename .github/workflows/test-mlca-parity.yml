@@ -1,0 +1,67 @@
+name: Test MLCA WRCA parity
+
+on:
+  push:
+    branches:
+      - mlca-wrc-parity
+    paths:
+      - "mlbb/**"
+      - ".github/workflows/test-mlca-parity.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: mlca-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MLBB dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r mlbb/requirements.txt
+
+      - name: Compile and run regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd mlbb
+          python -m py_compile db.py data_contract.py moonton_gms.py collect_mlbb_snapshot.py draft_matrix_engine.py engine.py sources.py updater.py main.py prepare_bundled_seed.py
+          python -m unittest -v test_regressions.py test_data_contract.py
+
+      - name: Build and audit offline seed
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/mlca_bundled_seed
+          FLET_ASSETS_DIR: ${{ github.workspace }}/mlbb/assets
+        run: |
+          set -euo pipefail
+          rm -rf "$FLET_APP_STORAGE_DATA"
+          cd mlbb
+          python prepare_bundled_seed.py
+          cat assets/data/bundled_seed_manifest.json
+
+      - name: Upload audited MLBB seed
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlbb-audited-seed
+          path: |
+            mlbb/assets/data/mobilelegends.db
+            mlbb/assets/data/bundled_seed_manifest.json
+            mlbb/assets/data/localization_ru.json
+            mlbb/assets/cache/
+          if-no-files-found: error
+          retention-days: 14

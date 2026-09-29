@@ -7,13 +7,19 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 import db
+from data_contract import MatchupEvidence, normalize_matchup_evidence
 from media_cache import CHAMPION_DIR, ITEM_DIR, create_fallback_champion_icon, ensure_cache_dirs, safe_name, sync_cached_image
 from paths import APP_DIR
 from localization import has_cyrillic, russian_hero_name, russian_item_name
 from sources import (
     MLBBDEX_ITEMS,
     RONE_ACADEMY_RECOMMENDED,
+    RONE_ACADEMY_HERO_BUILDS,
+    RONE_ACADEMY_HEROES,
+    RONE_ACADEMY_HERO_COUNTERS,
     RONE_EQUIPMENT_EXPANDED,
+    RONE_HERO_COUNTERS,
+    RONE_HERO_RECOMMENDED,
     RONE_HERO_RANK,
     RONE_PUBLIC_HEROES,
     Net,
@@ -24,10 +30,14 @@ from sources import (
     fetch_mlbbdex_heroes,
     fetch_mlbbdex_items,
     fetch_mlbbdex_rankings,
+    parse_rone_build_variants,
+    parse_rone_academy_lane_filter,
+    parse_rone_academy_counter_raw,
     parse_rone_equipment,
     parse_rone_public_heroes,
     parse_rone_rank_payload,
     parse_rone_recommended_payload,
+    parse_rone_recommended_variants,
     slugish,
     apply_ru_localization,
     load_ru_localization,
@@ -151,7 +161,8 @@ def merge_mlbb_hero_sources(
             "name_ru": (clean(str(ru.get("name") or "")) if has_cyrillic(ru.get("name")) else russian_hero_name(cid, rone.get("name") or dex.get("name") or "")),
             "roles": roles,
             "lanes": lanes,
-            "specialties": list(dex.get("specialties") or []),
+            "lane_id_map": dict(rone.get("lane_id_map") or {}),
+            "specialties": list(dex.get("specialties") or rone.get("specialties") or []),
             "damage_type": _infer_damage_type(roles, str(dex.get("damage_type") or "")),
             "icon_url": str(rone.get("icon_url") or dex.get("icon_url") or ""),
             "strong": [str(x) for x in (rone.get("strong") or [])],
@@ -172,6 +183,7 @@ def merge_mlbb_hero_sources(
             "name_ru": russian_hero_name(str(dex.get("id") or key), str(dex.get("name") or "")),
             "roles": roles,
             "lanes": [str(x).casefold() for x in (dex.get("lanes") or [])],
+            "lane_id_map": {},
             "specialties": list(dex.get("specialties") or []),
             "damage_type": _infer_damage_type(roles, str(dex.get("damage_type") or "")),
             "icon_url": str(dex.get("icon_url") or ""),
@@ -375,6 +387,35 @@ def _filter_build_pool(rows: Iterable[tuple[str, str, str, int]], valid_ids: set
     return sorted(best.values(), key=lambda row: (row[0], row[3], row[1]))
 
 
+LANE_TO_ROLE_RU = {
+    "exp": "EXP",
+    "jungle": "Лес",
+    "mid": "Мид",
+    "gold": "Голд",
+    "roam": "Роум",
+}
+
+
+def _split_finished_build(names: Iterable[str], item_by_slug: dict[str, dict]) -> tuple[list[str], str]:
+    """Split a six-slot MLBB build into five finished items plus one boots slot."""
+    clean_names = list(dict.fromkeys(str(x).strip() for x in names if str(x).strip()))
+    boots: list[str] = []
+    core: list[str] = []
+    for name in clean_names:
+        row = item_by_slug.get(slugish(name), {})
+        category = str(row.get("category") or "").casefold()
+        low = name.casefold()
+        is_boot = (
+            "boot" in low or "shoe" in low
+            or "movement" in category or "boot" in category
+        )
+        if is_boot:
+            boots.append(name)
+        else:
+            core.append(name)
+    return core[:5], (boots[0] if boots else "")
+
+
 def generate_counter_item_rows(heroes: list[dict], existing_items: set[str]) -> list[tuple[str, str, str]]:
     """Generate MLBB-specific situational answers from enemy archetypes."""
     by_slug = {slugish(name): name for name in existing_items}
@@ -488,7 +529,7 @@ def update_all(
         _check_cancel(cancel_check)
         raw_progress(message)
 
-    net = Net(delay=0.08)
+    net = Net(delay=0.22)
     now = datetime.now().astimezone()
     now_iso = now.isoformat()
     previous_patch = db.get_meta("patch_version", "")
@@ -530,13 +571,75 @@ def update_all(
         champs = db.champions()
         if not champs:
             raise RuntimeError("Не удалось получить список героев Mobile Legends из Rone Arena или MLBBDex")
+
+    # Academy lane filters are the canonical role assignment source.  The old
+    # merged metadata over-declared flex lanes and was the reason the seed audit
+    # expected 166 role builds while the live Academy only assigns 164.
+    preliminary_resolve = build_resolver(champs)
+    academy_lane_map: dict[str, list[str]] = {}
+    lane_evidence_rows: list[dict] = []
+    lane_filter_success = 0
+    for lane in LANE_TO_ROLE_RU:
+        try:
+            payload = net.get(
+                f"{RONE_ACADEMY_HEROES}?lane={lane}&size=300&index=1&order=asc&lang=en"
+            ).json()
+            raw_ids = parse_rone_academy_lane_filter(payload, lane)
+            lane_filter_success += 1
+            for raw_id in raw_ids:
+                cid = preliminary_resolve(raw_id)
+                if not cid:
+                    continue
+                values = academy_lane_map.setdefault(cid, [])
+                if lane not in values:
+                    values.append(lane)
+                    lane_evidence_rows.append({
+                        "champion_id": cid,
+                        "lane": lane,
+                        "evidence_type": "assignment",
+                        "source_lane_id": "",
+                        "rank_segment": "all",
+                        "usage_rate": None,
+                        "confidence": 1.0,
+                        "patch": "",
+                    })
+        except Exception as exc:
+            summary["errors"].append(f"Rone Academy lane {lane}: {exc}")
+
+    # Only replace role metadata when all five filters completed and practically
+    # the whole hero catalog was resolved. Partial network failures keep the
+    # last known metadata rather than silently shrinking selectable roles.
+    academy_lanes_valid = (
+        lane_filter_success == len(LANE_TO_ROLE_RU)
+        and len(academy_lane_map) >= max(1, len(champs) - 2)
+    )
+    if academy_lanes_valid:
+        for champ in champs:
+            cid = str(champ.get("id") or "")
+            if cid in academy_lane_map:
+                champ["lanes"] = [
+                    lane for lane in LANE_TO_ROLE_RU
+                    if lane in academy_lane_map[cid]
+                ]
+        summary["academy_lane_pairs"] = sum(len(v) for v in academy_lane_map.values())
+        summary["academy_lane_heroes"] = len(academy_lane_map)
+    else:
+        summary["errors"].append(
+            f"Academy lane assignment incomplete: filters={lane_filter_success}/5, "
+            f"heroes={len(academy_lane_map)}/{len(champs)}; keeping fallback lanes"
+        )
+
     for champ in champs:
         db.upsert_champion(
             str(champ["id"]), str(champ["name"]), list(champ.get("roles") or []),
             list(champ.get("lanes") or []), str(champ.get("damage_type") or ""),
             "Rone Arena + MLBBDex", now_iso, name_ru=str(champ.get("name_ru") or ""),
             icon_url=str(champ.get("icon_url") or ""),
+            specialties=list(champ.get("specialties") or []),
         )
+    if academy_lanes_valid and lane_evidence_rows:
+        db.replace_source_lane_evidence("mlbb.rone.academy", lane_evidence_rows)
+
     summary["champions"] = len(champs)
     valid_ids = {str(c["id"]) for c in champs}
     resolve = build_resolver(champs)
@@ -590,6 +693,7 @@ def update_all(
 
     stored_tiers = 0
     tier_dates: list[str] = []
+    tier_role_rows: list[tuple[str, str, str]] = []
     for row in dex_stats:
         cid = resolve(row.get("id") or row.get("name"))
         champ = next((c for c in champs if c["id"] == cid), None) if cid else None
@@ -601,28 +705,122 @@ def update_all(
             tier_dates.append(tier_date)
         lanes = list(champ.get("lanes") or []) or [""]
         for lane in lanes:
+            lane_norm = str(lane).casefold()
             db.upsert_stat_tier(
                 cid,
-                str(lane).casefold(),
+                lane_norm,
                 "all",
                 tier,
                 tier_date,
                 "MLBBDex /api/v1/rankings",
             )
+            role_ru = LANE_TO_ROLE_RU.get(lane_norm)
+            if role_ru:
+                tier_role_rows.append((cid, role_ru, tier))
             stored_tiers += 1
     summary["tiers"] = stored_tiers
+    if tier_role_rows:
+        db.replace_source_champion_tiers_partial(
+            "mlbbdex", tier_role_rows, patch=current_patch
+        )
     if stored_tiers:
         db.set_meta("tier_source", "MLBBDex /api/v1/rankings")
         if tier_dates:
             db.set_meta("tier_date", max(tier_dates))
 
-    # 3) Matchups: current Rone relations + live Academy hints.
-    # The old Rafael-VH/Insight-Data-MLBB fallback was removed upstream and now
-    # returns 404, so it is no longer queried.
+    # 3) Matchups: Academy counter pages preserve the raw upstream
+    # increase_win_rate values.  Normalize once across the complete matrix, keep
+    # both representations in SQLite, and only convert to the legacy +/-1.5
+    # scale at the current DraftMatrixEngine compatibility boundary.
     emit(update_text("loading_matchups", lang))
     relation_rows = relation_matchups(champs)
+    detailed_matchups: list[tuple[str, str, str, float]] = []
+    matchup_source = "mlbb.rone.academy.counters"
+    matchup_patch = current_patch or "current"
+    raw_matchup_rows: dict[tuple[str, str, str], dict] = {}
+    counter_pages_ok = 0
 
-    # 4) Items and builds. MLBBDex defines the final shop catalog; Rone adds icons/details.
+    for index, champ in enumerate(champs, 1):
+        _check_cancel(cancel_check)
+        cid = str(champ.get("id") or "")
+        if not cid:
+            continue
+        url = (
+            RONE_ACADEMY_HERO_COUNTERS.format(hero_id=cid)
+            + "?rank=all&size=300&index=1&lang=en"
+        )
+        try:
+            page_rows = parse_rone_academy_counter_raw(net.get(url).json(), cid)
+            page_rows = [
+                row for row in page_rows
+                if str(row.get("champion_id") or "") in valid_ids
+                and str(row.get("enemy_id") or "") in valid_ids
+            ]
+            if page_rows:
+                counter_pages_ok += 1
+                for row in page_rows:
+                    key = (
+                        str(row.get("champion_id") or ""),
+                        str(row.get("enemy_id") or ""),
+                        str(row.get("role") or ""),
+                    )
+                    old = raw_matchup_rows.get(key)
+                    if old is None or abs(float(row.get("raw_edge") or 0.0)) > abs(float(old.get("raw_edge") or 0.0)):
+                        raw_matchup_rows[key] = row
+        except Exception as exc:
+            summary["errors"].append(f"Rone Academy counters {cid}: {exc}")
+
+    normalized_evidence: list[MatchupEvidence] = []
+    matchup_scale_pp = 0.0
+    matrix_expected = len(valid_ids) * max(0, len(valid_ids) - 1)
+    matrix_good = (
+        counter_pages_ok >= max(1, len(valid_ids) - 3)
+        and len(raw_matchup_rows) >= int(matrix_expected * 0.95)
+    )
+    if matrix_good:
+        evidence_objects = [
+            MatchupEvidence(
+                champion_id=str(row["champion_id"]),
+                enemy_id=str(row["enemy_id"]),
+                raw_edge=float(row.get("raw_edge") or 0.0),
+                raw_unit=str(row.get("raw_unit") or "fraction"),
+                source=matchup_source,
+                evidence_type=str(row.get("evidence_type") or "measured"),
+                role=str(row.get("role") or ""),
+                rank_segment=str(row.get("rank_segment") or "all"),
+                sample_window=str(row.get("sample_window") or "academy-current"),
+                confidence=float(row.get("confidence", 1.0) or 0.0),
+                patch=matchup_patch,
+            )
+            for row in raw_matchup_rows.values()
+        ]
+        normalized_evidence, matchup_scale_pp = normalize_matchup_evidence(evidence_objects)
+        db.replace_source_matchup_evidence(
+            matchup_source, [row.to_dict() for row in normalized_evidence]
+        )
+        detailed_matchups = [
+            (
+                row.champion_id,
+                row.enemy_id,
+                row.role,
+                max(-1.0, min(1.0, float(row.normalized_edge or 0.0))) * 1.5,
+            )
+            for row in normalized_evidence
+        ]
+        db.set_meta("matchup_edge_scale_pp_p95", f"{matchup_scale_pp:.6f}")
+        db.set_meta("matchup_evidence_source", matchup_source)
+    else:
+        summary["errors"].append(
+            f"Academy matchup matrix incomplete: pages={counter_pages_ok}/{len(valid_ids)}, "
+            f"edges={len(raw_matchup_rows)}/{matrix_expected}; keeping previous runtime matrix"
+        )
+
+    summary["counter_pages"] = counter_pages_ok
+    summary["matchup_evidence"] = len(normalized_evidence)
+    summary["matchup_edge_scale_pp_p95"] = matchup_scale_pp
+
+    # 4) Items and builds. MLBBDex defines the final shop catalog; Rone adds
+    # icons/details and lane-specific build variants.
     emit(update_text("loading_items", lang))
     rone_items: list[dict] = []
     rone_items_ru: list[dict] = []
@@ -663,22 +861,269 @@ def update_all(
         items = [dict(row) for row in db.item_catalog_rows() if str(row.get("tier") or "").casefold() == "upgraded"]
         apply_builtin_ru_item_localization(items)
     item_by_slug = {slugish(row.get("name", "")): row for row in items if row.get("name")}
+    # Build parsing must understand the full current Rone equipment namespace,
+    # not only the smaller MLBBDex terminal catalog.  We still add only items
+    # that are actually referenced by a live build/recommendation to the final
+    # APK catalog, so components cannot become normal recommended end-items.
+    rone_item_by_slug = {
+        slugish(row.get("name", "")): row for row in rone_items if row.get("name")
+    }
+    build_item_by_slug = dict(rone_item_by_slug)
+    build_item_by_slug.update(item_by_slug)
 
+    # General Academy recommendations remain a fallback pool and a second
+    # independent matchup signal.
     live_pools: list[tuple[str, str, str, int]] = []
     live_matchups: list[tuple[str, str, str, float]] = []
+    global_guide_variants: list[dict] = []
     try:
         recommended = net.get(f"{RONE_ACADEMY_RECOMMENDED}?size=300&index=1&order=desc&lang=en").json()
         live_pools, live_matchups = parse_rone_recommended_payload(recommended, equipment_by_id)
+        global_guide_variants = parse_rone_recommended_variants(
+            recommended, equipment_by_id
+        )
     except Exception as exc:
         summary["errors"].append(f"Rone Academy recommendations: {exc}")
-    # Rone Academy is the live build source. The former Insight fallback was
-    # removed upstream and is intentionally not queried anymore.
-    pools = _filter_build_pool(live_pools, valid_ids, item_by_slug)
+
+    # The global Recommended feed is the current Academy build source and can
+    # carry complete six-slot authored builds. Resolve its numeric hero_lane
+    # through each hero's own road_sort metadata so no lane constants are
+    # guessed.
+    champion_by_id = {str(row.get("id") or ""): row for row in champs}
+    global_guides_by_role: dict[tuple[str, str], list[dict]] = {}
+    for variant in global_guide_variants:
+        guide_cid = str(variant.get("champion_id") or "")
+        champ_row = champion_by_id.get(guide_cid)
+        if not champ_row:
+            continue
+        guide_lanes = [
+            str(x).casefold().strip() for x in (champ_row.get("lanes") or [])
+            if str(x).casefold().strip() in LANE_TO_ROLE_RU
+        ]
+        lane_id_map = {
+            str(k): str(v).casefold()
+            for k, v in (champ_row.get("lane_id_map") or {}).items()
+            if str(v).casefold() in LANE_TO_ROLE_RU
+        }
+        guide_lane = lane_id_map.get(str(variant.get("lane_id") or ""))
+        if not guide_lane and len(guide_lanes) == 1:
+            guide_lane = guide_lanes[0]
+        if guide_lane in LANE_TO_ROLE_RU:
+            global_guides_by_role.setdefault(
+                (guide_cid, guide_lane), []
+            ).append(variant)
+
+    # WRCA-parity role-build model: one core build per supported lane plus every
+    # unique live Rone variant. These rows are what ship inside the APK seed.
+    role_build_rows: list[tuple[str, str, list[str], str, str, str]] = []
+    role_variant_rows: list[tuple] = []
+    role_situational_rows: list[tuple[str, str, str, str, int]] = []
+    role_boot_rows: list[tuple[str, str, str, str, int]] = []
+    role_pool_rows: list[tuple[str, str, str, int]] = []
+    role_pages_ok = 0
+
+    for champ in champs:
+        _check_cancel(cancel_check)
+        cid = str(champ.get("id") or "")
+        lanes = list(dict.fromkeys(
+            str(x).casefold().strip() for x in (champ.get("lanes") or [])
+            if str(x).casefold().strip() in LANE_TO_ROLE_RU
+        ))
+
+        # Prefer the current global Recommended guide when it has a complete
+        # role-specific build. Fall back to the older measured /builds endpoint
+        # only for roles not represented in the current guide feed.
+        def normalize_unique_variants(source_variants: list[dict]) -> list[tuple[list[str], str, dict]]:
+            unique: list[tuple[list[str], str, dict]] = []
+            seen_builds: set[tuple[str, ...]] = set()
+            for variant in source_variants:
+                core, boot = _split_finished_build(
+                    variant.get("items") or [], build_item_by_slug
+                )
+                measured_slots = len(core) + (1 if boot else 0)
+                if len(core) < 2 or measured_slots < 3:
+                    continue
+                key = tuple([*core, boot] if boot else core)
+                if key in seen_builds:
+                    continue
+                seen_builds.add(key)
+                unique.append((core, boot, variant))
+            return unique
+
+        for lane in lanes:
+            role_ru = LANE_TO_ROLE_RU[lane]
+            guide_url = RONE_ACADEMY_RECOMMENDED
+            url = (
+                RONE_ACADEMY_HERO_BUILDS.format(hero_id=cid)
+                + f"?rank=all&lane={lane}&size=100&index=1&lang=en"
+            )
+
+            unique = normalize_unique_variants(
+                global_guides_by_role.get((cid, lane), [])
+            )
+            if not unique:
+                try:
+                    historical_variants = parse_rone_build_variants(
+                        net.get(url).json(), equipment_by_id
+                    )
+                except Exception as exc:
+                    historical_variants = []
+                    summary["errors"].append(f"Rone builds {cid}/{lane}: {exc}")
+                unique = normalize_unique_variants(historical_variants)
+
+            if not unique:
+                continue
+            role_pages_ok += 1
+            unique.sort(
+                key=lambda row: (
+                    len(row[0]) >= 5 and bool(row[1]),
+                    len(row[0]),
+                    float(row[2].get("hot") or 0.0),
+                    float(row[2].get("score") or 0.0),
+                ),
+                reverse=True,
+            )
+            base_core, base_boot, base_meta = unique[0]
+            is_guide = bool(base_meta.get("title"))
+            role_build_rows.append((
+                cid, role_ru, base_core, base_boot, current_patch,
+                guide_url if is_guide else url,
+            ))
+
+            base_set = set(base_core)
+            for variant_index, (core, boot, meta) in enumerate(unique, 1):
+                pick = float(meta.get("pick_rate") or 0.0)
+                win = float(meta.get("win_rate") or 0.0)
+                title = str(meta.get("title") or f"Rone #{variant_index}")
+                description = str(meta.get("description") or "").strip()
+                if description:
+                    trigger = description
+                elif pick or win:
+                    trigger = (
+                        f"Live Rone {role_ru} build; pick {pick:.2f}%, win {win:.2f}%."
+                    )
+                else:
+                    trigger = f"Rone {role_ru} guide build."
+                role_variant_rows.append((
+                    cid, role_ru, title, core, trigger,
+                    variant_index, [], "", current_patch,
+                    guide_url if meta.get("title") else url,
+                ))
+                if boot:
+                    role_boot_rows.append((
+                        cid, role_ru, boot,
+                        f"Boot option from live Rone build #{variant_index}",
+                        variant_index,
+                    ))
+                for pos, item_name in enumerate(core, 1):
+                    role_pool_rows.append((cid, item_name, role_ru, variant_index * 10 + pos))
+                    if item_name not in base_set:
+                        role_situational_rows.append((
+                            cid, role_ru, item_name,
+                            f"Alternative item from live Rone build #{variant_index}",
+                            variant_index * 10 + pos,
+                        ))
+
+    # Promote Rone equipment to the canonical final catalog only when the live
+    # Academy actually references it in a measured/guide build.  This bridges
+    # Rone equipment IDs to our item table without marking every component in
+    # the 152-row equipment feed as a finished recommendation item.
+    used_build_item_names: set[str] = set()
+    for _cid, _role, core, boot, _patch, _url in role_build_rows:
+        used_build_item_names.update(str(x) for x in core if str(x).strip())
+        if str(boot or "").strip():
+            used_build_item_names.add(str(boot))
+    for row in role_variant_rows:
+        for name in (row[3] or []):
+            if str(name).strip():
+                used_build_item_names.add(str(name))
+    for _cid, item_name, _category, _priority in [*live_pools, *role_pool_rows]:
+        if str(item_name).strip():
+            used_build_item_names.add(str(item_name))
+
+    known_item_slugs = {slugish(row.get("name", "")) for row in items if row.get("name")}
+    used_item_slugs = {slugish(name) for name in used_build_item_names if slugish(name)}
+    promoted_rone_items = [
+        dict(row) for key, row in rone_item_by_slug.items()
+        if key in used_item_slugs and key not in known_item_slugs
+    ]
+    if promoted_rone_items:
+        items.extend(promoted_rone_items)
+        apply_ru_localization([], items, ru_localization)
+        apply_builtin_ru_item_localization(items)
+        db.replace_source_items(
+            "mlbb.catalog",
+            [
+                (
+                    row["name"], row.get("category", ""), row.get("name_ru", ""),
+                    row.get("icon_url", ""), "Upgraded",
+                )
+                for row in items if row.get("name")
+            ],
+        )
+        for row in promoted_rone_items:
+            changed = db.upsert_item_details(
+                row["name"],
+                price=int(row.get("price") or 0),
+                stats=list(row.get("stats") or []),
+                effect_en=str(row.get("effect_en") or ""),
+                effect_ru=str(row.get("effect_ru") or ""),
+                data_hash=_item_hash(row),
+                data_patch=current_patch,
+                source_url=RONE_EQUIPMENT_EXPANDED,
+            )
+            summary["item_details_changed"] += int(bool(changed))
+        item_by_slug = {
+            slugish(row.get("name", "")): row for row in items if row.get("name")
+        }
+    summary["promoted_rone_build_items"] = len(promoted_rone_items)
+
+    if role_build_rows:
+        db.replace_source_role_builds_partial(
+            "mlbb.rone",
+            role_build_rows,
+            role_situational_rows,
+            role_boot_rows,
+            variants=role_variant_rows,
+        )
+        db.merge_champion_lanes_from_role_builds("mlbb.rone")
+
+    pools = _filter_build_pool([*live_pools, *role_pool_rows], valid_ids, item_by_slug)
     db.replace_source_item_pools("mlbb.builds", pools)
     summary["item_pool"] = len(pools)
+    summary["role_builds"] = len(role_build_rows)
+    summary["role_variants"] = len(role_variant_rows)
+    summary["role_build_pages"] = role_pages_ok
+    summary["global_guide_variants"] = len(global_guide_variants)
+    summary["global_guide_role_pairs"] = len(global_guides_by_role)
 
-    matchups = _merge_matchups(relation_rows, live_matchups, valid_ids=valid_ids)
-    db.replace_source_matchups("mlbb.matchups", matchups)
+    if detailed_matchups:
+        # Measured Academy matrix has priority. Relation/recommended hints fill
+        # only pairs absent from the measured matrix and never overwrite a
+        # smaller but real statistical edge merely because their heuristic
+        # magnitude is numerically larger.
+        measured = _merge_matchups(detailed_matchups, valid_ids=valid_ids)
+        by_key = {(a, b, role): (a, b, role, score) for a, b, role, score in measured}
+        for row in _merge_matchups(relation_rows, live_matchups, valid_ids=valid_ids):
+            key = (row[0], row[1], row[2])
+            by_key.setdefault(key, row)
+        matchups = list(by_key.values())
+        db.replace_source_matchups("mlbb.matchups", matchups)
+    else:
+        # A transient provider failure must not replace the last known-good full
+        # matrix with a tiny heuristic subset.
+        with db.connect() as con:
+            old_rows = con.execute(
+                "SELECT champion_id,enemy_id,role,score FROM matchups WHERE source='mlbb.matchups'"
+            ).fetchall()
+        matchups = [
+            (str(row["champion_id"]), str(row["enemy_id"]), str(row["role"]), float(row["score"]))
+            for row in old_rows
+        ]
+        if not matchups:
+            matchups = _merge_matchups(relation_rows, live_matchups, valid_ids=valid_ids)
+            if matchups:
+                db.replace_source_matchups("mlbb.matchups", matchups)
     summary["matchups"] = len(matchups)
 
     # 5) MLBB-specific item adaptation rules.

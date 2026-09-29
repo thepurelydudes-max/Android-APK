@@ -196,6 +196,70 @@ jobs:
           echo "Bundled seed manifest:"
           cat "$GITHUB_WORKSPACE/wild_rift/assets/data/bundled_seed_manifest.json"
 
+      - name: Test MLBB recommendation engine
+        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -r "$GITHUB_WORKSPACE/mlbb/requirements.txt"
+          cd "$GITHUB_WORKSPACE/mlbb"
+          python -m py_compile db.py data_contract.py draft_matrix_engine.py engine.py sources.py updater.py main.py prepare_bundled_seed.py
+          python -m unittest -v test_regressions.py test_data_contract.py
+
+      - name: Refresh bundled MLBB database and media
+        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/mlca_bundled_seed
+          FLET_ASSETS_DIR: ${{ github.workspace }}/mlbb/assets
+        run: |
+          set -euo pipefail
+          rm -rf "$FLET_APP_STORAGE_DATA"
+          cd "$GITHUB_WORKSPACE/mlbb"
+          python prepare_bundled_seed.py
+          echo "Bundled MLBB seed manifest:"
+          cat "$GITHUB_WORKSPACE/mlbb/assets/data/bundled_seed_manifest.json"
+
+      - name: Prepare lean MLBB runtime project
+        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUNTIME_PROJECT="${{ runner.temp }}/mlbb_runtime"
+          rm -rf "$RUNTIME_PROJECT"
+          mkdir -p "$RUNTIME_PROJECT"
+
+          for file in \
+            main.py \
+            db.py \
+            engine.py \
+            draft_matrix_engine.py \
+            data_contract.py \
+            sources.py \
+            updater.py \
+            media_cache.py \
+            paths.py \
+            localization.py \
+            adaptive_descriptions.py \
+            VERSION.txt \
+            requirements.txt; do
+            cp "$GITHUB_WORKSPACE/mlbb/$file" "$RUNTIME_PROJECT/$file"
+          done
+          cp -a "$GITHUB_WORKSPACE/mlbb/assets" "$RUNTIME_PROJECT/assets"
+
+          for dead in \
+            test_regressions.py \
+            test_data_contract.py \
+            collect_mlbb_snapshot.py \
+            moonton_gms.py \
+            prepare_bundled_seed.py \
+            README_REWORK_RU.txt; do
+            test ! -e "$RUNTIME_PROJECT/$dead"
+          done
+
+          echo "Lean MLBB runtime project:"
+          find "$RUNTIME_PROJECT" -maxdepth 1 -type f -printf '%f\n' | sort
+
       - name: Prepare lean Wild Rift runtime project
         if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
         shell: bash
@@ -288,11 +352,27 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/apk_output/mlbb"
+
+          RUNTIME_PROJECT="${{ runner.temp }}/mlbb_runtime"
+          BUILD_VERSION="$(tr -d '[:space:]' < "$RUNTIME_PROJECT/VERSION.txt")"
+          if [[ ! "$BUILD_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::mlbb/VERSION.txt must contain x.y.z, got: $BUILD_VERSION"
+            exit 1
+          fi
+          BUILD_NUMBER="$GITHUB_RUN_NUMBER"
+          echo "MLBB Android identity: com.flet.mlbb"
+          echo "MLBB versionName=$BUILD_VERSION versionCode=$BUILD_NUMBER"
+
           for attempt in 1 2; do
             echo "MLBB APK build attempt $attempt/2"
-            if flet build apk "$GITHUB_WORKSPACE/mlbb" \
+            if flet build apk "$RUNTIME_PROJECT" \
+              --project "mlbb" \
               --product "MLBB Counter Assistant" \
               --artifact "MLBB_Counter_Assistant" \
+              --org "com.flet" \
+              --bundle-id "com.flet.mlbb" \
+              --build-version "$BUILD_VERSION" \
+              --build-number "$BUILD_NUMBER" \
               --output "$GITHUB_WORKSPACE/apk_output/mlbb" \
               --python-version 3.12 \
               --yes \
@@ -304,7 +384,7 @@ jobs:
               exit 1
             fi
             echo "Transient Android/Flet failure; cleaning build state and retrying once..."
-            rm -rf "$GITHUB_WORKSPACE/mlbb/build" "$GITHUB_WORKSPACE/apk_output/mlbb"
+            rm -rf "$RUNTIME_PROJECT/build" "$GITHUB_WORKSPACE/apk_output/mlbb"
             mkdir -p "$GITHUB_WORKSPACE/apk_output/mlbb"
             sleep 10
           done

@@ -29,11 +29,39 @@ class Net:
         self.s.headers.update(HEADERS)
 
     def get(self, url: str, headers: dict | None = None, allow_not_modified: bool = False) -> requests.Response:
-        response = self.s.get(url, timeout=self.timeout, headers=headers or None)
-        if not (allow_not_modified and response.status_code == 304):
-            response.raise_for_status()
-        time.sleep(self.delay)
-        return response
+        last_error: Exception | None = None
+        for attempt in range(5):
+            try:
+                response = self.s.get(url, timeout=self.timeout, headers=headers or None)
+                if allow_not_modified and response.status_code == 304:
+                    time.sleep(self.delay)
+                    return response
+                if response.status_code not in {429, 500, 502, 503, 504}:
+                    response.raise_for_status()
+                    time.sleep(self.delay)
+                    return response
+
+                retry_after = response.headers.get("Retry-After", "").strip()
+                try:
+                    server_delay = float(retry_after) if retry_after else 0.0
+                except ValueError:
+                    server_delay = 0.0
+                backoff = max(server_delay, min(8.0, 0.75 * (2 ** attempt)))
+                last_error = requests.HTTPError(
+                    f"{response.status_code} from {url}", response=response
+                )
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_error = exc
+                backoff = min(8.0, 0.75 * (2 ** attempt))
+
+            if attempt < 4:
+                time.sleep(backoff + self.delay)
+                continue
+            if isinstance(last_error, requests.HTTPError) and last_error.response is not None:
+                last_error.response.raise_for_status()
+            raise last_error or RuntimeError(f"GET failed: {url}")
+
+        raise RuntimeError(f"GET failed: {url}")
 
 
 def clean(value: str) -> str:
@@ -214,6 +242,8 @@ MLBBDEX_PATCHES = f"{MLBBDEX_BASE}/patches"
 MLBBDEX_RANKINGS = f"{MLBBDEX_BASE}/rankings"
 RONE_EQUIPMENT_EXPANDED = f"{RONE_BASE}/academy/equipment/expanded"
 RONE_VERSION = f"{RONE_BASE}/academy/meta/version"
+RONE_ACADEMY_HEROES = f"{RONE_BASE}/academy/heroes"
+RONE_ACADEMY_HERO_COUNTERS = RONE_BASE + "/academy/heroes/{hero_id}/counters"
 INSIGHT_COUNTERS = f"{INSIGHT_RAW_BASE}/heroes/hero_counters.json"
 INSIGHT_BUILDS = f"{INSIGHT_RAW_BASE}/guides/guide_builds.json"
 
@@ -382,6 +412,90 @@ def parse_mlbbdex_rankings(payload: dict) -> list[dict]:
 
 
 
+def parse_rone_academy_lane_filter(payload: dict, lane: str) -> list[str]:
+    """Return hero IDs explicitly assigned to one Academy lane filter."""
+    lane = clean(str(lane or "")).casefold()
+    if lane not in {"exp", "jungle", "mid", "gold", "roam"}:
+        return []
+    data = _json_data(payload) or {}
+    records = data.get("records", []) if isinstance(data, dict) else []
+    out: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        row = (record or {}).get("data") or {}
+        hero = row.get("hero") if isinstance(row.get("hero"), dict) else {}
+        hero_data = hero.get("data") if isinstance(hero.get("data"), dict) else {}
+        raw_id = row.get("hero_id") or row.get("heroid")
+        cid = str(raw_id or "").strip()
+        if not cid:
+            cid = clean(str(hero_data.get("name") or row.get("hero_name") or ""))
+        if cid and cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out
+
+
+def parse_rone_academy_counter_raw(
+    payload: dict, target_id: str,
+) -> list[dict]:
+    """Preserve Academy counter deltas before any MLCA scoring conversion.
+
+    The endpoint represents increase_win_rate as a fractional win-rate change.
+    sub_hero is oriented as a favorable answer into the target and
+    sub_hero_last as unfavorable, matching the existing Rone adapter. A
+    symmetric reverse row is emitted because the draft matrix is directional.
+    """
+    data = _json_data(payload) or {}
+    records = data.get("records", []) if isinstance(data, dict) else []
+    edges: dict[tuple[str, str], dict] = {}
+    fallback_target = str(target_id or "").strip()
+    for record in records:
+        row = (record or {}).get("data") or {}
+        target = str(row.get("main_heroid") or row.get("heroid") or fallback_target).strip()
+        if not target:
+            continue
+        for key, sign in (("sub_hero", 1.0), ("sub_hero_last", -1.0)):
+            for sub in row.get(key) or []:
+                if not isinstance(sub, dict):
+                    continue
+                candidate = str(sub.get("heroid") or "").strip()
+                if not candidate or candidate == target:
+                    continue
+                try:
+                    delta = abs(float(sub.get("increase_win_rate") or 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if delta <= 0:
+                    continue
+                edge = sign * delta
+                base = {
+                    "champion_id": candidate,
+                    "enemy_id": target,
+                    "role": "",
+                    "raw_edge": edge,
+                    "raw_unit": "fraction",
+                    "evidence_type": f"measured:{key}",
+                    "rank_segment": "all",
+                    "sample_window": "academy-current",
+                    "confidence": 1.0,
+                }
+                reverse = {
+                    **base,
+                    "champion_id": target,
+                    "enemy_id": candidate,
+                    "raw_edge": -edge,
+                    "evidence_type": f"measured:reverse:{key}",
+                    "confidence": 0.95,
+                }
+                old = edges.get((candidate, target))
+                if old is None or abs(edge) > abs(float(old.get("raw_edge") or 0.0)):
+                    edges[(candidate, target)] = base
+                old_rev = edges.get((target, candidate))
+                if old_rev is None or abs(edge) > abs(float(old_rev.get("raw_edge") or 0.0)):
+                    edges[(target, candidate)] = reverse
+    return list(edges.values())
+
+
 def parse_rone_counter_payload(payload: dict) -> list[tuple[str, str, str, float]]:
     """Return matchup edges oriented as candidate -> target.
 
@@ -516,6 +630,9 @@ def fetch_mlbb_patch_info(net: Net) -> tuple[str, str]:
 RONE_PUBLIC_HEROES = f"{RONE_BASE}/heroes"
 RONE_HERO_RANK = f"{RONE_BASE}/heroes/rank"
 RONE_ACADEMY_RECOMMENDED = f"{RONE_BASE}/academy/recommended"
+RONE_HERO_COUNTERS = RONE_BASE + "/heroes/{hero_id}/counters"
+RONE_ACADEMY_HERO_BUILDS = RONE_BASE + "/academy/heroes/{hero_id}/builds"
+RONE_HERO_RECOMMENDED = RONE_BASE + "/academy/heroes/{hero_id}/recommended"
 
 
 def _id_list(value) -> list[str]:
@@ -524,6 +641,21 @@ def _id_list(value) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(x) for x in value if x is not None and str(x).strip()]
+
+
+def _nested_lane_id_map(values) -> dict[str, str]:
+    """Return Rone road_sort_id -> normalized lane slug without hardcoding IDs."""
+    out: dict[str, str] = {}
+    for value in values or []:
+        if not isinstance(value, dict):
+            continue
+        data = value.get("data") if isinstance(value.get("data"), dict) else value
+        lane_id = str(data.get("road_sort_id") or "").strip()
+        title = clean(str(data.get("road_sort_title") or data.get("title") or ""))
+        lane = title.casefold().replace(" lane", "").strip()
+        if lane_id and lane in {"exp", "mid", "roam", "jungle", "gold"}:
+            out[lane_id] = lane
+    return out
 
 
 def _nested_titles(values, *keys: str) -> list[str]:
@@ -545,6 +677,116 @@ def _nested_titles(values, *keys: str) -> list[str]:
     return out
 
 
+def parse_rone_recommended_variants(
+    payload: dict, equipment_by_id: dict[int, str],
+) -> list[dict]:
+    """Extract full six-item hero guide builds from Rone recommended content.
+
+    Unlike the legacy /builds endpoint, these are authored guide builds and
+    commonly contain all six equipment IDs plus a lane ID and explanation.
+    """
+    data = _json_data(payload) or {}
+    records = data.get("records", []) if isinstance(data, dict) else []
+    out: list[dict] = []
+    for record in records:
+        row = _recommended_payload_data(record)
+        hero = row.get("hero") or {}
+        cid = hero.get("hero_id") or row.get("hero_id")
+        if cid is None:
+            continue
+        lane_id = str(hero.get("hero_lane") or row.get("hero_lane") or "").strip()
+        outer = (record or {}).get("data") or {}
+        dynamic = (record or {}).get("dynamic") or {}
+        try:
+            hot = float(dynamic.get("hot") or 0.0)
+        except (TypeError, ValueError):
+            hot = 0.0
+        updated = str((record or {}).get("updatedAt") or (record or {}).get("_updatedAt") or "")
+        game_version = clean(str(row.get("game_version") or ""))
+        for equip_index, equip in enumerate(row.get("equips") or []):
+            if not isinstance(equip, dict):
+                continue
+            names: list[str] = []
+            for raw_id in equip.get("equip_ids") or []:
+                try:
+                    name = equipment_by_id.get(int(raw_id), "")
+                except (TypeError, ValueError):
+                    name = ""
+                if name and name not in names:
+                    names.append(name)
+            if len(names) < 5:
+                continue
+            out.append({
+                "champion_id": str(cid),
+                "lane_id": lane_id,
+                "items": names[:6],
+                "title": clean(str(equip.get("equip_title") or row.get("title") or "Guide")),
+                "description": clean(str(equip.get("equip_desc") or row.get("recommend") or "")),
+                "hot": hot,
+                "updated_at": updated,
+                "game_version": game_version,
+                "index": equip_index,
+            })
+    out.sort(
+        key=lambda row: (
+            float(row.get("hot") or 0.0),
+            str(row.get("updated_at") or ""),
+        ),
+        reverse=True,
+    )
+    return out
+
+
+def parse_rone_build_variants(payload: dict, equipment_by_id: dict[int, str]) -> list[dict]:
+    """Return every usable Rone build variant, ordered by live popularity/WR."""
+    data = _json_data(payload) or {}
+    records = data.get("records", []) if isinstance(data, dict) else []
+    out: list[dict] = []
+    for record in records:
+        row = (record or {}).get("data") or {}
+        champion_id = row.get("heroid") or row.get("hero_id")
+        if champion_id is None:
+            continue
+        for build_index, build in enumerate(row.get("build") or []):
+            if not isinstance(build, dict):
+                continue
+            equip_ids = build.get("equipid") or build.get("equipment_ids") or []
+            if not isinstance(equip_ids, list):
+                continue
+            names: list[str] = []
+            for raw_id in equip_ids:
+                try:
+                    name = equipment_by_id.get(int(raw_id), "")
+                except (TypeError, ValueError):
+                    name = ""
+                if name and name not in names:
+                    names.append(name)
+            # Rone's measured MLBB build statistics commonly expose the
+            # three-item core. That is valid source data, not an incomplete
+            # six-slot build: MLCA protects these three core items and fills
+            # only the flexible tail later.
+            if len(names) < 3:
+                continue
+            try:
+                pick = float(build.get("build_pick_rate") or 0.0)
+            except (TypeError, ValueError):
+                pick = 0.0
+            try:
+                win = float(build.get("build_win_rate") or 0.0)
+            except (TypeError, ValueError):
+                win = 0.0
+            out.append({
+                "champion_id": str(champion_id),
+                "items": names[:6],
+                "pick_rate": _pct(pick),
+                "win_rate": _pct(win),
+                "score": pick + win * 0.01,
+                "index": build_index,
+            })
+    out.sort(key=lambda row: (float(row.get("score") or 0.0), float(row.get("pick_rate") or 0.0)), reverse=True)
+    return out
+
+
 def parse_rone_public_heroes(payload: dict) -> list[dict]:
     """Parse the compact Rone hero list including roles, lanes and relations."""
     data = _json_data(payload) or {}
@@ -559,16 +801,24 @@ def parse_rone_public_heroes(payload: dict) -> list[dict]:
             continue
         relation = row.get("relation") or {}
         roles = _nested_titles(hero.get("sortid") or row.get("sortid") or [], "sort_title", "title", "name")
+        road_values = hero.get("roadsort") or row.get("roadsort") or []
         lanes = [
             value.casefold().replace(" lane", "")
-            for value in _nested_titles(hero.get("roadsort") or row.get("roadsort") or [], "road_sort_title", "title", "name")
+            for value in _nested_titles(road_values, "road_sort_title", "title", "name")
         ]
+        lane_id_map = _nested_lane_id_map(road_values)
+        specialties = _nested_titles(
+            hero.get("speciality") or hero.get("specialties") or row.get("speciality") or [],
+            "speciality_name", "speciality_title", "tagname", "title", "name",
+        )
         out.append({
             "id": str(hero_id),
             "name": name,
             "icon_url": clean(str(hero.get("head") or row.get("head") or "")),
             "roles": roles,
             "lanes": lanes,
+            "lane_id_map": lane_id_map,
+            "specialties": specialties,
             "strong": _id_list(relation.get("strong") or {}),
             "weak": _id_list(relation.get("weak") or {}),
             "assist": _id_list(relation.get("assist") or {}),

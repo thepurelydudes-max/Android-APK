@@ -59,6 +59,131 @@ def init_db() -> None:
                 score REAL NOT NULL, source TEXT NOT NULL,
                 PRIMARY KEY (champion_id, enemy_id, role, source)
             );
+            CREATE TABLE IF NOT EXISTS hero_lane_evidence (
+                champion_id TEXT NOT NULL, lane TEXT NOT NULL,
+                evidence_type TEXT NOT NULL, source TEXT NOT NULL,
+                source_lane_id TEXT NOT NULL DEFAULT '',
+                rank_segment TEXT NOT NULL DEFAULT 'all',
+                usage_rate REAL, confidence REAL NOT NULL DEFAULT 1.0,
+                patch TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (champion_id,lane,evidence_type,source,rank_segment)
+            );
+            CREATE INDEX IF NOT EXISTS idx_hero_lane_evidence_lookup
+                ON hero_lane_evidence(champion_id,lane,source,rank_segment);
+            CREATE TABLE IF NOT EXISTS matchup_evidence (
+                champion_id TEXT NOT NULL, enemy_id TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT '',
+                raw_edge REAL NOT NULL, raw_unit TEXT NOT NULL,
+                normalized_edge REAL NOT NULL,
+                evidence_type TEXT NOT NULL DEFAULT 'measured',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                rank_segment TEXT NOT NULL DEFAULT 'all',
+                sample_window TEXT NOT NULL DEFAULT '',
+                patch TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (
+                    champion_id,enemy_id,role,evidence_type,source,
+                    rank_segment,sample_window
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_matchup_evidence_lookup
+                ON matchup_evidence(champion_id,enemy_id,role,rank_segment,source);
+            CREATE TABLE IF NOT EXISTS champion_tiers (
+                champion_id TEXT NOT NULL, role TEXT NOT NULL, tier TEXT NOT NULL,
+                source TEXT NOT NULL, patch TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (champion_id, role, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_champion_tiers_role_tier
+                ON champion_tiers(role, tier);
+            CREATE TABLE IF NOT EXISTS matchup_page_cache (
+                source TEXT NOT NULL, patch TEXT NOT NULL, champion_id TEXT NOT NULL,
+                rows_json TEXT NOT NULL DEFAULT '[]', traits_json TEXT NOT NULL DEFAULT '[]',
+                source_url TEXT NOT NULL DEFAULT '',
+                fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (source, patch, champion_id)
+            );
+            CREATE TABLE IF NOT EXISTS champion_traits (
+                champion_id TEXT NOT NULL, trait TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0,
+                evidence_count INTEGER NOT NULL DEFAULT 0,
+                mentions INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL, patch TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (champion_id, trait, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_champion_traits_lookup
+                ON champion_traits(champion_id, source, confidence);
+            CREATE INDEX IF NOT EXISTS idx_matchup_page_cache_source_patch
+                ON matchup_page_cache(source, patch);
+            CREATE TABLE IF NOT EXISTS item_pools (
+                champion_id TEXT NOT NULL, item_name TEXT NOT NULL, category TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 999, source TEXT NOT NULL,
+                PRIMARY KEY (champion_id, item_name, source)
+            );
+            CREATE TABLE IF NOT EXISTS counter_items (
+                enemy_id TEXT NOT NULL, item_name TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL, PRIMARY KEY (enemy_id, item_name, source)
+            );
+            CREATE TABLE IF NOT EXISTS role_builds (
+                champion_id TEXT NOT NULL, role TEXT NOT NULL,
+                items_json TEXT NOT NULL DEFAULT '[]', boot_name TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL, patch TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (champion_id, role, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS role_build_variants (
+                champion_id TEXT NOT NULL, role TEXT NOT NULL, variant_name TEXT NOT NULL,
+                items_json TEXT NOT NULL DEFAULT '[]', trigger_text TEXT NOT NULL DEFAULT '',
+                example_enemies_json TEXT NOT NULL DEFAULT '[]',
+                example_text TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 999, source TEXT NOT NULL,
+                patch TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (champion_id, role, variant_name, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_role_build_variants_champion_role
+                ON role_build_variants(champion_id, role, source, priority);
+            CREATE TABLE IF NOT EXISTS role_build_situational (
+                champion_id TEXT NOT NULL, role TEXT NOT NULL, item_name TEXT NOT NULL,
+                trigger_text TEXT NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 999,
+                source TEXT NOT NULL,
+                PRIMARY KEY (champion_id, role, item_name, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS role_build_boots (
+                champion_id TEXT NOT NULL, role TEXT NOT NULL, item_name TEXT NOT NULL,
+                trigger_text TEXT NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 999,
+                source TEXT NOT NULL,
+                PRIMARY KEY (champion_id, role, item_name, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS role_build_opponent_adaptations (
+                champion_id TEXT NOT NULL, role TEXT NOT NULL,
+                enemy_name TEXT NOT NULL, enemy_name_norm TEXT NOT NULL,
+                item_name TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 999, source TEXT NOT NULL,
+                PRIMARY KEY (
+                    champion_id, role, enemy_name_norm, item_name, source
+                ),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_role_build_opponent_adaptations
+                ON role_build_opponent_adaptations(
+                    champion_id, role, enemy_name_norm, source, priority
+                );
+            CREATE TABLE IF NOT EXISTS build_page_cache (
+                source TEXT NOT NULL, patch TEXT NOT NULL, champion_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}', source_url TEXT NOT NULL DEFAULT '',
+                fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (source, patch, champion_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_build_page_cache_source_patch
+                ON build_page_cache(source, patch);
             CREATE TABLE IF NOT EXISTS item_pools (
                 champion_id TEXT NOT NULL, item_name TEXT NOT NULL, category TEXT NOT NULL DEFAULT '',
                 priority INTEGER NOT NULL DEFAULT 999, source TEXT NOT NULL,
@@ -84,6 +209,7 @@ def init_db() -> None:
         _ensure_column(con, "champions", "name_ru", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "champions", "icon_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "champions", "icon_path", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(con, "champions", "specialties_json", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(con, "items", "name_ru", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "icon_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "icon_path", "TEXT NOT NULL DEFAULT ''")
@@ -98,6 +224,9 @@ def init_db() -> None:
         _ensure_column(con, "stats", "tier", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "stats", "tier_date", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "stats", "tier_source", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(con, "matchup_page_cache", "traits_json", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(con, "role_build_variants", "example_enemies_json", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(con, "role_build_variants", "example_text", "TEXT NOT NULL DEFAULT ''")
 
         # 1.0.3 localization repair: never preserve Latin-only values as RU just
         # because a provider answered a lang=ru request. Built-in names also make
@@ -141,17 +270,30 @@ def get_meta(key: str, default: str = "") -> str:
     return row[0] if row else default
 
 
-def upsert_champion(champ_id: str, name: str, roles: list[str], lanes: list[str], damage_type: str, source: str, updated_at: str = "", name_ru: str = "", icon_url: str = "", icon_path: str = "") -> None:
+def upsert_champion(
+    champ_id: str, name: str, roles: list[str], lanes: list[str], damage_type: str,
+    source: str, updated_at: str = "", name_ru: str = "", icon_url: str = "",
+    icon_path: str = "", specialties: list[str] | None = None,
+) -> None:
+    specialties = list(specialties or [])
     with connect() as con:
         con.execute(
-            """INSERT INTO champions(id,name,roles_json,lanes_json,damage_type,source,updated_at,name_ru,icon_url,icon_path)
-            VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+            """INSERT INTO champions(
+                id,name,roles_json,lanes_json,damage_type,source,updated_at,
+                name_ru,icon_url,icon_path,specialties_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
             name=excluded.name, roles_json=excluded.roles_json, lanes_json=excluded.lanes_json,
             damage_type=excluded.damage_type, source=excluded.source, updated_at=excluded.updated_at,
             name_ru=CASE WHEN excluded.name_ru<>'' THEN excluded.name_ru ELSE champions.name_ru END,
             icon_url=CASE WHEN excluded.icon_url<>'' THEN excluded.icon_url ELSE champions.icon_url END,
-            icon_path=CASE WHEN excluded.icon_path<>'' THEN excluded.icon_path ELSE champions.icon_path END""",
-            (champ_id, name, json.dumps(roles, ensure_ascii=False), json.dumps(lanes, ensure_ascii=False), damage_type or "", source, updated_at or "", name_ru or "", icon_url or "", icon_path or ""),
+            icon_path=CASE WHEN excluded.icon_path<>'' THEN excluded.icon_path ELSE champions.icon_path END,
+            specialties_json=CASE WHEN excluded.specialties_json<>'[]' THEN excluded.specialties_json ELSE champions.specialties_json END""",
+            (
+                champ_id, name, json.dumps(roles, ensure_ascii=False),
+                json.dumps(lanes, ensure_ascii=False), damage_type or "", source,
+                updated_at or "", name_ru or "", icon_url or "", icon_path or "",
+                json.dumps(specialties, ensure_ascii=False),
+            ),
         )
     aliases = [champ_id, name, name_ru, *COMMON_CHAMPION_ALIASES.get(champ_id, ())]
     replace_champion_aliases(champ_id, [x for x in aliases if x])
@@ -260,6 +402,67 @@ def replace_source_matchups(source: str, rows: Iterable[tuple[str, str, str, flo
         con.executemany("INSERT OR REPLACE INTO matchups(champion_id,enemy_id,role,score,source) VALUES(?,?,?,?,?)", [(a,b,r,s,source) for a,b,r,s in rows])
 
 
+def replace_source_lane_evidence(source: str, rows: Iterable[dict]) -> None:
+    clean = []
+    for row in rows:
+        champion_id = str(row.get("champion_id") or "").strip()
+        lane = str(row.get("lane") or "").strip().casefold()
+        evidence_type = str(row.get("evidence_type") or "assignment").strip()
+        if not champion_id or not lane:
+            continue
+        usage_rate = row.get("usage_rate")
+        clean.append((
+            champion_id, lane, evidence_type, source,
+            str(row.get("source_lane_id") or ""),
+            str(row.get("rank_segment") or "all"),
+            None if usage_rate is None else float(usage_rate),
+            max(0.0, min(1.0, float(row.get("confidence", 1.0) or 0.0))),
+            str(row.get("patch") or ""),
+        ))
+    with connect() as con:
+        con.execute("DELETE FROM hero_lane_evidence WHERE source=?", (source,))
+        con.executemany(
+            """INSERT OR REPLACE INTO hero_lane_evidence(
+                champion_id,lane,evidence_type,source,source_lane_id,rank_segment,
+                usage_rate,confidence,patch,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            clean,
+        )
+
+
+def replace_source_matchup_evidence(source: str, rows: Iterable[dict]) -> None:
+    clean = []
+    for row in rows:
+        champion_id = str(row.get("champion_id") or "").strip()
+        enemy_id = str(row.get("enemy_id") or "").strip()
+        if not champion_id or not enemy_id or champion_id == enemy_id:
+            continue
+        clean.append((
+            champion_id,
+            enemy_id,
+            str(row.get("role") or "").strip().casefold(),
+            float(row.get("raw_edge") or 0.0),
+            str(row.get("raw_unit") or "percentage_points"),
+            max(-1.0, min(1.0, float(row.get("normalized_edge") or 0.0))),
+            str(row.get("evidence_type") or "measured"),
+            max(0.0, min(1.0, float(row.get("confidence", 1.0) or 0.0))),
+            str(row.get("rank_segment") or "all"),
+            str(row.get("sample_window") or ""),
+            str(row.get("patch") or ""),
+            source,
+        ))
+    with connect() as con:
+        con.execute("DELETE FROM matchup_evidence WHERE source=?", (source,))
+        con.executemany(
+            """INSERT OR REPLACE INTO matchup_evidence(
+                champion_id,enemy_id,role,raw_edge,raw_unit,normalized_edge,
+                evidence_type,confidence,rank_segment,sample_window,patch,source,
+                updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            clean,
+        )
+
+
 def replace_source_item_pools(source: str, rows: Iterable[tuple[str, str, str, int]]) -> None:
     with connect() as con:
         con.execute("DELETE FROM item_pools WHERE source=?", (source,))
@@ -271,6 +474,473 @@ def replace_source_counter_items(source: str, rows: Iterable[tuple[str, str, str
         con.execute("DELETE FROM counter_items WHERE source=?", (source,))
         con.executemany("INSERT OR REPLACE INTO counter_items(enemy_id,item_name,reason,source) VALUES(?,?,?,?)", [(e,i,r,source) for e,i,r in rows])
 
+
+def get_matchup_page_cache(source: str, patch: str) -> dict[str, list[tuple[str, str, str, float]]]:
+    """Return successfully parsed per-champion matchup pages for one patch."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT champion_id,rows_json FROM matchup_page_cache WHERE source=? AND patch=?",
+            (source, patch or ""),
+        ).fetchall()
+    out: dict[str, list[tuple[str, str, str, float]]] = {}
+    for row in rows:
+        try:
+            raw = json.loads(row["rows_json"] or "[]")
+            parsed = []
+            for item in raw:
+                if not isinstance(item, (list, tuple)) or len(item) != 4:
+                    continue
+                parsed.append((str(item[0]), str(item[1]), str(item[2]), float(item[3])))
+            if parsed:
+                out[str(row["champion_id"])] = parsed
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return out
+
+def get_matchup_trait_page_cache(
+    source: str, patch: str,
+) -> dict[str, list[tuple[str, str]]]:
+    """Return MLBB semantic champion-trait observations cached with matchup pages."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT champion_id,traits_json FROM matchup_page_cache "
+            "WHERE source=? AND patch=?",
+            (source, patch or ""),
+        ).fetchall()
+    out: dict[str, list[tuple[str, str]]] = {}
+    for row in rows:
+        try:
+            raw = json.loads(row["traits_json"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        parsed: list[tuple[str, str]] = []
+        for item in raw:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                continue
+            cid, trait = str(item[0]), str(item[1])
+            if cid and trait:
+                parsed.append((cid, trait))
+        if parsed:
+            out[str(row["champion_id"])] = parsed
+    return out
+
+def upsert_matchup_page_cache(
+    source: str, patch: str, champion_id: str,
+    rows: Iterable[tuple[str, str, str, float]], source_url: str = "",
+    traits: Iterable[tuple[str, str]] = (),
+) -> None:
+    """Persist one successfully parsed page immediately so interrupted updates can resume."""
+    payload = json.dumps(list(rows), ensure_ascii=False, separators=(",", ":"))
+    trait_payload = json.dumps(list(traits), ensure_ascii=False, separators=(",", ":"))
+    with connect() as con:
+        con.execute(
+            """INSERT INTO matchup_page_cache(
+                   source,patch,champion_id,rows_json,traits_json,source_url,fetched_at
+               ) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(source,patch,champion_id) DO UPDATE SET
+               rows_json=excluded.rows_json, traits_json=excluded.traits_json,
+               source_url=excluded.source_url, fetched_at=CURRENT_TIMESTAMP""",
+            (
+                source, patch or "", champion_id, payload, trait_payload,
+                source_url or "",
+            ),
+        )
+
+def replace_source_champion_traits(
+    source: str,
+    rows: Iterable[tuple[str, str, float, int, int]],
+    patch: str = "",
+) -> None:
+    clean_rows = []
+    for champion_id, trait, confidence, evidence_count, mentions in rows:
+        cid = str(champion_id or "").strip()
+        tag = str(trait or "").strip()
+        if not cid or not tag:
+            continue
+        clean_rows.append((
+            cid, tag, float(confidence or 0.0), int(evidence_count or 0),
+            int(mentions or 0), source, patch or "",
+        ))
+    if not clean_rows:
+        return
+    with connect() as con:
+        con.execute("DELETE FROM champion_traits WHERE source=?", (source,))
+        con.executemany(
+            """INSERT OR REPLACE INTO champion_traits(
+                   champion_id,trait,confidence,evidence_count,mentions,source,patch
+               ) VALUES(?,?,?,?,?,?,?)""",
+            clean_rows,
+        )
+
+def prune_matchup_page_cache(source: str, keep_patch: str) -> None:
+    """Keep only the current patch cache after a complete successful refresh."""
+    with connect() as con:
+        con.execute("DELETE FROM matchup_page_cache WHERE source=? AND patch<>?", (source, keep_patch or ""))
+
+def replace_source_champion_tiers(source: str, rows: Iterable[tuple[str, str, str]], patch: str = "") -> None:
+    """Replace one source's role-specific champion tier list atomically."""
+    clean_rows = []
+    for champion_id, role, tier in rows:
+        tier_value = str(tier or "").strip().upper()
+        if tier_value not in {"S+", "S", "A", "B", "C", "D"}:
+            continue
+        clean_rows.append((champion_id, role, tier_value, source, patch or ""))
+    with connect() as con:
+        con.execute("DELETE FROM champion_tiers WHERE source=?", (source,))
+        con.executemany(
+            """INSERT OR REPLACE INTO champion_tiers(champion_id,role,tier,source,patch,updated_at)
+               VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            clean_rows,
+        )
+
+def replace_source_champion_tiers_partial(source: str, rows: Iterable[tuple[str, str, str]], patch: str = "") -> None:
+    """Replace only roles present in ``rows`` and keep other source roles intact.
+
+    Tier pages are fetched independently.  If one role is temporarily blocked
+    or its markup changes, a successful refresh of the other four roles should
+    not erase the last known data for the failed role.
+    """
+    clean_rows = []
+    roles: set[str] = set()
+    for champion_id, role, tier in rows:
+        tier_value = str(tier or "").strip().upper()
+        role_value = str(role or "").strip()
+        if not role_value or tier_value not in {"S+", "S", "A", "B", "C", "D"}:
+            continue
+        roles.add(role_value)
+        clean_rows.append((champion_id, role_value, tier_value, source, patch or ""))
+    if not clean_rows:
+        return
+    with connect() as con:
+        for role in sorted(roles):
+            con.execute("DELETE FROM champion_tiers WHERE source=? AND role=?", (source, role))
+        con.executemany(
+            """INSERT OR REPLACE INTO champion_tiers(champion_id,role,tier,source,patch,updated_at)
+               VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            clean_rows,
+        )
+
+def get_champion_tier(champion_id: str, role: str, source: str = "mlbb.rone") -> str:
+    with connect() as con:
+        row = con.execute(
+            "SELECT tier FROM champion_tiers WHERE champion_id=? AND role=? AND source=?",
+            (champion_id, role, source),
+        ).fetchone()
+        if row:
+            return str(row[0] or "")
+        # Future-proof fallback if another tier source is ever added.
+        row = con.execute(
+            "SELECT tier FROM champion_tiers WHERE champion_id=? AND role=? ORDER BY updated_at DESC LIMIT 1",
+            (champion_id, role),
+        ).fetchone()
+    return str(row[0] or "") if row else ""
+
+def replace_source_role_builds_partial(
+    source: str,
+    builds: Iterable[tuple[str, str, list[str], str, str, str]],
+    situational: Iterable[tuple[str, str, str, str, int]],
+    boots: Iterable[tuple[str, str, str, str, int]],
+    variants: Iterable[tuple] = (),
+    opponent_adaptations: Iterable[
+        tuple[str, str, str, str, str, int]
+    ] = (),
+) -> None:
+    """Replace role-build data only for champion/role pairs present in builds.
+
+    Failed or rate-limited pages therefore keep their last known-good build.
+    """
+    build_rows = []
+    touched: set[tuple[str, str]] = set()
+    for champion_id, role, items, boot_name, patch, source_url in builds:
+        cid = str(champion_id or "").strip()
+        role_value = str(role or "").strip()
+        clean_items = [str(x).strip() for x in (items or []) if str(x).strip()]
+        if not cid or not role_value or not clean_items:
+            continue
+        touched.add((cid, role_value))
+        build_rows.append((
+            cid, role_value, json.dumps(clean_items, ensure_ascii=False),
+            str(boot_name or ""), source, str(patch or ""), str(source_url or ""),
+        ))
+    if not build_rows:
+        return
+
+    situational_rows = [
+        (str(c), str(r), str(i), str(reason or ""), int(priority or 999), source)
+        for c, r, i, reason, priority in situational
+        if (str(c), str(r)) in touched and str(i).strip()
+    ]
+    boot_rows = [
+        (str(c), str(r), str(i), str(reason or ""), int(priority or 999), source)
+        for c, r, i, reason, priority in boots
+        if (str(c), str(r)) in touched and str(i).strip()
+    ]
+    opponent_rows = [
+        (
+            str(c), str(r), str(enemy).strip(), normalize_search(str(enemy)),
+            str(i), str(reason or ""), int(priority or 999), source,
+        )
+        for c, r, enemy, i, reason, priority in opponent_adaptations
+        if (
+            (str(c), str(r)) in touched
+            and str(enemy).strip()
+            and normalize_search(str(enemy))
+            and str(i).strip()
+        )
+    ]
+    variant_rows = []
+    for raw_variant in variants:
+        values = list(raw_variant)
+        if len(values) >= 10:
+            (
+                c, r, name, items, trigger, priority,
+                example_enemies, example_text, patch, source_url,
+            ) = values[:10]
+        elif len(values) >= 8:
+            # Backward-compatible path for old tests/last-known-good payloads.
+            c, r, name, items, trigger, priority, patch, source_url = values[:8]
+            example_enemies, example_text = [], ""
+        else:
+            continue
+        cid = str(c or "").strip()
+        role_value = str(r or "").strip()
+        variant_name = str(name or "").strip()
+        clean_items = [str(x).strip() for x in (items or []) if str(x).strip()]
+        clean_examples = list(dict.fromkeys(
+            str(x).strip() for x in (example_enemies or []) if str(x).strip()
+        ))[:5]
+        # MLBB measured variants may be two non-boot items plus a separately
+        # stored boots slot, or three non-boot core items. Player guides may
+        # contain a complete five non-boot core. Preserve all source-backed
+        # shapes instead of inventing missing items.
+        if (
+            (cid, role_value) not in touched
+            or not variant_name
+            or not str(trigger or "").strip()
+            or len(clean_items) not in {0, 2, 3, 4, 5}
+        ):
+            continue
+        variant_rows.append((
+            cid, role_value, variant_name,
+            json.dumps(clean_items[:5], ensure_ascii=False),
+            str(trigger or ""),
+            json.dumps(clean_examples, ensure_ascii=False),
+            str(example_text or ""),
+            int(priority if priority is not None else 999), source,
+            str(patch or ""), str(source_url or ""),
+        ))
+
+    with connect() as con:
+        for champion_id, role in sorted(touched):
+            con.execute(
+                "DELETE FROM role_builds WHERE source=? AND champion_id=? AND role=?",
+                (source, champion_id, role),
+            )
+            con.execute(
+                "DELETE FROM role_build_variants WHERE source=? AND champion_id=? AND role=?",
+                (source, champion_id, role),
+            )
+            con.execute(
+                "DELETE FROM role_build_situational WHERE source=? AND champion_id=? AND role=?",
+                (source, champion_id, role),
+            )
+            con.execute(
+                "DELETE FROM role_build_boots WHERE source=? AND champion_id=? AND role=?",
+                (source, champion_id, role),
+            )
+            con.execute(
+                "DELETE FROM role_build_opponent_adaptations "
+                "WHERE source=? AND champion_id=? AND role=?",
+                (source, champion_id, role),
+            )
+        con.executemany(
+            """INSERT OR REPLACE INTO role_builds(
+                champion_id,role,items_json,boot_name,source,patch,source_url,updated_at
+            ) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            build_rows,
+        )
+        con.executemany(
+            """INSERT OR REPLACE INTO role_build_variants(
+                champion_id,role,variant_name,items_json,trigger_text,
+                example_enemies_json,example_text,priority,
+                source,patch,source_url,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            variant_rows,
+        )
+        con.executemany(
+            """INSERT OR REPLACE INTO role_build_situational(
+                champion_id,role,item_name,trigger_text,priority,source
+            ) VALUES(?,?,?,?,?,?)""",
+            situational_rows,
+        )
+        con.executemany(
+            """INSERT OR REPLACE INTO role_build_boots(
+                champion_id,role,item_name,trigger_text,priority,source
+            ) VALUES(?,?,?,?,?,?)""",
+            boot_rows,
+        )
+        con.executemany(
+            """INSERT OR REPLACE INTO role_build_opponent_adaptations(
+                champion_id,role,enemy_name,enemy_name_norm,item_name,reason,
+                priority,source
+            ) VALUES(?,?,?,?,?,?,?,?)""",
+            opponent_rows,
+        )
+
+def merge_champion_lanes_from_role_builds(source: str = "mlbb.rone") -> int:
+    """Merge current MLBB champion+role support into champion lane metadata.
+
+    The structured champion feed can lag a new/flex role. A real source build
+    for a champion+role is strong evidence that the champion belongs to that
+    selectable lane, unlike noisy tier/stat rows.
+    """
+    lane_by_role = {
+        "EXP": "exp",
+        "Лес": "jungle",
+        "Мид": "mid",
+        "Голд": "gold",
+        "Роум": "roam",
+    }
+    changed = 0
+    with connect() as con:
+        rows = con.execute(
+            "SELECT DISTINCT champion_id,role FROM role_builds WHERE source=?",
+            (source,),
+        ).fetchall()
+        roles_by_champion: dict[str, set[str]] = {}
+        for row in rows:
+            lane = lane_by_role.get(str(row["role"] or ""))
+            if lane:
+                roles_by_champion.setdefault(str(row["champion_id"]), set()).add(lane)
+
+        for champion_id, source_lanes in roles_by_champion.items():
+            row = con.execute(
+                "SELECT lanes_json FROM champions WHERE id=?", (champion_id,)
+            ).fetchone()
+            if not row:
+                continue
+            try:
+                existing = [str(x) for x in json.loads(row["lanes_json"] or "[]")]
+            except Exception:
+                existing = []
+            merged = list(dict.fromkeys([*existing, *sorted(source_lanes)]))
+            if merged != existing:
+                con.execute(
+                    "UPDATE champions SET lanes_json=? WHERE id=?",
+                    (json.dumps(merged, ensure_ascii=False), champion_id),
+                )
+                changed += 1
+    return changed
+
+def get_role_build(champion_id: str, role: str, source: str = "mlbb.rone") -> Optional[dict]:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM role_builds WHERE champion_id=? AND role=? AND source=?",
+            (champion_id, role, source),
+        ).fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    try:
+        out["items"] = json.loads(out.pop("items_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        out["items"] = []
+        out.pop("items_json", None)
+    return out
+
+def get_role_build_variants(champion_id: str, role: str, source: str = "mlbb.rone") -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            """SELECT variant_name,items_json,trigger_text,example_enemies_json,
+                      example_text,priority,source,patch,source_url
+               FROM role_build_variants
+               WHERE champion_id=? AND role=? AND source=?
+               ORDER BY priority ASC,variant_name""",
+            (champion_id, role, source),
+        ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        data = dict(row)
+        try:
+            data["items"] = json.loads(data.pop("items_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            data["items"] = []
+            data.pop("items_json", None)
+        try:
+            data["example_enemies"] = json.loads(
+                data.pop("example_enemies_json") or "[]"
+            )
+        except (TypeError, json.JSONDecodeError):
+            data["example_enemies"] = []
+            data.pop("example_enemies_json", None)
+        out.append(data)
+    return out
+
+def get_role_build_situational(champion_id: str, role: str, source: str = "mlbb.rone") -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            """SELECT item_name,trigger_text,priority,source FROM role_build_situational
+               WHERE champion_id=? AND role=? AND source=? ORDER BY priority ASC,item_name""",
+            (champion_id, role, source),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+def get_role_build_boots(champion_id: str, role: str, source: str = "mlbb.rone") -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            """SELECT item_name,trigger_text,priority,source FROM role_build_boots
+               WHERE champion_id=? AND role=? AND source=? ORDER BY priority ASC,item_name""",
+            (champion_id, role, source),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+def get_role_build_opponent_adaptations(
+    champion_id: str, role: str, source: str = "mlbb.rone"
+) -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            """SELECT enemy_name,enemy_name_norm,item_name,reason,priority,source
+               FROM role_build_opponent_adaptations
+               WHERE champion_id=? AND role=? AND source=?
+               ORDER BY priority ASC,enemy_name_norm,item_name""",
+            (champion_id, role, source),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+def get_build_page_cache(source: str, patch: str) -> dict[str, dict]:
+    with connect() as con:
+        rows = con.execute(
+            "SELECT champion_id,payload_json,source_url FROM build_page_cache WHERE source=? AND patch=?",
+            (source, patch or ""),
+        ).fetchall()
+    out: dict[str, dict] = {}
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("builds"):
+            payload["_source_url"] = str(row["source_url"] or "")
+            out[str(row["champion_id"])] = payload
+    return out
+
+def upsert_build_page_cache(
+    source: str, patch: str, champion_id: str, payload: dict, source_url: str = ""
+) -> None:
+    raw = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"))
+    with connect() as con:
+        con.execute(
+            """INSERT INTO build_page_cache(source,patch,champion_id,payload_json,source_url,fetched_at)
+               VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(source,patch,champion_id) DO UPDATE SET
+               payload_json=excluded.payload_json, source_url=excluded.source_url,
+               fetched_at=CURRENT_TIMESTAMP""",
+            (source, patch or "", champion_id, raw, source_url or ""),
+        )
+
+def prune_build_page_cache(source: str, keep_patch: str) -> None:
+    with connect() as con:
+        con.execute("DELETE FROM build_page_cache WHERE source=? AND patch<>?", (source, keep_patch or ""))
 
 def replace_source_items(source: str, rows: Iterable[tuple]) -> None:
     """Refresh a source catalog without discarding cached media for unchanged items."""
@@ -301,7 +971,7 @@ def champions() -> list[dict]:
         rows = con.execute("SELECT * FROM champions ORDER BY name COLLATE NOCASE").fetchall()
     out=[]
     for r in rows:
-        d=dict(r); d["roles"]=json.loads(d.pop("roles_json") or "[]"); d["lanes"]=json.loads(d.pop("lanes_json") or "[]"); out.append(d)
+        d=dict(r); d["roles"]=json.loads(d.pop("roles_json") or "[]"); d["lanes"]=json.loads(d.pop("lanes_json") or "[]"); d["specialties"]=json.loads(d.pop("specialties_json", "[]") or "[]"); out.append(d)
     return out
 
 
@@ -421,9 +1091,41 @@ def load_runtime_snapshot() -> dict:
         champion_rows = con.execute("SELECT * FROM champions ORDER BY name COLLATE NOCASE").fetchall()
         alias_rows = con.execute("SELECT champion_id,alias_norm FROM champion_aliases").fetchall()
         matchup_rows = con.execute("SELECT champion_id,enemy_id,role,score FROM matchups").fetchall()
+        matchup_evidence_rows = con.execute(
+            "SELECT champion_id,enemy_id,role,normalized_edge,evidence_type,confidence,"
+            "rank_segment,sample_window,patch,source FROM matchup_evidence"
+        ).fetchall()
+        lane_evidence_rows = con.execute(
+            "SELECT champion_id,lane,evidence_type,source,source_lane_id,rank_segment,"
+            "usage_rate,confidence,patch FROM hero_lane_evidence"
+        ).fetchall()
+        contract_row = con.execute(
+            "SELECT value FROM meta WHERE key='matchup_contract_version'"
+        ).fetchone()
+        matchup_contract_version = str(contract_row[0]) if contract_row else ""
+        trait_rows = con.execute(
+            "SELECT champion_id,trait,confidence,evidence_count,mentions,source,patch "
+            "FROM champion_traits"
+        ).fetchall()
+        tier_rows = con.execute("SELECT champion_id,role,tier,source,patch FROM champion_tiers").fetchall()
         stat_rows = con.execute("SELECT * FROM stats").fetchall()
         pool_rows = con.execute("SELECT champion_id,item_name,category,priority,source FROM item_pools ORDER BY champion_id,priority ASC,item_name").fetchall()
         counter_rows = con.execute("SELECT enemy_id,item_name,reason,source FROM counter_items ORDER BY enemy_id,item_name").fetchall()
+        role_build_rows = con.execute("SELECT * FROM role_builds").fetchall()
+        role_variant_rows = con.execute(
+            "SELECT * FROM role_build_variants ORDER BY champion_id,role,priority,variant_name"
+        ).fetchall()
+        role_situational_rows = con.execute(
+            "SELECT champion_id,role,item_name,trigger_text,priority,source FROM role_build_situational ORDER BY champion_id,role,priority,item_name"
+        ).fetchall()
+        role_boot_rows = con.execute(
+            "SELECT champion_id,role,item_name,trigger_text,priority,source FROM role_build_boots ORDER BY champion_id,role,priority,item_name"
+        ).fetchall()
+        role_opponent_rows = con.execute(
+            "SELECT champion_id,role,enemy_name,enemy_name_norm,item_name,reason,priority,source "
+            "FROM role_build_opponent_adaptations "
+            "ORDER BY champion_id,role,priority,enemy_name_norm,item_name"
+        ).fetchall()
         item_rows = con.execute("SELECT * FROM items").fetchall()
 
     champions_list: list[dict] = []
@@ -432,6 +1134,7 @@ def load_runtime_snapshot() -> dict:
         champ = dict(row)
         champ["roles"] = json.loads(champ.pop("roles_json") or "[]")
         champ["lanes"] = json.loads(champ.pop("lanes_json") or "[]")
+        champ["specialties"] = json.loads(champ.pop("specialties_json", "[]") or "[]")
         champions_list.append(champ)
         champions_by_id[champ["id"]] = champ
 
@@ -452,8 +1155,42 @@ def load_runtime_snapshot() -> dict:
     }
 
     matchups: dict[tuple[str, str], list[tuple[str, float]]] = {}
-    for row in matchup_rows:
-        matchups.setdefault((row["champion_id"], row["enemy_id"]), []).append((row["role"], float(row["score"])))
+    # New API-first evidence uses a source-independent -1..+1 contract.  The
+    # current DraftMatrixEngine still consumes the historical -1.5..+1.5
+    # internal scale, so convert only at this compatibility boundary.  Once the
+    # engine migrates, raw evidence and normalization remain untouched.
+    if matchup_contract_version == "1" and matchup_evidence_rows:
+        preferred = {}
+        for row in matchup_evidence_rows:
+            key = (str(row["champion_id"]), str(row["enemy_id"]), str(row["role"] or ""))
+            rank_bonus = 2 if str(row["rank_segment"] or "") == "all" else 1
+            measured_bonus = 2 if str(row["evidence_type"] or "") == "measured" else 1
+            priority = (rank_bonus, measured_bonus, float(row["confidence"] or 0.0))
+            current = preferred.get(key)
+            if current is None or priority > current[0]:
+                preferred[key] = (priority, row)
+        for (_, _, _), (_, row) in preferred.items():
+            edge = max(-1.0, min(1.0, float(row["normalized_edge"] or 0.0))) * 1.5
+            matchups.setdefault(
+                (str(row["champion_id"]), str(row["enemy_id"])), []
+            ).append((str(row["role"] or ""), edge))
+    else:
+        for row in matchup_rows:
+            matchups.setdefault((row["champion_id"], row["enemy_id"]), []).append((row["role"], float(row["score"])))
+
+    lane_evidence: dict[str, list[dict]] = {}
+    for row in lane_evidence_rows:
+        lane_evidence.setdefault(str(row["champion_id"]), []).append(dict(row))
+
+    champion_traits: dict[str, list[dict]] = {}
+    for row in trait_rows:
+        champion_traits.setdefault(str(row["champion_id"]), []).append(dict(row))
+
+    tiers: dict[tuple[str, str], str] = {}
+    # Prefer MLBBDex/Rone when multiple sources happen to contain the same role.
+    for row in sorted(tier_rows, key=lambda r: 0 if r["source"] in {"mlbb.rone","mlbbdex"} else 1):
+        key = (row["champion_id"], row["role"])
+        tiers.setdefault(key, str(row["tier"] or ""))
 
     stats = {
         (row["champion_id"], row["lane"], row["rank_segment"]): dict(row)
@@ -465,6 +1202,51 @@ def load_runtime_snapshot() -> dict:
     counter_items: dict[str, list[dict]] = {}
     for row in counter_rows:
         counter_items.setdefault(row["enemy_id"], []).append(dict(row))
+
+    role_builds: dict[tuple[str, str], dict] = {}
+    for row in sorted(role_build_rows, key=lambda r: 0 if r["source"] in {"mlbb.rone","mlbbdex"} else 1):
+        key = (row["champion_id"], row["role"])
+        if key in role_builds:
+            continue
+        data = dict(row)
+        try:
+            data["items"] = json.loads(data.pop("items_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            data["items"] = []
+            data.pop("items_json", None)
+        role_builds[key] = data
+
+    role_variants: dict[tuple[str, str], list[dict]] = {}
+    for row in role_variant_rows:
+        data = dict(row)
+        try:
+            data["items"] = json.loads(data.pop("items_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            data["items"] = []
+            data.pop("items_json", None)
+        try:
+            data["example_enemies"] = json.loads(
+                data.pop("example_enemies_json") or "[]"
+            )
+        except (TypeError, json.JSONDecodeError):
+            data["example_enemies"] = []
+            data.pop("example_enemies_json", None)
+        role_variants.setdefault((row["champion_id"], row["role"]), []).append(data)
+
+    role_situational: dict[tuple[str, str], list[dict]] = {}
+    for row in role_situational_rows:
+        role_situational.setdefault((row["champion_id"], row["role"]), []).append(dict(row))
+
+    role_boots: dict[tuple[str, str], list[dict]] = {}
+    for row in role_boot_rows:
+        role_boots.setdefault((row["champion_id"], row["role"]), []).append(dict(row))
+
+    role_opponent_adaptations: dict[tuple[str, str], list[dict]] = {}
+    for row in role_opponent_rows:
+        role_opponent_adaptations.setdefault(
+            (row["champion_id"], row["role"]), []
+        ).append(dict(row))
+
     items = {row["name"]: dict(row) for row in item_rows}
 
     return {
@@ -473,12 +1255,21 @@ def load_runtime_snapshot() -> dict:
         "champion_aliases": champion_aliases,
         "champion_alias_ids": alias_ids,
         "matchups": matchups,
+        "matchup_contract_version": matchup_contract_version,
+        "matchup_evidence": [dict(row) for row in matchup_evidence_rows],
+        "lane_evidence": lane_evidence,
+        "champion_traits": champion_traits,
+        "tiers": tiers,
         "stats": stats,
         "item_pools": item_pools,
         "counter_items": counter_items,
+        "role_builds": role_builds,
+        "role_variants": role_variants,
+        "role_situational": role_situational,
+        "role_boots": role_boots,
+        "role_opponent_adaptations": role_opponent_adaptations,
         "items": items,
     }
-
 
 def resolve_snapshot_champion(snapshot: dict, value: str) -> Optional[dict]:
     """Resolve a champion against an in-memory runtime snapshot."""

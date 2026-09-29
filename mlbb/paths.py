@@ -80,20 +80,58 @@ def _copy_tree_once(source: Path, target: Path) -> None:
             shutil.copy2(item, dst)
 
 
+def _copy_seed_on_fresh_install(seed_db: Path, database: Path) -> None:
+    """Install the immutable APK database only when writable app data is absent."""
+    if not seed_db.is_file():
+        raise FileNotFoundError(f"Bundled database is missing: {seed_db}")
+    if database.exists():
+        return
+    database.parent.mkdir(parents=True, exist_ok=True)
+    tmp = database.with_suffix(database.suffix + ".seed-new")
+    shutil.copy2(seed_db, tmp)
+    tmp.replace(database)
+
+
 def ensure_initial_data() -> Path:
-    """Create writable Android data/cache from the immutable bundled seed."""
+    """Create writable Android data/cache from the immutable bundled seed.
+
+    A clean install copies the exact SQLite database, localization and media
+    shipped inside the APK. Later launches preserve the writable copy so the
+    in-app updater can safely keep newer data.
+    """
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     APP_DIR.mkdir(parents=True, exist_ok=True)
     seed_db = ASSETS_DIR / "data" / "mobilelegends.db"
     database = APP_DIR / "mobilelegends.db"
-    if not database.exists():
-        if not seed_db.is_file():
-            raise FileNotFoundError(f"Bundled database is missing: {seed_db}")
-        shutil.copy2(seed_db, database)
+
+    try:
+        same_db = seed_db.resolve() == database.resolve()
+    except Exception:
+        same_db = False
+    if not same_db:
+        _copy_seed_on_fresh_install(seed_db, database)
+    elif not database.is_file():
+        raise FileNotFoundError(f"Portable database is missing: {database}")
+
     seed_loc = ASSETS_DIR / "data" / "localization_ru.json"
     local_loc = APP_DIR / "localization_ru.json"
     if not local_loc.exists() and seed_loc.is_file():
-        shutil.copy2(seed_loc, local_loc)
-    _copy_tree_once(ASSETS_DIR / "cache", RUNTIME_DIR / "cache")
+        try:
+            same_loc = seed_loc.resolve() == local_loc.resolve()
+        except Exception:
+            same_loc = False
+        if not same_loc:
+            shutil.copy2(seed_loc, local_loc)
+
+    seed_cache = ASSETS_DIR / "cache"
+    runtime_cache = RUNTIME_DIR / "cache"
+    try:
+        same_cache = seed_cache.resolve() == runtime_cache.resolve()
+    except Exception:
+        same_cache = False
+    if not same_cache:
+        _copy_tree_once(seed_cache, runtime_cache)
+
     (RUNTIME_DIR / "logs").mkdir(parents=True, exist_ok=True)
     return APP_DIR
+
