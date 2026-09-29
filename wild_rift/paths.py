@@ -16,8 +16,9 @@ RUNTIME_DIR = Path(os.environ.get("FLET_APP_STORAGE_DATA", str(MODULE_DIR / ".mo
 APP_DIR = RUNTIME_DIR / "data"
 
 
-def bundle_dir(*, module_file=None) -> Path:
+def bundle_dir(**_kwargs) -> Path:
     # On the mobile port bundled resources live in Flet's assets directory.
+    # Accept ignored compatibility kwargs used by desktop launchers.
     return ASSETS_DIR
 
 
