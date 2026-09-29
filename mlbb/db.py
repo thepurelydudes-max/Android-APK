@@ -709,14 +709,15 @@ def replace_source_role_builds_partial(
         clean_examples = list(dict.fromkeys(
             str(x).strip() for x in (example_enemies or []) if str(x).strip()
         ))[:5]
-        # MLBB measured variants legitimately contain three core items, while
-        # player guides may contain a complete five non-boot core. Preserve both
-        # instead of pretending the statistical core is a full six-item build.
+        # MLBB measured variants may be two non-boot items plus a separately
+        # stored boots slot, or three non-boot core items. Player guides may
+        # contain a complete five non-boot core. Preserve all source-backed
+        # shapes instead of inventing missing items.
         if (
             (cid, role_value) not in touched
             or not variant_name
             or not str(trigger or "").strip()
-            or len(clean_items) not in {0, 3, 4, 5}
+            or len(clean_items) not in {0, 2, 3, 4, 5}
         ):
             continue
         variant_rows.append((
