@@ -196,12 +196,12 @@ class EngineTests(unittest.TestCase):
         result = engine.recommend_picks("EXP", [("E1", ""), ("E2", "")], snapshot=snapshot)
         by_id = {row["champion"]["id"]: row for row in result}
 
-        # B wins the pure matchup-sum discovery stage (2.5 > 2.0), so it must
-        # remain inside the qualified pool.  The final table is then allowed to
-        # put A above it because matchup is 60%, not 100%, of the final score.
+        # B wins the literal matchup sum (2.5 > 2.0), so it must stay above A
+        # even though A has the stronger meta score.  Tier/win rate/coverage are
+        # tie-breakers now; they cannot overturn the selected-draft relationship.
         self.assertGreater(by_id["b"]["draft_matchup_sum_pp"], by_id["a"]["draft_matchup_sum_pp"])
-        self.assertEqual(result[0]["champion"]["id"], "a")
         self.assertGreater(by_id["a"]["score"], by_id["b"]["score"])
+        self.assertEqual(result[0]["champion"]["id"], "b")
         self.assertEqual(by_id["b"]["positive"], ["E1"])
     def test_pick_excludes_hero_without_selected_role_build(self):
         items = {
