@@ -60,6 +60,16 @@ jobs:
           repository: ${{ github.repository }}
           run-id: 36425019210
 
+      - name: Download canonical MLCA full seed
+        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: FARLINER-MLBB-APK
+          path: ${{ runner.temp }}/mlca_base_apk
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 36568021148
+
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -91,6 +101,30 @@ jobs:
             test -f mlbb/main.py || { echo "mlbb/main.py is missing."; exit 1; }
             test -d mlbb/assets || { echo "mlbb/assets is missing."; exit 1; }
           fi
+
+      - name: Restore canonical MLCA full role-build seed
+        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "${{ runner.temp }}/mlca_base_apk" -type f -name '*.apk' -print -quit)"
+          test -n "$APK" && test -f "$APK" || { echo "::error::Canonical MLCA APK artifact not found."; exit 1; }
+
+          unzip -p "$APK" assets/app.zip > "${{ runner.temp }}/mlca_base_app.zip"
+          rm -rf "${{ runner.temp }}/mlca_base_app"
+          mkdir -p "${{ runner.temp }}/mlca_base_app"
+          unzip -q "${{ runner.temp }}/mlca_base_app.zip" 'assets/data/mobilelegends.db' -d "${{ runner.temp }}/mlca_base_app"
+          cp "${{ runner.temp }}/mlca_base_app/assets/data/mobilelegends.db" "$GITHUB_WORKSPACE/mlbb/assets/data/mobilelegends.db"
+
+          python - <<'PY'
+          import sqlite3
+          db_path = "mlbb/assets/data/mobilelegends.db"
+          con = sqlite3.connect(db_path)
+          assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+          role_builds = con.execute("SELECT COUNT(*) FROM role_builds").fetchone()[0]
+          assert role_builds >= 160, role_builds
+          print(f"Canonical MLCA bootstrap role builds: {role_builds}")
+          PY
 
       - name: Restore updated 3.7.12 preseed without network refresh
         if: ${{ (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
