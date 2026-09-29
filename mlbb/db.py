@@ -1103,6 +1103,13 @@ def load_runtime_snapshot() -> dict:
             "SELECT value FROM meta WHERE key='matchup_contract_version'"
         ).fetchone()
         matchup_contract_version = str(contract_row[0]) if contract_row else ""
+        scale_row = con.execute(
+            "SELECT value FROM meta WHERE key='matchup_edge_scale_pp_p95'"
+        ).fetchone()
+        try:
+            matchup_edge_scale_pp_p95 = float(scale_row[0]) if scale_row else 0.0
+        except (TypeError, ValueError):
+            matchup_edge_scale_pp_p95 = 0.0
         trait_rows = con.execute(
             "SELECT champion_id,trait,confidence,evidence_count,mentions,source,patch "
             "FROM champion_traits"
@@ -1256,6 +1263,7 @@ def load_runtime_snapshot() -> dict:
         "champion_alias_ids": alias_ids,
         "matchups": matchups,
         "matchup_contract_version": matchup_contract_version,
+        "matchup_edge_scale_pp_p95": matchup_edge_scale_pp_p95,
         "matchup_evidence": [dict(row) for row in matchup_evidence_rows],
         "lane_evidence": lane_evidence,
         "champion_traits": champion_traits,
