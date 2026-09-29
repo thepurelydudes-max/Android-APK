@@ -9,6 +9,10 @@ on:
       - ".github/workflows/test-mlca-parity.yml"
   workflow_dispatch:
 
+concurrency:
+  group: mlca-parity-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
