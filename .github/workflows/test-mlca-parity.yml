@@ -38,7 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           cd mlbb
-          python -m py_compile db.py data_contract.py collect_mlbb_snapshot.py draft_matrix_engine.py engine.py sources.py updater.py main.py prepare_bundled_seed.py
+          python -m py_compile db.py data_contract.py moonton_gms.py collect_mlbb_snapshot.py draft_matrix_engine.py engine.py sources.py updater.py main.py prepare_bundled_seed.py
           python -m unittest -v test_regressions.py test_data_contract.py
 
       - name: Collect API-first diagnostic snapshot
