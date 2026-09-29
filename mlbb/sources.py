@@ -516,8 +516,8 @@ def fetch_mlbb_patch_info(net: Net) -> tuple[str, str]:
 RONE_PUBLIC_HEROES = f"{RONE_BASE}/heroes"
 RONE_HERO_RANK = f"{RONE_BASE}/heroes/rank"
 RONE_ACADEMY_RECOMMENDED = f"{RONE_BASE}/academy/recommended"
-RONE_HERO_COUNTERS = f"{RONE_BASE}/heroes/{hero_id}/counters"
-RONE_ACADEMY_HERO_BUILDS = f"{RONE_BASE}/academy/heroes/{hero_id}/builds"
+RONE_HERO_COUNTERS = RONE_BASE + "/heroes/{hero_id}/counters"
+RONE_ACADEMY_HERO_BUILDS = RONE_BASE + "/academy/heroes/{hero_id}/builds"
 
 
 def _id_list(value) -> list[str]:
