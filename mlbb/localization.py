@@ -86,6 +86,17 @@ RUSSIAN_ITEM_NAMES: dict[str, str] = {
     "Swift Boots": "Сапоги скорости",
     "Tough Boots": "Прочные сапоги",
     "Warrior Boots": "Сапоги воина",
+    "Demon Boots": "Демонические ботинки",
+    "Magic Boots": "Магические ботинки",
+    "Ares Belt": "Пояс Ареса",
+    "Dreadnaught Armor": "Броня дредноута",
+    "Legion Sword": "Меч легиона",
+    "Magic Potion": "Магическое зелье",
+    "Magic Wand": "Магический жезл",
+    "Regular Spear": "Обычное копьё",
+    "Resonating Heart": "Резонирующее сердце",
+    "Rogue Meteor": "Метеор разбойника",
+    "Throw Forbidden": "Запретный бросок",
 }
 
 _RUSSIAN_ITEM_NAMES_BY_NORM = {
@@ -93,9 +104,49 @@ _RUSSIAN_ITEM_NAMES_BY_NORM = {
 }
 
 
+_ROAM_BLESSING_RU = {
+    "conceal": "Сокрытие",
+    "dire hit": "Смертельный удар",
+    "encourage": "Воодушевление",
+    "favor": "Благоволение",
+}
+
+_HUNTER_BLESSING_RU = {
+    "flame hunter's ": "Огненный охотник",
+    "ice hunter's ": "Ледяной охотник",
+    "behemoth hunter's ": "Охотник на чудовищ",
+}
+
+
 def russian_item_name(english_name: str) -> str:
     """Return a stable Russian display name for an English canonical item name."""
-    return _RUSSIAN_ITEM_NAMES_BY_NORM.get(normalize_search(english_name), "")
+    english_name = str(english_name or "").strip()
+    direct = _RUSSIAN_ITEM_NAMES_BY_NORM.get(normalize_search(english_name), "")
+    if direct:
+        return direct
+
+    # Roam blessings are represented by the API as distinct equipment names,
+    # e.g. "Tough Boots - Favor". Keep the canonical base translation and
+    # localize only the blessing suffix.
+    if " - " in english_name:
+        base, suffix = english_name.rsplit(" - ", 1)
+        base_ru = russian_item_name(base)
+        suffix_ru = _ROAM_BLESSING_RU.get(suffix.casefold().strip(), "")
+        if base_ru and suffix_ru:
+            return f"{base_ru} — {suffix_ru}"
+
+    # Jungle blessings are encoded as a prefix, e.g.
+    # "Flame Hunter's Arcane Boots". Present them as a readable localized
+    # blessing attached to the translated boots name.
+    folded = english_name.casefold()
+    for prefix, blessing_ru in _HUNTER_BLESSING_RU.items():
+        if folded.startswith(prefix):
+            base = english_name[len(prefix):].strip()
+            base_ru = russian_item_name(base)
+            if base_ru:
+                return f"{base_ru} — {blessing_ru}"
+
+    return ""
 
 
 def russian_hero_name(hero_id: str, english_name: str = "") -> str:
