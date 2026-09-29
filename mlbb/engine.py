@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 import re
-import statistics
 
 import db
 from draft_matrix_engine import DraftEdge, DraftMatrixEngine
