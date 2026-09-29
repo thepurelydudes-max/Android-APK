@@ -29,11 +29,39 @@ class Net:
         self.s.headers.update(HEADERS)
 
     def get(self, url: str, headers: dict | None = None, allow_not_modified: bool = False) -> requests.Response:
-        response = self.s.get(url, timeout=self.timeout, headers=headers or None)
-        if not (allow_not_modified and response.status_code == 304):
-            response.raise_for_status()
-        time.sleep(self.delay)
-        return response
+        last_error: Exception | None = None
+        for attempt in range(5):
+            try:
+                response = self.s.get(url, timeout=self.timeout, headers=headers or None)
+                if allow_not_modified and response.status_code == 304:
+                    time.sleep(self.delay)
+                    return response
+                if response.status_code not in {429, 500, 502, 503, 504}:
+                    response.raise_for_status()
+                    time.sleep(self.delay)
+                    return response
+
+                retry_after = response.headers.get("Retry-After", "").strip()
+                try:
+                    server_delay = float(retry_after) if retry_after else 0.0
+                except ValueError:
+                    server_delay = 0.0
+                backoff = max(server_delay, min(8.0, 0.75 * (2 ** attempt)))
+                last_error = requests.HTTPError(
+                    f"{response.status_code} from {url}", response=response
+                )
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_error = exc
+                backoff = min(8.0, 0.75 * (2 ** attempt))
+
+            if attempt < 4:
+                time.sleep(backoff + self.delay)
+                continue
+            if isinstance(last_error, requests.HTTPError) and last_error.response is not None:
+                last_error.response.raise_for_status()
+            raise last_error or RuntimeError(f"GET failed: {url}")
+
+        raise RuntimeError(f"GET failed: {url}")
 
 
 def clean(value: str) -> str:
