@@ -40,31 +40,7 @@ DRAFT_MATRIX = DraftMatrixEngine()
 MATCHUP_ABS_MAX = 1.5
 HARD_MATCHUP_THRESHOLD = MATCHUP_ABS_MAX * (2.0 / 3.0)
 
-# A matchup must improve the candidate's win rate by at least +2 percentage
-# points before the UI calls it a real counter. Smaller positive/negative edges
-# still participate fully in the recommendation score.
-COUNTER_LABEL_THRESHOLD_PP = 2.0
 DEFAULT_MATCHUP_SCALE_PP_P95 = 2.5
-
-
-def _counter_label_threshold(snapshot: dict | None = None) -> float:
-    scale_pp = 0.0
-    if snapshot is not None:
-        try:
-            scale_pp = float(snapshot.get("matchup_edge_scale_pp_p95") or 0.0)
-        except (TypeError, ValueError):
-            scale_pp = 0.0
-    else:
-        try:
-            scale_pp = float(db.get_meta("matchup_edge_scale_pp_p95", "") or 0.0)
-        except (TypeError, ValueError):
-            scale_pp = 0.0
-    if scale_pp <= 0:
-        scale_pp = DEFAULT_MATCHUP_SCALE_PP_P95
-    return max(
-        0.0,
-        min(MATCHUP_ABS_MAX, (COUNTER_LABEL_THRESHOLD_PP / scale_pp) * MATCHUP_ABS_MAX),
-    )
 
 
 def _dominant_matchup_targets(edges: list[DraftEdge], *, positive: bool = True) -> tuple[list[str], dict[str, float]]:
@@ -505,10 +481,20 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
         lane_hard_loss = any(
             edge <= -HARD_MATCHUP_THRESHOLD for edge in analysis["direct_lane_edges"]
         )
-        draft_matchup_sum = sum(float(row.edge) for row in matrix_edges)
-        draft_matchup_avg = draft_matchup_sum / len(matrix_edges) if matrix_edges else 0.0
+        draft_matchup_sum_pp = sum(float(row.edge) for row in raw_edges)
+        draft_matchup_avg_pp = (
+            draft_matchup_sum_pp / len(raw_edges) if raw_edges else 0.0
+        )
+        try:
+            score_scale_pp = float(
+                (snapshot or {}).get("matchup_edge_scale_pp_p95")
+                or DEFAULT_MATCHUP_SCALE_PP_P95
+            )
+        except (TypeError, ValueError):
+            score_scale_pp = DEFAULT_MATCHUP_SCALE_PP_P95
+        score_scale_pp = max(0.5, score_scale_pp)
         draft_matchup_score = 50.0 + 50.0 * max(
-            -1.0, min(1.0, draft_matchup_avg / MATCHUP_ABS_MAX)
+            -1.0, min(1.0, draft_matchup_avg_pp / score_scale_pp)
         )
 
         out.append({
@@ -517,9 +503,9 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             # the selected enemies. Lane weighting and meta remain tie-breakers.
             "score": draft_matchup_score,
             "meta_score": components["score"],
-            "draft_matchup_sum": draft_matchup_sum,
-            "draft_matchup_sum_pp": draft_matchup_sum,
-            "draft_matchup_avg_pp": draft_matchup_avg,
+            "draft_matchup_sum": draft_matchup_sum_pp,
+            "draft_matchup_sum_pp": draft_matchup_sum_pp,
+            "draft_matchup_avg_pp": draft_matchup_avg_pp,
             "matchup_raw_row": [
                 {
                     "enemy_id": row.enemy_id,
