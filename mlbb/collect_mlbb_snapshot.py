@@ -19,8 +19,11 @@ from sources import (
     Net,
     RONE_PUBLIC_HEROES,
     RONE_HERO_RANK,
+    RONE_EQUIPMENT_EXPANDED,
     parse_rone_public_heroes,
     parse_rone_rank_payload,
+    parse_rone_equipment,
+    parse_rone_build_variants,
 )
 
 RONE_ACADEMY_HERO_LANE = "https://arena.rone.dev/api/academy/heroes/{hero_id}/lane"
@@ -169,7 +172,7 @@ def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
     except Exception as exc:
         emit(f"rank stats warning: {exc}")
 
-    emit("3/4 lane assignments + raw matchup evidence")
+    emit("3/5 lane assignments + raw matchup evidence")
     lanes: list[LaneEvidence] = []
     matchups: list[MatchupEvidence] = []
     errors: list[str] = []
@@ -197,7 +200,49 @@ def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
         except Exception as exc:
             errors.append(f"counter {champion_id}: {exc}")
 
-    emit("4/4 normalize")
+    emit("4/5 items + exact lane build coverage")
+    equipment_by_id: dict[int, str] = {}
+    try:
+        item_payload = net.get(
+            f"{RONE_EQUIPMENT_EXPANDED}?size=300&index=1&lang=en"
+        ).json()
+        items, equipment_by_id = parse_rone_equipment(item_payload)
+    except Exception as exc:
+        items = []
+        errors.append(f"equipment: {exc}")
+
+    supported_lanes = choose_supported_lanes(lanes)
+    build_coverage: list[dict] = []
+    if equipment_by_id:
+        for index, (champion_id, hero_lanes) in enumerate(supported_lanes.items(), 1):
+            if index == 1 or index % 20 == 0 or index == len(supported_lanes):
+                emit(f"build coverage {index}/{len(supported_lanes)}")
+            for lane in hero_lanes:
+                url = (
+                    "https://arena.rone.dev/api/academy/heroes/"
+                    f"{champion_id}/builds?rank={rank}&lane={lane}&size=100&index=1&lang=en"
+                )
+                try:
+                    variants = parse_rone_build_variants(net.get(url).json(), equipment_by_id)
+                except Exception as exc:
+                    variants = []
+                    errors.append(f"build {champion_id}/{lane}: {exc}")
+                lengths = [
+                    len(list(row.get("items") or []))
+                    for row in variants
+                    if isinstance(row, dict)
+                ]
+                build_coverage.append({
+                    "champion_id": champion_id,
+                    "lane": lane,
+                    "variant_count": len(variants),
+                    "max_item_count": max(lengths, default=0),
+                    "has_measured_core": any(length >= 3 for length in lengths),
+                    "has_full_six": any(length >= 6 for length in lengths),
+                    "source_url": url,
+                })
+
+    emit("5/5 normalize")
     # Deduplicate evidence collected from both sides of the same pair.
     dedup: dict[tuple[str, str, str, str], MatchupEvidence] = {}
     for row in matchups:
@@ -206,7 +251,6 @@ def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
         if previous is None or abs(row.raw_edge) > abs(previous.raw_edge):
             dedup[key] = row
     normalized, edge_scale_pp = normalize_matchup_evidence(dedup.values())
-    supported_lanes = choose_supported_lanes(lanes)
 
     lane_counts = {lane: 0 for lane in CANONICAL_LANES}
     for values in supported_lanes.values():
@@ -228,6 +272,11 @@ def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
             "rank_rows": len(rank_rows),
             "lane_evidence": len(lanes),
             "supported_hero_lanes": sum(len(v) for v in supported_lanes.values()),
+            "items": len(items),
+            "exact_lane_build_rows": len(build_coverage),
+            "exact_lane_builds_with_core": sum(1 for row in build_coverage if row["has_measured_core"]),
+            "exact_lane_builds_missing": sum(1 for row in build_coverage if not row["has_measured_core"]),
+            "exact_lane_full_six": sum(1 for row in build_coverage if row["has_full_six"]),
             "matchup_evidence": len(normalized),
             "errors": len(errors),
         },
@@ -245,6 +294,12 @@ def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
         ],
         "rank_stats": rank_rows,
         "lane_evidence": [row.to_dict() for row in lanes],
+        "build_coverage": build_coverage,
+        "missing_exact_lane_builds": [
+            f"{row['champion_id']}:{row['lane']}"
+            for row in build_coverage
+            if not row["has_measured_core"]
+        ],
         "matchup_evidence": [row.to_dict() for row in normalized],
         "errors": errors,
     }
