@@ -403,11 +403,18 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Read MLCA version
+        id: mlca_version
+        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        shell: bash
+        run: |
+          echo "version=$(tr -d '[:space:]' < mlbb/VERSION.txt)" >> "$GITHUB_OUTPUT"
+
       - name: Upload MLBB APK
         if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
         uses: actions/upload-artifact@v4
         with:
-          name: FARLINER-MLBB-APK
+          name: MLCA-${{ steps.mlca_version.outputs.version }}-APK
           path: apk_output/mlbb/
           if-no-files-found: error
           retention-days: 14
