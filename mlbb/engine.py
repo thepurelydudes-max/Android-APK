@@ -65,6 +65,26 @@ def _counter_label_threshold(snapshot: dict | None = None) -> float:
         min(MATCHUP_ABS_MAX, (COUNTER_LABEL_THRESHOLD_PP / scale_pp) * MATCHUP_ABS_MAX),
     )
 
+
+def _adaptive_counter_threshold(
+    best_edges: list[float],
+    target_count: int,
+    strict_threshold: float,
+) -> float:
+    """Use the strongest threshold that still leaves enough counter candidates."""
+    positives = sorted(
+        (float(edge) for edge in best_edges if float(edge) > 0.0),
+        reverse=True,
+    )
+    if target_count <= 0 or not positives:
+        return max(0.0, float(strict_threshold))
+    if len(positives) < target_count:
+        return 0.0
+    return max(
+        0.0,
+        min(float(strict_threshold), positives[target_count - 1]),
+    )
+
 ITEM_TAGS = {
     "Dominance Ice": {"anti_heal", "anti_shield", "anti_physical", "anti_magic", "defense", "tank", "universal"},
     "Sea Halberd": {"anti_heal", "physical", "marksman", "fighter", "assassin"},
@@ -337,7 +357,7 @@ def _has_valid_role_build(champion_id: str, role_ru: str, snapshot: dict | None 
 
 
 def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
-    """Rank MLBB heroes using the same draft-matrix model as WRCA."""
+    """Rank role-valid MLBB counter candidates against the whole enemy draft."""
     raw_enemy_objs: list[tuple[dict, str]] = []
     for name, enemy_role in enemies:
         champ = _find_champ(name, snapshot)
@@ -370,7 +390,7 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             except (TypeError, ValueError):
                 pass
 
-    out: list[dict] = []
+    staged: list[tuple[dict, str, dict | None, list[DraftEdge], float]] = []
     for cand, tier, st in candidate_rows:
         matrix_edges: list[DraftEdge] = []
         for enemy, inferred_role in enemy_objs:
@@ -382,9 +402,32 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
                 edge=edge,
                 weight=DRAFT_MATRIX.lane_weight(role_ru, inferred_role),
             ))
+        best_edge = max((row.edge for row in matrix_edges), default=0.0)
+        staged.append((cand, tier, st, matrix_edges, best_edge))
+
+    target_count = min(max(0, int(limit)), len(staged))
+    strict_counter_threshold = _counter_label_threshold(snapshot)
+    adaptive_counter_threshold = _adaptive_counter_threshold(
+        [row[4] for row in staged],
+        target_count,
+        strict_counter_threshold,
+    )
+
+    positive_staged = [row for row in staged if row[4] > 0.0]
+    if len(positive_staged) >= target_count and target_count > 0:
+        eligible_staged = [
+            row for row in positive_staged
+            if row[4] >= adaptive_counter_threshold
+        ]
+    else:
+        eligible_staged = positive_staged
+
+    out: list[dict] = []
+    for cand, tier, st, matrix_edges, best_edge in eligible_staged:
         analysis = DRAFT_MATRIX.analyze_row(
             matrix_edges,
-            counter_threshold=_counter_label_threshold(snapshot),
+            counter_threshold=adaptive_counter_threshold,
+            threat_threshold=strict_counter_threshold,
         )
 
         wr = None
@@ -429,6 +472,9 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             "lane_hard_loss": lane_hard_loss,
             "enemy_roles": analysis["enemy_roles"],
             "matrix_row": analysis["matrix_row"],
+            "best_counter_edge": best_edge,
+            "counter_threshold": adaptive_counter_threshold,
+            "strict_counter_threshold": strict_counter_threshold,
         })
 
     out.sort(
@@ -445,7 +491,6 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
         reverse=True,
     )
     return out[:limit]
-
 
 def _generic_threat_tags(enemy: dict) -> set[str]:
     roles = {str(x).casefold() for x in enemy.get("roles", [])}
