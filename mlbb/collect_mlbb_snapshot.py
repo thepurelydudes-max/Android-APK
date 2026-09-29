@@ -110,11 +110,11 @@ def parse_counter_evidence(
     rank_segment: str,
     source: str = "rone.academy",
 ) -> list[MatchupEvidence]:
-    """Fallback parser when the direct GMS source is unavailable.
+    """Fallback parser for signed Academy counter evidence.
 
-    Rone Academy already signs increase_win_rate. Keep that signed value exactly
-    as candidate->target evidence and never synthesize the reverse direction;
-    the collector fetches each target hero independently.
+    Rone's increase_win_rate already carries direction. Preserve that signed
+    measurement exactly and do not synthesize a reverse row; the reverse
+    target is collected from its own hero page.
     """
     edges: dict[tuple[str, str], MatchupEvidence] = {}
     for record in _records(payload):
@@ -135,7 +135,7 @@ def parse_counter_evidence(
                     continue
                 if edge == 0:
                     continue
-                evidence = MatchupEvidence(
+                item = MatchupEvidence(
                     champion_id=candidate,
                     enemy_id=resolved_target,
                     raw_edge=edge,
@@ -147,8 +147,8 @@ def parse_counter_evidence(
                     confidence=1.0,
                 )
                 old = edges.get((candidate, resolved_target))
-                if old is None or abs(evidence.raw_edge) > abs(old.raw_edge):
-                    edges[(candidate, resolved_target)] = evidence
+                if old is None or abs(item.raw_edge) > abs(old.raw_edge):
+                    edges[(candidate, resolved_target)] = item
     return list(edges.values())
 
 def fetch_patch(net: Net) -> str:
