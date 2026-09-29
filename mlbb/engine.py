@@ -53,7 +53,7 @@ def _counter_label_threshold(snapshot: dict | None = None) -> float:
             scale_pp = float(snapshot.get("matchup_edge_scale_pp_p95") or 0.0)
         except (TypeError, ValueError):
             scale_pp = 0.0
-    if scale_pp <= 0:
+    else:
         try:
             scale_pp = float(db.get_meta("matchup_edge_scale_pp_p95", "") or 0.0)
         except (TypeError, ValueError):
