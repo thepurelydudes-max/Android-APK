@@ -51,6 +51,37 @@ def _audit() -> dict:
             (str(row[0]), str(row[1]))
             for row in con.execute("SELECT champion_id,role FROM role_builds").fetchall()
         }
+        evidence_rows = [
+            (str(row[0]), str(row[1]), float(row[2]))
+            for row in con.execute(
+                "SELECT champion_id,enemy_id,raw_edge FROM matchup_evidence"
+            ).fetchall()
+        ]
+
+    evidence_by_pair = {(a, b): edge for a, b, edge in evidence_rows}
+    mirror_checked = 0
+    exact_inverse = 0
+    magnitude_residual_sum = 0.0
+    seen_pairs = set()
+    for (a, b), edge in evidence_by_pair.items():
+        pair = tuple(sorted((a, b)))
+        if pair in seen_pairs:
+            continue
+        reverse = evidence_by_pair.get((b, a))
+        if reverse is None:
+            continue
+        seen_pairs.add(pair)
+        mirror_checked += 1
+        residual = abs(abs(edge) - abs(reverse))
+        magnitude_residual_sum += residual
+        if edge * reverse < 0 and residual < 1e-12:
+            exact_inverse += 1
+    mirror_inverse_ratio = (
+        exact_inverse / mirror_checked if mirror_checked else 0.0
+    )
+    mirror_mean_residual = (
+        magnitude_residual_sum / mirror_checked if mirror_checked else 0.0
+    )
 
     missing_en = [row["id"] for row in champions if not str(row.get("name") or "").strip()]
     missing_ru = [row["id"] for row in champions if not str(row.get("name_ru") or "").strip()]
@@ -107,6 +138,9 @@ def _audit() -> dict:
         "expected_role_builds": len(expected_builds),
         "missing_role_builds": missing_role_builds,
         "role_build_distribution": role_distribution,
+        "matchup_bidirectional_pairs": mirror_checked,
+        "matchup_exact_inverse_ratio": mirror_inverse_ratio,
+        "matchup_mean_magnitude_residual": mirror_mean_residual,
     }
 
     print(json.dumps({"seed_audit_preview": audit}, ensure_ascii=False, indent=2), flush=True)
@@ -119,6 +153,16 @@ def _audit() -> dict:
         raise RuntimeError(f"Too few finished MLBB items in bundled seed: {counts['items']}")
     if counts["matchups"] < 2500:
         raise RuntimeError(f"Too few MLBB matchup rows in bundled seed: {counts['matchups']}")
+    if (
+        mirror_checked >= 100
+        and mirror_inverse_ratio > 0.98
+        and mirror_mean_residual < 1e-10
+    ):
+        raise RuntimeError(
+            "MLBB matchup matrix looks synthetically mirrored instead of independently measured: "
+            f"inverse_ratio={mirror_inverse_ratio:.4f}, "
+            f"mean_residual={mirror_mean_residual:.12f}"
+        )
     expected_by_role = {}
     for _cid, role in expected_builds:
         expected_by_role[role] = expected_by_role.get(role, 0) + 1
