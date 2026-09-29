@@ -110,14 +110,19 @@ def parse_counter_evidence(
     rank_segment: str,
     source: str = "rone.academy",
 ) -> list[MatchupEvidence]:
-    """Fallback parser when the direct GMS source is unavailable."""
+    """Fallback parser when the direct GMS source is unavailable.
+
+    Rone Academy already signs increase_win_rate. Keep that signed value exactly
+    as candidate->target evidence and never synthesize the reverse direction;
+    the collector fetches each target hero independently.
+    """
     edges: dict[tuple[str, str], MatchupEvidence] = {}
     for record in _records(payload):
         row = _row_data(record)
         resolved_target = canonical_hero_id(row.get("main_heroid") or row.get("heroid") or target_id)
         if not resolved_target:
             continue
-        for key, sign in (("sub_hero", 1.0), ("sub_hero_last", -1.0)):
+        for key in ("sub_hero", "sub_hero_last"):
             for sub in row.get(key) or []:
                 if not isinstance(sub, dict):
                     continue
@@ -125,13 +130,12 @@ def parse_counter_evidence(
                 if not candidate or candidate == resolved_target:
                     continue
                 try:
-                    delta = abs(float(sub.get("increase_win_rate") or 0.0))
+                    edge = float(sub.get("increase_win_rate") or 0.0)
                 except (TypeError, ValueError):
                     continue
-                if delta <= 0:
+                if edge == 0:
                     continue
-                edge = sign * delta
-                edges[(candidate, resolved_target)] = MatchupEvidence(
+                evidence = MatchupEvidence(
                     champion_id=candidate,
                     enemy_id=resolved_target,
                     raw_edge=edge,
@@ -142,19 +146,10 @@ def parse_counter_evidence(
                     sample_window="academy-current",
                     confidence=1.0,
                 )
-                edges[(resolved_target, candidate)] = MatchupEvidence(
-                    champion_id=resolved_target,
-                    enemy_id=candidate,
-                    raw_edge=-edge,
-                    raw_unit="fraction",
-                    source=source,
-                    evidence_type=f"measured:reverse:{key}",
-                    rank_segment=rank_segment,
-                    sample_window="academy-current",
-                    confidence=0.95,
-                )
+                old = edges.get((candidate, resolved_target))
+                if old is None or abs(evidence.raw_edge) > abs(old.raw_edge):
+                    edges[(candidate, resolved_target)] = evidence
     return list(edges.values())
-
 
 def fetch_patch(net: Net) -> str:
     try:
