@@ -580,55 +580,33 @@ class RecommendationRegressionTests(unittest.TestCase):
             sorted((row["score"] for row in results), reverse=True),
         )
 
-    def test_missing_role_build_falls_back_to_existing_champion_item_pool(self):
+    def test_missing_role_build_is_not_recommended_and_direct_build_refuses_fallback(self):
         champions = [
             {"id": "Malphite", "name": "Malphite", "name_ru": "Мальфит", "roles": ["Tank"], "lanes": ["top"], "damage_type": "Magic"},
             {"id": "Irelia", "name": "Irelia", "name_ru": "Ирелия", "roles": ["Fighter"], "lanes": ["top"], "damage_type": "Physical"},
         ]
-        names = [
-            "Randuin's Omen",
-            "Thornmail",
-            "Sunfire Aegis",
-            "Radiant Virtue",
-            "Amaranth's Twinguard",
-            "Plated Steelcaps",
-        ]
-        items = {
-            name: {
-                "name": name,
-                "category": "Boots" if name == "Plated Steelcaps" else "Defense",
-                "tier": "Upgraded",
-                "stats_json": "[]",
-                "effect_en": "",
-            }
-            for name in names
-        }
-        item_pools = {
-            "Malphite": [
-                {
-                    "champion_id": "Malphite",
-                    "item_name": name,
-                    "category": "Boots" if name == "Plated Steelcaps" else "Defense",
-                    "priority": index + 1,
-                    "source": "wrpocket.app",
-                }
-                for index, name in enumerate(names)
-            ]
-        }
         snapshot = make_snapshot(
             champions,
-            matchups={("Malphite", "Irelia"): [("Барон", 1.0)]},
-            items=items,
-            item_pools=item_pools,
+            matchups={("Malphite", "Irelia"): [("Барон", 3.0)]},
         )
 
-        build = engine.recommend_build(
-            "Malphite", [("Irelia", "Барон")], role_ru="Барон", snapshot=snapshot
+        picks = engine.recommend_picks(
+            "Барон", [("Irelia", "Барон")], limit=8, snapshot=snapshot
         )
-        self.assertTrue(build.get("fallback_used"))
-        self.assertEqual(build.get("source"), "wrpocket.app:fallback")
-        self.assertGreaterEqual(len(build.get("ordered") or []), 5)
-        self.assertIn("Plated Steelcaps", build.get("ordered") or [])
+        self.assertNotIn(
+            "Malphite",
+            [row["champion"]["id"] for row in picks],
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "нет полноценной сборки WildRiftCore"
+        ):
+            engine.recommend_build(
+                "Malphite",
+                [("Irelia", "Барон")],
+                role_ru="Барон",
+                snapshot=snapshot,
+            )
 
     def test_healthy_role_build_remains_preferred_over_fallback(self):
         champions = [
