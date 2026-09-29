@@ -554,6 +554,32 @@ class RecommendationRegressionTests(unittest.TestCase):
             {"id": "Jax", "name": "Jax", "name_ru": "Джакс", "roles": ["Fighter"], "lanes": ["top"], "damage_type": "Physical"},
             {"id": "Irelia", "name": "Irelia", "name_ru": "Ирелия", "roles": ["Fighter"], "lanes": ["top"], "damage_type": "Physical"},
         ]
+        core = [
+            "Randuin's Omen", "Thornmail", "Sunfire Aegis",
+            "Radiant Virtue", "Amaranth's Twinguard",
+        ]
+        boot = "Plated Steelcaps"
+        items = {
+            name: {
+                "name": name,
+                "category": "Boots" if name == boot else "Defense",
+                "tier": "Upgraded",
+                "stats_json": "[]",
+                "effect_en": "",
+            }
+            for name in core + [boot]
+        }
+        role_builds = {
+            (cid, "Барон"): {
+                "champion_id": cid,
+                "role": "Барон",
+                "items": core,
+                "boot_name": boot,
+                "source": "wildriftcore.com",
+                "source_url": f"https://example.invalid/{cid}/builds",
+            }
+            for cid in ("Malphite", "Jax")
+        }
         snapshot = make_snapshot(
             champions,
             matchups={
@@ -568,6 +594,8 @@ class RecommendationRegressionTests(unittest.TestCase):
                 ("Malphite", "top", "all"): {"win_rate": 60.0, "pick_rate": 5.0},
                 ("Jax", "top", "all"): {"win_rate": 48.0, "pick_rate": 5.0},
             },
+            items=items,
+            role_builds=role_builds,
         )
 
         results = engine.recommend_picks(
@@ -620,6 +648,14 @@ class RecommendationRegressionTests(unittest.TestCase):
             matchups={("Malphite", "Irelia"): [("Барон", 1.0)]},
             items=items,
             item_pools=item_pools,
+        )
+
+        picks = engine.recommend_picks(
+            "Барон", [("Irelia", "Барон")], limit=8, snapshot=snapshot
+        )
+        self.assertNotIn(
+            "Malphite",
+            [row["champion"]["id"] for row in picks],
         )
 
         with self.assertRaisesRegex(ValueError, "WildRiftCore"):
