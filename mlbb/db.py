@@ -617,15 +617,14 @@ def replace_source_role_builds_partial(
         clean_examples = list(dict.fromkeys(
             str(x).strip() for x in (example_enemies or []) if str(x).strip()
         ))[:5]
-        # MLBB sources may expose only the variant name + "When to pick it"
-        # while keeping its separate five-item row client-side/private. Store
-        # those metadata-only variants as [] so the engine can still select the
-        # correct strategy and safely retain the known Standard core.
+        # MLBB measured variants legitimately contain three core items, while
+        # player guides may contain a complete five non-boot core. Preserve both
+        # instead of pretending the statistical core is a full six-item build.
         if (
             (cid, role_value) not in touched
             or not variant_name
             or not str(trigger or "").strip()
-            or len(clean_items) not in {0, 5}
+            or len(clean_items) not in {0, 3, 4, 5}
         ):
             continue
         variant_rows.append((
