@@ -89,6 +89,13 @@ def _audit() -> dict:
         f"{cid}:{role}" for cid, role in (expected_builds - build_keys)
     )
 
+    role_distribution = {}
+    with db.connect() as con:
+        for row in con.execute(
+            "SELECT role, COUNT(*) AS cnt FROM role_builds GROUP BY role ORDER BY role"
+        ).fetchall():
+            role_distribution[str(row["role"])] = int(row["cnt"])
+
     audit = {
         "quick_check": quick_check,
         **counts,
@@ -99,7 +106,10 @@ def _audit() -> dict:
         "item_icons_missing": missing_item_icons,
         "expected_role_builds": len(expected_builds),
         "missing_role_builds": missing_role_builds,
+        "role_build_distribution": role_distribution,
     }
+
+    print(json.dumps({"seed_audit_preview": audit}, ensure_ascii=False, indent=2), flush=True)
 
     if quick_check != "ok":
         raise RuntimeError(f"SQLite quick_check failed: {quick_check}")
