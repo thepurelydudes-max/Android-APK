@@ -283,6 +283,28 @@ def _counter_items(enemy_id: str, snapshot: dict | None = None) -> list[dict]:
     return [row for row in rows if _finished_item(row.get("item_name", ""), snapshot)]
 
 
+def _role_build_row(champion_id: str, role_ru: str, snapshot: dict | None = None) -> dict | None:
+    if not role_ru:
+        return None
+    if snapshot is not None:
+        row = snapshot.get("role_builds", {}).get((champion_id, role_ru))
+        return dict(row) if row else None
+    return db.get_role_build(champion_id, role_ru, "mlbb.rone")
+
+
+def _has_valid_role_build(champion_id: str, role_ru: str, snapshot: dict | None = None) -> bool:
+    """A hero may be recommended for a lane only with a real downloaded lane core."""
+    row = _role_build_row(champion_id, role_ru, snapshot)
+    if not row:
+        return False
+    items = [
+        str(name) for name in (row.get("items") or [])
+        if str(name).strip() and _finished_item(str(name), snapshot)
+    ]
+    # Academy measured builds legitimately expose a three-item statistical core.
+    return len(items) >= 3
+
+
 def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
     """Rank MLBB heroes using the same draft-matrix model as WRCA."""
     raw_enemy_objs: list[tuple[dict, str]] = []
@@ -300,6 +322,8 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
     candidate_rows: list[tuple[dict, str, dict | None]] = []
     for cand in (snapshot.get("champions", []) if snapshot is not None else db.champions()):
         if cand.get("id") in enemy_ids:
+            continue
+        if not _has_valid_role_build(str(cand.get("id") or ""), role_ru, snapshot):
             continue
         tier = _tier(cand.get("id", ""), role_ru, snapshot)
         st = _stat(cand.get("id", ""), stat_lane, "all", snapshot) if stat_lane else None
@@ -546,7 +570,7 @@ def recommend_build(
     role_boots: list[dict] = []
     if role_ru:
         if snapshot is not None:
-            role_build = snapshot.get("role_builds", {}).get((cid, role_ru))
+            role_build = _role_build_row(cid, role_ru, snapshot)
             role_situational = list(snapshot.get("role_situational", {}).get((cid, role_ru), []))
             role_boots = list(snapshot.get("role_boots", {}).get((cid, role_ru), []))
         else:
