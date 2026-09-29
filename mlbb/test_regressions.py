@@ -27,6 +27,23 @@ class DraftMatrixTests(unittest.TestCase):
         ])
         self.assertAlmostEqual(row["matchup_score"], 0.0)
 
+    def test_counter_labels_require_real_threshold_but_scoring_stays_continuous(self):
+        matrix = DraftMatrixEngine()
+        row = matrix.analyze_row([
+            DraftEdge("small_plus", "Small Plus", "EXP", 0.4, 1.0),
+            DraftEdge("real_counter", "Real Counter", "MID", 1.3, 1.0),
+            DraftEdge("small_minus", "Small Minus", "JUNGLE", -0.3, 1.0),
+            DraftEdge("real_threat", "Real Threat", "ROAM", -1.4, 1.0),
+        ], counter_threshold=1.2)
+        self.assertEqual(row["positive"], ["Real Counter"])
+        self.assertEqual(row["negative"], ["Real Threat"])
+        self.assertEqual(set(row["neutral"]), {"Small Plus", "Small Minus"})
+        self.assertEqual(row["coverage_count"], 1)
+        # The small +0.4 still contributes to positive coverage/scoring even
+        # though it is no longer presented as a real counter to the user.
+        self.assertAlmostEqual(row["positive_weight"], 2.0)
+        self.assertGreater(row["matchup_score"], 50.0 - 20.0)
+
 
 class EngineTests(unittest.TestCase):
     def test_pick_ranking_uses_full_draft_matrix(self):
