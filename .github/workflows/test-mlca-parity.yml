@@ -52,3 +52,16 @@ jobs:
           cd mlbb
           python prepare_bundled_seed.py
           cat assets/data/bundled_seed_manifest.json
+
+      - name: Upload audited MLBB seed
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlbb-audited-seed
+          path: |
+            mlbb/assets/data/mobilelegends.db
+            mlbb/assets/data/bundled_seed_manifest.json
+            mlbb/assets/data/localization_ru.json
+            mlbb/assets/cache/
+          if-no-files-found: error
+          retention-days: 14
