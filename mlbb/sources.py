@@ -440,10 +440,11 @@ def parse_rone_academy_counter_raw(
 ) -> list[dict]:
     """Preserve Academy counter deltas before any MLCA scoring conversion.
 
-    The endpoint represents increase_win_rate as a fractional win-rate change.
-    sub_hero is oriented as a favorable answer into the target and
-    sub_hero_last as unfavorable, matching the existing Rone adapter. A
-    symmetric reverse row is emitted because the draft matrix is directional.
+    increase_win_rate is already signed by Rone. A positive value means the
+    candidate performs better into the target; a negative value means worse.
+    Do not infer the sign from the container name and do not synthesize a
+    reverse matchup: every target hero is fetched separately, so the reverse
+    direction has its own source measurement.
     """
     data = _json_data(payload) or {}
     records = data.get("records", []) if isinstance(data, dict) else []
@@ -454,7 +455,7 @@ def parse_rone_academy_counter_raw(
         target = str(row.get("main_heroid") or row.get("heroid") or fallback_target).strip()
         if not target:
             continue
-        for key, sign in (("sub_hero", 1.0), ("sub_hero_last", -1.0)):
+        for key in ("sub_hero", "sub_hero_last"):
             for sub in row.get(key) or []:
                 if not isinstance(sub, dict):
                     continue
@@ -462,12 +463,11 @@ def parse_rone_academy_counter_raw(
                 if not candidate or candidate == target:
                     continue
                 try:
-                    delta = abs(float(sub.get("increase_win_rate") or 0.0))
+                    edge = float(sub.get("increase_win_rate") or 0.0)
                 except (TypeError, ValueError):
                     continue
-                if delta <= 0:
+                if edge == 0:
                     continue
-                edge = sign * delta
                 base = {
                     "champion_id": candidate,
                     "enemy_id": target,
@@ -479,22 +479,10 @@ def parse_rone_academy_counter_raw(
                     "sample_window": "academy-current",
                     "confidence": 1.0,
                 }
-                reverse = {
-                    **base,
-                    "champion_id": target,
-                    "enemy_id": candidate,
-                    "raw_edge": -edge,
-                    "evidence_type": f"measured:reverse:{key}",
-                    "confidence": 0.95,
-                }
                 old = edges.get((candidate, target))
                 if old is None or abs(edge) > abs(float(old.get("raw_edge") or 0.0)):
                     edges[(candidate, target)] = base
-                old_rev = edges.get((target, candidate))
-                if old_rev is None or abs(edge) > abs(float(old_rev.get("raw_edge") or 0.0)):
-                    edges[(target, candidate)] = reverse
     return list(edges.values())
-
 
 def parse_rone_counter_payload(payload: dict) -> list[tuple[str, str, str, float]]:
     """Return matchup edges oriented as candidate -> target.
