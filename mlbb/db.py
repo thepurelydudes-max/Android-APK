@@ -1092,8 +1092,9 @@ def load_runtime_snapshot() -> dict:
         alias_rows = con.execute("SELECT champion_id,alias_norm FROM champion_aliases").fetchall()
         matchup_rows = con.execute("SELECT champion_id,enemy_id,role,score FROM matchups").fetchall()
         matchup_evidence_rows = con.execute(
-            "SELECT champion_id,enemy_id,role,normalized_edge,evidence_type,confidence,"
-            "rank_segment,sample_window,patch,source FROM matchup_evidence"
+            "SELECT champion_id,enemy_id,role,raw_edge,raw_unit,normalized_edge,"
+            "evidence_type,confidence,rank_segment,sample_window,patch,source "
+            "FROM matchup_evidence"
         ).fetchall()
         lane_evidence_rows = con.execute(
             "SELECT champion_id,lane,evidence_type,source,source_lane_id,rank_segment,"
@@ -1185,6 +1186,26 @@ def load_runtime_snapshot() -> dict:
         for row in matchup_rows:
             matchups.setdefault((row["champion_id"], row["enemy_id"]), []).append((row["role"], float(row["score"])))
 
+    # Keep the original source edge in percentage points as a separate runtime
+    # index. Draft ranking and relative counter attribution use this un-clipped
+    # value so extreme matchups keep their real magnitude.
+    matchup_raw_pp: dict[tuple[str, str], list[tuple[str, float]]] = {}
+    preferred_raw = {}
+    for row in matchup_evidence_rows:
+        key = (str(row["champion_id"]), str(row["enemy_id"]), str(row["role"] or ""))
+        rank_bonus = 2 if str(row["rank_segment"] or "") == "all" else 1
+        measured_bonus = 2 if str(row["evidence_type"] or "").startswith("measured") else 1
+        priority = (rank_bonus, measured_bonus, float(row["confidence"] or 0.0))
+        current = preferred_raw.get(key)
+        if current is None or priority > current[0]:
+            preferred_raw[key] = (priority, row)
+    for (_cid, _eid, _role), (_priority, row) in preferred_raw.items():
+        raw = float(row["raw_edge"] or 0.0)
+        unit = str(row["raw_unit"] or "").strip().casefold()
+        pp = raw * 100.0 if unit in {"rate", "fraction", "probability"} else raw
+        matchup_raw_pp.setdefault(
+            (str(row["champion_id"]), str(row["enemy_id"])), []
+        ).append((str(row["role"] or ""), pp))
     lane_evidence: dict[str, list[dict]] = {}
     for row in lane_evidence_rows:
         lane_evidence.setdefault(str(row["champion_id"]), []).append(dict(row))
@@ -1262,6 +1283,7 @@ def load_runtime_snapshot() -> dict:
         "champion_aliases": champion_aliases,
         "champion_alias_ids": alias_ids,
         "matchups": matchups,
+        "matchup_raw_pp": matchup_raw_pp,
         "matchup_contract_version": matchup_contract_version,
         "matchup_edge_scale_pp_p95": matchup_edge_scale_pp_p95,
         "matchup_evidence": [dict(row) for row in matchup_evidence_rows],
