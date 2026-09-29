@@ -15,6 +15,11 @@ from data_contract import (
     choose_supported_lanes,
     normalize_matchup_evidence,
 )
+from moonton_gms import (
+    MOONTON_GMS_SOURCE_NAME,
+    MOONTON_GMS_SOURCE_URL,
+    parse_gms_source,
+)
 from sources import (
     Net,
     RONE_PUBLIC_HEROES,
@@ -26,15 +31,15 @@ from sources import (
     parse_rone_build_variants,
 )
 
-RONE_ACADEMY_HERO_LANE = "https://arena.rone.dev/api/academy/heroes/{hero_id}/lane"
+RONE_ACADEMY_HERO_FILTERS = "https://arena.rone.dev/api/academy/heroes"
 RONE_ACADEMY_HERO_COUNTERS = "https://arena.rone.dev/api/academy/heroes/{hero_id}/counters"
 RONE_META_VERSION = "https://arena.rone.dev/api/academy/meta/version"
 
 
 def _records(payload: dict) -> list[dict]:
     data = (payload or {}).get("data") or {}
-    records = data.get("records") or [] if isinstance(data, dict) else []
-    return [row for row in records if isinstance(row, dict)]
+    rows = data.get("records") or [] if isinstance(data, dict) else []
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def _row_data(record: dict) -> dict:
@@ -42,38 +47,59 @@ def _row_data(record: dict) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def parse_lane_evidence(payload: dict, champion_id: str, source: str = "rone.academy") -> list[LaneEvidence]:
+def parse_lane_filter_evidence(
+    payload: dict,
+    lane: str,
+    *,
+    source: str = "rone.academy.hero_filter",
+) -> list[LaneEvidence]:
+    lane = canonical_lane(lane)
+    if not lane:
+        return []
     out: list[LaneEvidence] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
     for record in _records(payload):
         row = _row_data(record)
         hero = row.get("hero") if isinstance(row.get("hero"), dict) else {}
         hero_data = hero.get("data") if isinstance(hero.get("data"), dict) else {}
-        roads = hero_data.get("roadsort") or row.get("roadsort") or []
-        for road in roads:
-            if not isinstance(road, dict):
-                continue
-            road_data = road.get("data") if isinstance(road.get("data"), dict) else road
-            lane = canonical_lane(
-                road_data.get("road_sort_title")
-                or road.get("caption")
-                or road_data.get("title")
-            )
-            lane_id = str(road_data.get("road_sort_id") or "").strip()
-            if not lane:
-                continue
-            key = (champion_id, lane)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(LaneEvidence(
-                champion_id=champion_id,
-                lane=lane,
-                evidence_type="assignment",
-                source=source,
-                source_lane_id=lane_id,
-                confidence=1.0,
-            ))
+        champion_id = canonical_hero_id(
+            row.get("hero_id") or row.get("heroid"),
+            hero_data.get("name") or row.get("hero_name"),
+        )
+        if not champion_id or champion_id in seen:
+            continue
+        seen.add(champion_id)
+        out.append(LaneEvidence(
+            champion_id=champion_id,
+            lane=lane,
+            evidence_type="assignment",
+            source=source,
+            confidence=1.0,
+        ))
+    return out
+
+
+def metadata_lane_evidence(heroes: list[dict]) -> list[LaneEvidence]:
+    out: list[LaneEvidence] = []
+    for hero in heroes:
+        champion_id = canonical_hero_id(hero.get("id"), hero.get("name"))
+        lane_id_map = {
+            str(source_id): canonical_lane(lane)
+            for source_id, lane in (hero.get("lane_id_map") or {}).items()
+            if canonical_lane(lane)
+        }
+        inverse = {lane: source_id for source_id, lane in lane_id_map.items()}
+        for raw_lane in hero.get("lanes") or []:
+            lane = canonical_lane(raw_lane)
+            if lane:
+                out.append(LaneEvidence(
+                    champion_id=champion_id,
+                    lane=lane,
+                    evidence_type="assignment",
+                    source="rone.heroes.metadata",
+                    source_lane_id=inverse.get(lane, ""),
+                    confidence=0.9,
+                ))
     return out
 
 
@@ -84,12 +110,7 @@ def parse_counter_evidence(
     rank_segment: str,
     source: str = "rone.academy",
 ) -> list[MatchupEvidence]:
-    """Preserve Rone/Moonton increase_win_rate as a raw fractional edge.
-
-    Positive rows are oriented candidate -> target. Reverse edges are emitted
-    symmetrically so the matrix contract is deterministic even when only one
-    side of a pair is present in a response.
-    """
+    """Fallback parser when the direct GMS source is unavailable."""
     edges: dict[tuple[str, str], MatchupEvidence] = {}
     for record in _records(payload):
         row = _row_data(record)
@@ -110,30 +131,28 @@ def parse_counter_evidence(
                 if delta <= 0:
                     continue
                 edge = sign * delta
-                evidence = MatchupEvidence(
+                edges[(candidate, resolved_target)] = MatchupEvidence(
                     champion_id=candidate,
                     enemy_id=resolved_target,
                     raw_edge=edge,
                     raw_unit="fraction",
                     source=source,
-                    evidence_type="measured",
+                    evidence_type=f"measured:{key}",
                     rank_segment=rank_segment,
                     sample_window="academy-current",
                     confidence=1.0,
                 )
-                reverse = MatchupEvidence(
+                edges[(resolved_target, candidate)] = MatchupEvidence(
                     champion_id=resolved_target,
                     enemy_id=candidate,
                     raw_edge=-edge,
                     raw_unit="fraction",
                     source=source,
-                    evidence_type="measured",
+                    evidence_type=f"measured:reverse:{key}",
                     rank_segment=rank_segment,
                     sample_window="academy-current",
-                    confidence=1.0,
+                    confidence=0.95,
                 )
-                edges[(candidate, resolved_target)] = evidence
-                edges[(resolved_target, candidate)] = reverse
     return list(edges.values())
 
 
@@ -149,11 +168,40 @@ def fetch_patch(net: Net) -> str:
     return ""
 
 
-def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
-    net = Net()
-    patch = fetch_patch(net)
+def _direction_diagnostic(rows: list[MatchupEvidence]) -> dict:
+    by_pair = {(row.champion_id, row.enemy_id): row for row in rows}
+    checked = 0
+    opposite = 0
+    residuals: list[float] = []
+    seen: set[frozenset[str]] = set()
+    for (a, b), row in by_pair.items():
+        pair = frozenset((a, b))
+        if pair in seen:
+            continue
+        reverse = by_pair.get((b, a))
+        if reverse is None:
+            continue
+        seen.add(pair)
+        checked += 1
+        if row.raw_edge * reverse.raw_edge < 0:
+            opposite += 1
+        residuals.append(abs(abs(row.raw_edge) - abs(reverse.raw_edge)))
+    return {
+        "bidirectional_pairs_checked": checked,
+        "opposite_sign_pairs": opposite,
+        "opposite_sign_ratio": (opposite / checked) if checked else None,
+        "mean_abs_magnitude_residual_fraction": (
+            sum(residuals) / len(residuals) if residuals else None
+        ),
+    }
 
-    emit("1/4 heroes")
+
+def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
+    net = Net(delay=0.08)
+    patch = fetch_patch(net)
+    errors: list[str] = []
+
+    emit("1/5 heroes + lane assignments")
     hero_payload = net.get(f"{RONE_PUBLIC_HEROES}?size=300&index=1&order=asc&lang=en").json()
     heroes = parse_rone_public_heroes(hero_payload)
     hero_ids = {
@@ -162,45 +210,69 @@ def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
         if canonical_hero_id(row.get("id"), row.get("name"))
     }
 
-    emit("2/4 rank stats")
-    rank_rows = []
-    try:
-        rank_payload = net.get(
-            f"{RONE_HERO_RANK}?days={int(days)}&rank={rank}&size=300&index=1&lang=en"
-        ).json()
-        rank_rows = parse_rone_rank_payload(rank_payload)
-    except Exception as exc:
-        emit(f"rank stats warning: {exc}")
-
-    emit("3/5 lane assignments + raw matchup evidence")
     lanes: list[LaneEvidence] = []
-    matchups: list[MatchupEvidence] = []
-    errors: list[str] = []
-    for index, champion_id in enumerate(hero_ids, 1):
-        if index == 1 or index % 20 == 0 or index == len(hero_ids):
-            emit(f"hero evidence {index}/{len(hero_ids)}")
+    lane_filter_ok = 0
+    for lane in CANONICAL_LANES:
         try:
             payload = net.get(
-                RONE_ACADEMY_HERO_LANE.format(hero_id=champion_id)
-                + "?size=20&index=1&lang=en"
+                f"{RONE_ACADEMY_HERO_FILTERS}?lane={lane}&size=300&index=1&order=asc&lang=en"
             ).json()
-            rows = parse_lane_evidence(payload, champion_id)
-            for row in rows:
-                lanes.append(LaneEvidence(**{**asdict(row), "patch": patch}))
+            rows = parse_lane_filter_evidence(payload, lane)
+            if rows:
+                lane_filter_ok += 1
+                lanes.extend(rows)
         except Exception as exc:
-            errors.append(f"lane {champion_id}: {exc}")
-        try:
-            payload = net.get(
-                RONE_ACADEMY_HERO_COUNTERS.format(hero_id=champion_id)
-                + f"?rank={rank}&size=50&index=1&lang=en"
-            ).json()
-            rows = parse_counter_evidence(payload, champion_id, rank_segment=rank)
-            for row in rows:
-                matchups.append(MatchupEvidence(**{**asdict(row), "patch": patch}))
-        except Exception as exc:
-            errors.append(f"counter {champion_id}: {exc}")
+            errors.append(f"lane filter {lane}: {exc}")
+    if lane_filter_ok < len(CANONICAL_LANES):
+        # Metadata is a fallback only; it never invents a usage percentage.
+        existing = {(row.champion_id, row.lane) for row in lanes}
+        for row in metadata_lane_evidence(heroes):
+            if (row.champion_id, row.lane) not in existing:
+                lanes.append(row)
 
-    emit("4/5 items + exact lane build coverage")
+    emit("2/5 direct GMS stats + matchup evidence")
+    rank_rows: list[dict] = []
+    matchups: list[MatchupEvidence] = []
+    matchup_source = ""
+    gms_heroes: list[dict] = []
+    try:
+        gms_payload = net.get(MOONTON_GMS_SOURCE_URL).json()
+        parsed_gms = parse_gms_source(gms_payload, rank_segment="source")
+        gms_heroes = list(parsed_gms["heroes"])
+        rank_rows = list(parsed_gms["stats"])
+        matchups = list(parsed_gms["matchups"])
+        matchup_source = MOONTON_GMS_SOURCE_NAME
+    except Exception as exc:
+        errors.append(f"direct GMS: {exc}")
+
+    if not rank_rows:
+        try:
+            rank_payload = net.get(
+                f"{RONE_HERO_RANK}?days={int(days)}&rank={rank}&size=300&index=1&lang=en"
+            ).json()
+            rank_rows = parse_rone_rank_payload(rank_payload)
+        except Exception as exc:
+            errors.append(f"Rone rank stats: {exc}")
+
+    # Detailed per-hero Academy counters are only a fallback.  Normal operation
+    # uses the one-shot GMS source and therefore avoids hundreds of requests.
+    if not matchups:
+        matchup_source = "rone.academy.fallback"
+        for index, champion_id in enumerate(hero_ids, 1):
+            if index == 1 or index % 25 == 0 or index == len(hero_ids):
+                emit(f"fallback counters {index}/{len(hero_ids)}")
+            try:
+                payload = net.get(
+                    RONE_ACADEMY_HERO_COUNTERS.format(hero_id=champion_id)
+                    + f"?rank={rank}&size=50&index=1&lang=en"
+                ).json()
+                matchups.extend(parse_counter_evidence(
+                    payload, champion_id, rank_segment=rank, source=matchup_source
+                ))
+            except Exception as exc:
+                errors.append(f"counter {champion_id}: {exc}")
+
+    emit("3/5 items")
     equipment_by_id: dict[int, str] = {}
     try:
         item_payload = net.get(
@@ -211,6 +283,7 @@ def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
         items = []
         errors.append(f"equipment: {exc}")
 
+    emit("4/5 exact API lane build coverage")
     supported_lanes = choose_supported_lanes(lanes)
     build_coverage: list[dict] = []
     if equipment_by_id:
@@ -242,8 +315,7 @@ def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
                     "source_url": url,
                 })
 
-    emit("5/5 normalize")
-    # Deduplicate evidence collected from both sides of the same pair.
+    emit("5/5 normalize + diagnostics")
     dedup: dict[tuple[str, str, str, str], MatchupEvidence] = {}
     for row in matchups:
         key = (row.champion_id, row.enemy_id, row.rank_segment, row.source)
@@ -251,27 +323,44 @@ def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
         if previous is None or abs(row.raw_edge) > abs(previous.raw_edge):
             dedup[key] = row
     normalized, edge_scale_pp = normalize_matchup_evidence(dedup.values())
+    direction = _direction_diagnostic(list(dedup.values()))
 
     lane_counts = {lane: 0 for lane in CANONICAL_LANES}
     for values in supported_lanes.values():
         for lane in values:
             lane_counts[lane] += 1
 
+    metadata_pairs = {
+        (champion_id, canonical_lane(lane))
+        for champion_id, row in hero_ids.items()
+        for lane in (row.get("lanes") or [])
+        if canonical_lane(lane)
+    }
+    assigned_pairs = {
+        (champion_id, lane)
+        for champion_id, values in supported_lanes.items()
+        for lane in values
+    }
+
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "contract_version": 1,
         "source": {
-            "name": "Rone Arena API",
-            "kind": "public community API preserving upstream MLBB shapes",
-            "rank": rank,
+            "matchups": matchup_source,
+            "academy": "Rone Arena API",
+            "rank_filter": rank,
             "days": int(days),
             "patch": patch,
         },
         "counts": {
             "heroes": len(hero_ids),
+            "gms_heroes": len(gms_heroes),
             "rank_rows": len(rank_rows),
             "lane_evidence": len(lanes),
-            "supported_hero_lanes": sum(len(v) for v in supported_lanes.values()),
+            "supported_hero_lanes": len(assigned_pairs),
+            "metadata_hero_lanes": len(metadata_pairs),
+            "metadata_only_lane_pairs": len(metadata_pairs - assigned_pairs),
+            "academy_only_lane_pairs": len(assigned_pairs - metadata_pairs),
             "items": len(items),
             "exact_lane_build_rows": len(build_coverage),
             "exact_lane_builds_with_core": sum(1 for row in build_coverage if row["has_measured_core"]),
@@ -282,6 +371,9 @@ def collect_snapshot(*, rank: str = "all", days: int = 7, emit=print) -> dict:
         },
         "lane_counts": lane_counts,
         "edge_scale_pp_p95": edge_scale_pp,
+        "direction_validation": direction,
+        "metadata_only_lane_pairs": sorted(f"{cid}:{lane}" for cid, lane in metadata_pairs - assigned_pairs),
+        "academy_only_lane_pairs": sorted(f"{cid}:{lane}" for cid, lane in assigned_pairs - metadata_pairs),
         "heroes": [
             {
                 "id": champion_id,
@@ -315,7 +407,12 @@ def main() -> None:
     snapshot = collect_snapshot(rank=args.rank, days=args.days)
     target = Path(args.output)
     target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"output": str(target), **snapshot["counts"], "edge_scale_pp_p95": snapshot["edge_scale_pp_p95"]}, ensure_ascii=False))
+    print(json.dumps({
+        "output": str(target),
+        **snapshot["counts"],
+        "edge_scale_pp_p95": snapshot["edge_scale_pp_p95"],
+        "direction_validation": snapshot["direction_validation"],
+    }, ensure_ascii=False))
 
 
 if __name__ == "__main__":
