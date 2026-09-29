@@ -516,6 +516,8 @@ def fetch_mlbb_patch_info(net: Net) -> tuple[str, str]:
 RONE_PUBLIC_HEROES = f"{RONE_BASE}/heroes"
 RONE_HERO_RANK = f"{RONE_BASE}/heroes/rank"
 RONE_ACADEMY_RECOMMENDED = f"{RONE_BASE}/academy/recommended"
+RONE_HERO_COUNTERS = f"{RONE_BASE}/heroes/{hero_id}/counters"
+RONE_ACADEMY_HERO_BUILDS = f"{RONE_BASE}/academy/heroes/{hero_id}/builds"
 
 
 def _id_list(value) -> list[str]:
@@ -542,6 +544,52 @@ def _nested_titles(values, *keys: str) -> list[str]:
             title = ""
         if title and title not in out:
             out.append(title)
+    return out
+
+
+def parse_rone_build_variants(payload: dict, equipment_by_id: dict[int, str]) -> list[dict]:
+    """Return every usable Rone build variant, ordered by live popularity/WR."""
+    data = _json_data(payload) or {}
+    records = data.get("records", []) if isinstance(data, dict) else []
+    out: list[dict] = []
+    for record in records:
+        row = (record or {}).get("data") or {}
+        champion_id = row.get("heroid") or row.get("hero_id")
+        if champion_id is None:
+            continue
+        for build_index, build in enumerate(row.get("build") or []):
+            if not isinstance(build, dict):
+                continue
+            equip_ids = build.get("equipid") or build.get("equipment_ids") or []
+            if not isinstance(equip_ids, list):
+                continue
+            names: list[str] = []
+            for raw_id in equip_ids:
+                try:
+                    name = equipment_by_id.get(int(raw_id), "")
+                except (TypeError, ValueError):
+                    name = ""
+                if name and name not in names:
+                    names.append(name)
+            if len(names) < 4:
+                continue
+            try:
+                pick = float(build.get("build_pick_rate") or 0.0)
+            except (TypeError, ValueError):
+                pick = 0.0
+            try:
+                win = float(build.get("build_win_rate") or 0.0)
+            except (TypeError, ValueError):
+                win = 0.0
+            out.append({
+                "champion_id": str(champion_id),
+                "items": names[:6],
+                "pick_rate": _pct(pick),
+                "win_rate": _pct(win),
+                "score": pick + win * 0.01,
+                "index": build_index,
+            })
+    out.sort(key=lambda row: (float(row.get("score") or 0.0), float(row.get("pick_rate") or 0.0)), reverse=True)
     return out
 
 
