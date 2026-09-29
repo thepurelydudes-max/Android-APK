@@ -1098,6 +1098,10 @@ def load_runtime_snapshot() -> dict:
             "SELECT champion_id,lane,evidence_type,source,source_lane_id,rank_segment,"
             "usage_rate,confidence,patch FROM hero_lane_evidence"
         ).fetchall()
+        contract_row = con.execute(
+            "SELECT value FROM meta WHERE key='matchup_contract_version'"
+        ).fetchone()
+        matchup_contract_version = str(contract_row[0]) if contract_row else ""
         trait_rows = con.execute(
             "SELECT champion_id,trait,confidence,evidence_count,mentions,source,patch "
             "FROM champion_traits"
@@ -1154,7 +1158,7 @@ def load_runtime_snapshot() -> dict:
     # current DraftMatrixEngine still consumes the historical -1.5..+1.5
     # internal scale, so convert only at this compatibility boundary.  Once the
     # engine migrates, raw evidence and normalization remain untouched.
-    if matchup_evidence_rows:
+    if matchup_contract_version == "1" and matchup_evidence_rows:
         preferred = {}
         for row in matchup_evidence_rows:
             key = (str(row["champion_id"]), str(row["enemy_id"]), str(row["role"] or ""))
@@ -1250,6 +1254,7 @@ def load_runtime_snapshot() -> dict:
         "champion_aliases": champion_aliases,
         "champion_alias_ids": alias_ids,
         "matchups": matchups,
+        "matchup_contract_version": matchup_contract_version,
         "matchup_evidence": [dict(row) for row in matchup_evidence_rows],
         "lane_evidence": lane_evidence,
         "champion_traits": champion_traits,
