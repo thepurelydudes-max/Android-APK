@@ -454,15 +454,20 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
         lane_hard_loss = any(
             edge <= -HARD_MATCHUP_THRESHOLD for edge in analysis["direct_lane_edges"]
         )
-        draft_matchup_sum = sum(float(row.edge) * max(0.0, float(row.weight)) for row in matrix_edges)
+        draft_matchup_sum = sum(float(row.edge) for row in matrix_edges)
+        draft_matchup_avg = draft_matchup_sum / len(matrix_edges) if matrix_edges else 0.0
+        draft_matchup_score = 50.0 + 50.0 * max(
+            -1.0, min(1.0, draft_matchup_avg / MATCHUP_ABS_MAX)
+        )
 
         out.append({
             "champion": cand,
-            # The visible score now follows the same matchup quantity that
-            # determines rank. Meta/tier remain secondary tie-break information.
-            "score": analysis["matchup_score"],
+            # Rank and visible score both follow the literal sum/average against
+            # the selected enemies. Lane weighting and meta remain tie-breakers.
+            "score": draft_matchup_score,
             "meta_score": components["score"],
             "draft_matchup_sum": draft_matchup_sum,
+            "draft_matchup_score": draft_matchup_score,
             "positive": counter_targets,
             "negative": threat_targets,
             "neutral": neutral_targets,
@@ -491,8 +496,8 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
     out.sort(
         key=lambda x: (
             x["draft_matchup_sum"],
-            x["matchup_score"],
             not x.get("lane_hard_loss", False),
+            x["matchup_score"],
             x.get("meta_score", 0.0),
             TIER_ORDER.get(x.get("tier", ""), 0),
             x["winrate_score"],
