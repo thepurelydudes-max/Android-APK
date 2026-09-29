@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from collect_mlbb_snapshot import parse_counter_evidence, parse_lane_evidence
+from collect_mlbb_snapshot import parse_counter_evidence, parse_lane_filter_evidence
 from moonton_gms import parse_gms_source
 from data_contract import (
     LaneEvidence,
@@ -22,16 +22,22 @@ class DataContractTests(unittest.TestCase):
         self.assertEqual(canonical_lane("Roamer"), "roam")
 
     def test_assignment_evidence_does_not_invent_usage_rate(self):
-        payload = {
+        jungle_payload = {
             "data": {"records": [{"data": {
                 "hero_id": 17,
-                "hero": {"data": {"roadsort": [
-                    {"data": {"road_sort_id": "4", "road_sort_title": "Jungle"}},
-                    {"data": {"road_sort_id": "1", "road_sort_title": "EXP"}},
-                ]}},
+                "hero": {"data": {"name": "Fanny"}},
             }}]}
         }
-        rows = parse_lane_evidence(payload, "17")
+        exp_payload = {
+            "data": {"records": [{"data": {
+                "hero_id": 17,
+                "hero": {"data": {"name": "Fanny"}},
+            }}]}
+        }
+        rows = [
+            *parse_lane_filter_evidence(jungle_payload, "jungle"),
+            *parse_lane_filter_evidence(exp_payload, "exp"),
+        ]
         self.assertEqual({row.lane for row in rows}, {"jungle", "exp"})
         self.assertTrue(all(row.usage_rate is None for row in rows))
         self.assertEqual(choose_supported_lanes(rows)["17"], ["exp", "jungle"])
