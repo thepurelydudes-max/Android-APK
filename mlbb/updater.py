@@ -13,7 +13,9 @@ from localization import has_cyrillic, russian_hero_name, russian_item_name
 from sources import (
     MLBBDEX_ITEMS,
     RONE_ACADEMY_RECOMMENDED,
+    RONE_ACADEMY_HERO_BUILDS,
     RONE_EQUIPMENT_EXPANDED,
+    RONE_HERO_COUNTERS,
     RONE_HERO_RANK,
     RONE_PUBLIC_HEROES,
     Net,
@@ -24,6 +26,8 @@ from sources import (
     fetch_mlbbdex_heroes,
     fetch_mlbbdex_items,
     fetch_mlbbdex_rankings,
+    parse_rone_build_variants,
+    parse_rone_counter_payload,
     parse_rone_equipment,
     parse_rone_public_heroes,
     parse_rone_rank_payload,
@@ -375,6 +379,35 @@ def _filter_build_pool(rows: Iterable[tuple[str, str, str, int]], valid_ids: set
     return sorted(best.values(), key=lambda row: (row[0], row[3], row[1]))
 
 
+LANE_TO_ROLE_RU = {
+    "exp": "EXP",
+    "jungle": "Лес",
+    "mid": "Мид",
+    "gold": "Голд",
+    "roam": "Роум",
+}
+
+
+def _split_finished_build(names: Iterable[str], item_by_slug: dict[str, dict]) -> tuple[list[str], str]:
+    """Split a six-slot MLBB build into five finished items plus one boots slot."""
+    clean_names = list(dict.fromkeys(str(x).strip() for x in names if str(x).strip()))
+    boots: list[str] = []
+    core: list[str] = []
+    for name in clean_names:
+        row = item_by_slug.get(slugish(name), {})
+        category = str(row.get("category") or "").casefold()
+        low = name.casefold()
+        is_boot = (
+            "boot" in low or "shoe" in low
+            or "movement" in category or "boot" in category
+        )
+        if is_boot:
+            boots.append(name)
+        else:
+            core.append(name)
+    return core[:5], (boots[0] if boots else "")
+
+
 def generate_counter_item_rows(heroes: list[dict], existing_items: set[str]) -> list[tuple[str, str, str]]:
     """Generate MLBB-specific situational answers from enemy archetypes."""
     by_slug = {slugish(name): name for name in existing_items}
@@ -616,13 +649,45 @@ def update_all(
         if tier_dates:
             db.set_meta("tier_date", max(tier_dates))
 
-    # 3) Matchups: current Rone relations + live Academy hints.
-    # The old Rafael-VH/Insight-Data-MLBB fallback was removed upstream and now
-    # returns 404, so it is no longer queried.
+    # 3) Matchups: build a full per-hero matrix, not only relation hints.
     emit(update_text("loading_matchups", lang))
     relation_rows = relation_matchups(champs)
+    detailed_matchups: list[tuple[str, str, str, float]] = []
+    matchup_source = "mlbb.rone.counters"
+    matchup_patch = current_patch or "current"
+    cached_matchups = db.get_matchup_page_cache(matchup_source, matchup_patch)
+    counter_pages_ok = 0
 
-    # 4) Items and builds. MLBBDex defines the final shop catalog; Rone adds icons/details.
+    for index, champ in enumerate(champs, 1):
+        _check_cancel(cancel_check)
+        cid = str(champ.get("id") or "")
+        if not cid:
+            continue
+        url = (
+            RONE_HERO_COUNTERS.format(hero_id=cid)
+            + "?days=7&rank=all&size=300&index=1&lang=en"
+        )
+        rows: list[tuple[str, str, str, float]] = []
+        try:
+            rows = parse_rone_counter_payload(net.get(url).json())
+            rows = [row for row in rows if row[0] in valid_ids and row[1] in valid_ids]
+            if rows:
+                db.upsert_matchup_page_cache(
+                    matchup_source, matchup_patch, cid, rows, source_url=url
+                )
+                counter_pages_ok += 1
+        except Exception as exc:
+            summary["errors"].append(f"Rone counters {cid}: {exc}")
+        if not rows:
+            rows = list(cached_matchups.get(cid) or [])
+        detailed_matchups.extend(rows)
+
+    summary["counter_pages"] = counter_pages_ok
+    if counter_pages_ok == len([c for c in champs if c.get("id")]):
+        db.prune_matchup_page_cache(matchup_source, matchup_patch)
+
+    # 4) Items and builds. MLBBDex defines the final shop catalog; Rone adds
+    # icons/details and lane-specific build variants.
     emit(update_text("loading_items", lang))
     rone_items: list[dict] = []
     rone_items_ru: list[dict] = []
@@ -664,6 +729,8 @@ def update_all(
         apply_builtin_ru_item_localization(items)
     item_by_slug = {slugish(row.get("name", "")): row for row in items if row.get("name")}
 
+    # General Academy recommendations remain a fallback pool and a second
+    # independent matchup signal.
     live_pools: list[tuple[str, str, str, int]] = []
     live_matchups: list[tuple[str, str, str, float]] = []
     try:
@@ -671,13 +738,98 @@ def update_all(
         live_pools, live_matchups = parse_rone_recommended_payload(recommended, equipment_by_id)
     except Exception as exc:
         summary["errors"].append(f"Rone Academy recommendations: {exc}")
-    # Rone Academy is the live build source. The former Insight fallback was
-    # removed upstream and is intentionally not queried anymore.
-    pools = _filter_build_pool(live_pools, valid_ids, item_by_slug)
+
+    # WRCA-parity role-build model: one core build per supported lane plus every
+    # unique live Rone variant. These rows are what ship inside the APK seed.
+    role_build_rows: list[tuple[str, str, list[str], str, str, str]] = []
+    role_variant_rows: list[tuple] = []
+    role_situational_rows: list[tuple[str, str, str, str, int]] = []
+    role_boot_rows: list[tuple[str, str, str, str, int]] = []
+    role_pool_rows: list[tuple[str, str, str, int]] = []
+    role_pages_ok = 0
+
+    for champ in champs:
+        _check_cancel(cancel_check)
+        cid = str(champ.get("id") or "")
+        lanes = list(dict.fromkeys(
+            str(x).casefold().strip() for x in (champ.get("lanes") or [])
+            if str(x).casefold().strip() in LANE_TO_ROLE_RU
+        ))
+        for lane in lanes:
+            role_ru = LANE_TO_ROLE_RU[lane]
+            url = (
+                RONE_ACADEMY_HERO_BUILDS.format(hero_id=cid)
+                + f"?rank=all&lane={lane}&size=100&index=1&lang=en"
+            )
+            try:
+                variants = parse_rone_build_variants(net.get(url).json(), equipment_by_id)
+            except Exception as exc:
+                summary["errors"].append(f"Rone builds {cid}/{lane}: {exc}")
+                continue
+
+            unique: list[tuple[list[str], str, dict]] = []
+            seen_builds: set[tuple[str, ...]] = set()
+            for variant in variants:
+                core, boot = _split_finished_build(variant.get("items") or [], item_by_slug)
+                if len(core) != 5 or not boot:
+                    continue
+                key = tuple([*core, boot])
+                if key in seen_builds:
+                    continue
+                seen_builds.add(key)
+                unique.append((core, boot, variant))
+
+            if not unique:
+                continue
+            role_pages_ok += 1
+            base_core, base_boot, base_meta = unique[0]
+            role_build_rows.append((cid, role_ru, base_core, base_boot, current_patch, url))
+
+            base_set = set(base_core)
+            for variant_index, (core, boot, meta) in enumerate(unique, 1):
+                pick = float(meta.get("pick_rate") or 0.0)
+                win = float(meta.get("win_rate") or 0.0)
+                trigger = (
+                    f"Live Rone {role_ru} build; pick {pick:.2f}%, win {win:.2f}%."
+                )
+                role_variant_rows.append((
+                    cid, role_ru, f"Rone #{variant_index}", core, trigger,
+                    variant_index, [], "", current_patch, url,
+                ))
+                role_boot_rows.append((
+                    cid, role_ru, boot,
+                    f"Boot option from live Rone build #{variant_index}",
+                    variant_index,
+                ))
+                for pos, item_name in enumerate(core, 1):
+                    role_pool_rows.append((cid, item_name, role_ru, variant_index * 10 + pos))
+                    if item_name not in base_set:
+                        role_situational_rows.append((
+                            cid, role_ru, item_name,
+                            f"Alternative item from live Rone build #{variant_index}",
+                            variant_index * 10 + pos,
+                        ))
+
+    if role_build_rows:
+        db.replace_source_role_builds_partial(
+            "mlbb.rone",
+            role_build_rows,
+            role_situational_rows,
+            role_boot_rows,
+            variants=role_variant_rows,
+        )
+        db.merge_champion_lanes_from_role_builds("mlbb.rone")
+
+    pools = _filter_build_pool([*live_pools, *role_pool_rows], valid_ids, item_by_slug)
     db.replace_source_item_pools("mlbb.builds", pools)
     summary["item_pool"] = len(pools)
+    summary["role_builds"] = len(role_build_rows)
+    summary["role_variants"] = len(role_variant_rows)
+    summary["role_build_pages"] = role_pages_ok
 
-    matchups = _merge_matchups(relation_rows, live_matchups, valid_ids=valid_ids)
+    matchups = _merge_matchups(
+        relation_rows, detailed_matchups, live_matchups, valid_ids=valid_ids
+    )
     db.replace_source_matchups("mlbb.matchups", matchups)
     summary["matchups"] = len(matchups)
 
