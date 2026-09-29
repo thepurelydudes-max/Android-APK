@@ -379,6 +379,17 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
         # rank a legal flex pick but can never invent a role for that champion.
         if not lane_ok(cand, role_ru):
             continue
+        # Production recommendations must have a complete WildRiftCore build
+        # for this exact champion+role. This keeps the old WR Pocket fallback
+        # unreachable from normal draft recommendations.
+        if snapshot is None or snapshot.get("role_builds"):
+            row = _role_build_row(cand.get("id", ""), role_ru, snapshot)
+            healthy_core = (
+                _finished_only([str(x) for x in (row.get("items") or [])], snapshot)
+                if row else []
+            )
+            if row is None or len(healthy_core) < 3:
+                continue
         candidate_rows.append((cand, tier, st))
 
     role_win_rates: list[float] = []
@@ -1597,12 +1608,14 @@ def recommend_build(
         champ["id"], effective_role, snapshot
     )
 
-    # Never let a temporary WildRiftCore parser/cache/network failure erase the
-    # working recommendation foundation. A healthy champion+role source still
-    # wins; only missing/incomplete core data falls back to the proven pool
-    # builder that existed before the source-driven rewrite.
+    # Never invent a build from a different source when the exact
+    # champion+role WildRiftCore build is missing. Production draft ranking
+    # filters these pairs before they can be recommended; this guard also
+    # protects direct callers from silently entering the legacy fallback.
     if source_row is None or len(core) < 3:
-        return _fallback_pool_build(champ, enemy_objs, effective_role, snapshot)
+        raise ValueError(
+            "Для выбранной роли нет полной сборки WildRiftCore"
+        )
 
     reasons = defaultdict(list)
     reason_details = defaultdict(list)
