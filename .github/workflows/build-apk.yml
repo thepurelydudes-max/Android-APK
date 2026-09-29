@@ -64,11 +64,11 @@ jobs:
         if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
         uses: actions/download-artifact@v4
         with:
-          name: FARLINER-MLBB-APK
+          name: MLCA-2.0.2-APK
           path: ${{ runner.temp }}/mlca_base_apk
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          run-id: 36568021148
+          run-id: 36613480924
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
