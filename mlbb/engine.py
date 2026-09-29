@@ -437,8 +437,9 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
 
     Stage 1 is intentionally pure: every selected enemy contributes its raw
     percentage-point edge and the ten greatest net sums become the candidate
-    pool.  Stage 2 ranks only that pool with the established 60/20/15/5 model:
-    matchup, strength-aware coverage, tier and role win rate.
+    pool.  The visible order remains primarily the literal net matchup sum.
+    The established 60/20/15/5 model (matchup, strength-aware coverage, tier
+    and role win rate) is retained only as a tie-breaker inside that pool.
     """
     raw_enemy_objs: list[tuple[dict, str]] = []
     for name, enemy_role in enemies:
@@ -609,11 +610,13 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
         reverse=True,
     )[:10]
 
-    # Stage 2: order the already matchup-qualified pool with the full model.
+    # Stage 2: preserve literal draft-matchup strength as the primary visible
+    # order.  Meta/tier/coverage may resolve equal (or numerically identical)
+    # sums, but must never lift a weaker draft counter above a stronger one.
     shortlist.sort(
         key=lambda x: (
-            x["score"],
             x["draft_matchup_sum_pp"],
+            x["score"],
             x["coverage_score"],
             not x.get("lane_hard_loss", False),
             TIER_ORDER.get(x.get("tier", ""), 0),
