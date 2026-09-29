@@ -27,6 +27,55 @@ class DraftMatrixTests(unittest.TestCase):
         ])
         self.assertAlmostEqual(row["matchup_score"], 0.0)
 
+    def test_strength_aware_coverage_does_not_auto_favor_weak_five(self):
+        matrix = DraftMatrixEngine()
+        strong_two = [
+            DraftEdge("e1", "E1", "", 4.5),
+            DraftEdge("e2", "E2", "", 4.0),
+            DraftEdge("e3", "E3", "", 0.2),
+            DraftEdge("e4", "E4", "", 0.0),
+            DraftEdge("e5", "E5", "", -0.3),
+        ]
+        weak_five = [
+            DraftEdge("e1", "E1", "", 1.5),
+            DraftEdge("e2", "E2", "", 1.4),
+            DraftEdge("e3", "E3", "", 1.4),
+            DraftEdge("e4", "E4", "", 1.3),
+            DraftEdge("e5", "E5", "", 1.2),
+        ]
+
+        a = matrix.analyze_raw_draft(strong_two, scale_pp=2.5)
+        b = matrix.analyze_raw_draft(weak_five, scale_pp=2.5)
+        self.assertGreater(a["sum_pp"], b["sum_pp"])
+        self.assertGreater(b["effective_coverage"], a["effective_coverage"])
+        self.assertGreater(b["coverage_score"], a["coverage_score"])
+
+        final_a = matrix.final_score(
+            matchup_score=a["matchup_score"],
+            coverage_score=a["coverage_score"],
+            tier_score=50.0,
+            winrate_score=50.0,
+        )
+        final_b = matrix.final_score(
+            matchup_score=b["matchup_score"],
+            coverage_score=b["coverage_score"],
+            tier_score=50.0,
+            winrate_score=50.0,
+        )
+        self.assertGreater(final_a["score"], final_b["score"])
+
+    def test_even_five_has_effective_coverage_of_five(self):
+        matrix = DraftMatrixEngine()
+        row = matrix.analyze_raw_draft(
+            [DraftEdge(str(i), f"E{i}", "", 1.0) for i in range(5)],
+            scale_pp=2.5,
+        )
+        self.assertAlmostEqual(row["effective_coverage"], 5.0)
+        self.assertAlmostEqual(row["coverage_breadth_score"], 100.0)
+        self.assertAlmostEqual(row["coverage_strength_score"], 40.0)
+        self.assertAlmostEqual(row["coverage_score"], 40.0)
+
+
 class EngineTests(unittest.TestCase):
     def test_relative_counter_group_finds_dominant_three(self):
         edges = [
@@ -145,9 +194,15 @@ class EngineTests(unittest.TestCase):
             "role_opponent_adaptations": {}, "items": items,
         }
         result = engine.recommend_picks("EXP", [("E1", ""), ("E2", "")], snapshot=snapshot)
-        self.assertEqual(result[0]["champion"]["id"], "b")
-        self.assertAlmostEqual(result[0]["draft_matchup_sum_pp"], 2.5)
-        self.assertEqual(result[0]["positive"], ["E1"])
+        by_id = {row["champion"]["id"]: row for row in result}
+
+        # B wins the pure matchup-sum discovery stage (2.5 > 2.0), so it must
+        # remain inside the qualified pool.  The final table is then allowed to
+        # put A above it because matchup is 60%, not 100%, of the final score.
+        self.assertGreater(by_id["b"]["draft_matchup_sum_pp"], by_id["a"]["draft_matchup_sum_pp"])
+        self.assertEqual(result[0]["champion"]["id"], "a")
+        self.assertGreater(by_id["a"]["score"], by_id["b"]["score"])
+        self.assertEqual(by_id["b"]["positive"], ["E1"])
     def test_pick_excludes_hero_without_selected_role_build(self):
         items = {
             name: {"name": name, "tier": "Upgraded", "category": "Attack"}
