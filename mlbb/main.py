@@ -1055,6 +1055,8 @@ class MobileAssistant:
             self.update_button.content = self.t("update")
         if self.footer_offline_text is not None:
             self.footer_offline_text.value = self.t("offline")
+        if self.footer_attribution_text is not None:
+            self.footer_attribution_text.value = self.t("attribution")
 
         self.refresh_role_controls()
 
