@@ -196,6 +196,30 @@ jobs:
           echo "Bundled seed manifest:"
           cat "$GITHUB_WORKSPACE/wild_rift/assets/data/bundled_seed_manifest.json"
 
+      - name: Test MLBB recommendation engine
+        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -r "$GITHUB_WORKSPACE/mlbb/requirements.txt"
+          cd "$GITHUB_WORKSPACE/mlbb"
+          python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py main.py prepare_bundled_seed.py
+          python -m unittest -v test_regressions.py
+
+      - name: Refresh bundled MLBB database and media
+        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/mlca_bundled_seed
+          FLET_ASSETS_DIR: ${{ github.workspace }}/mlbb/assets
+        run: |
+          set -euo pipefail
+          rm -rf "$FLET_APP_STORAGE_DATA"
+          cd "$GITHUB_WORKSPACE/mlbb"
+          python prepare_bundled_seed.py
+          echo "Bundled MLBB seed manifest:"
+          cat "$GITHUB_WORKSPACE/mlbb/assets/data/bundled_seed_manifest.json"
+
       - name: Build Wild Rift APK
         if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
         shell: bash
@@ -244,11 +268,26 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/apk_output/mlbb"
+
+          BUILD_VERSION="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/mlbb/VERSION.txt")"
+          if [[ ! "$BUILD_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::mlbb/VERSION.txt must contain x.y.z, got: $BUILD_VERSION"
+            exit 1
+          fi
+          BUILD_NUMBER="$GITHUB_RUN_NUMBER"
+          echo "MLBB Android identity: com.flet.mlbb"
+          echo "MLBB versionName=$BUILD_VERSION versionCode=$BUILD_NUMBER"
+
           for attempt in 1 2; do
             echo "MLBB APK build attempt $attempt/2"
             if flet build apk "$GITHUB_WORKSPACE/mlbb" \
+              --project "mlbb" \
               --product "MLBB Counter Assistant" \
               --artifact "MLBB_Counter_Assistant" \
+              --org "com.flet" \
+              --bundle-id "com.flet.mlbb" \
+              --build-version "$BUILD_VERSION" \
+              --build-number "$BUILD_NUMBER" \
               --output "$GITHUB_WORKSPACE/apk_output/mlbb" \
               --python-version 3.12 \
               --yes \
