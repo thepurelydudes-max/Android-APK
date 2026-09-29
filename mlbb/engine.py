@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 import re
 
 import db
+from draft_matrix_engine import DraftEdge, DraftMatrixEngine
 
 ROLE_TO_LANES = {
     "EXP": {"exp"},
@@ -29,6 +30,8 @@ FINAL_WEIGHTS = {
 TIER_SCORE = {"S+": 100.0, "S": 80.0, "A": 60.0, "B": 40.0, "C": 20.0, "D": 0.0}
 TIER_ORDER = {"S+": 6, "S": 5, "A": 4, "B": 3, "C": 2, "D": 1, "": 0}
 CANONICAL_ROLES = ("EXP", "Лес", "Мид", "Голд", "Роум")
+
+DRAFT_MATRIX = DraftMatrixEngine()
 
 # MLBB matchup rows use a ±1.5 scale, while the Wild Rift engine uses ±3.
 # Normalize both to -1..+1 before weighting so the resulting 0..100 score has
@@ -139,6 +142,18 @@ def _stat(champion_id: str, lane: str, rank_segment: str = "all", snapshot: dict
 
 def _tier(champion_id: str, role_ru: str, snapshot: dict | None = None) -> str:
     """Return the latest cached MLBB meta tier for the selected lane."""
+    if snapshot is not None:
+        tier = str(snapshot.get("tiers", {}).get((champion_id, role_ru), "") or "").strip().upper()
+        if tier in TIER_SCORE:
+            return tier
+    else:
+        try:
+            tier = str(db.get_champion_tier(champion_id, role_ru, "mlbbdex") or "").strip().upper()
+            if tier in TIER_SCORE:
+                return tier
+        except Exception:
+            pass
+    # Compatibility with databases produced by MLCA 1.x.
     stat_lane = ROLE_TO_STAT.get(role_ru, "")
     if not stat_lane:
         return ""
@@ -269,18 +284,7 @@ def _counter_items(enemy_id: str, snapshot: dict | None = None) -> list[dict]:
 
 
 def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
-    """Rank MLBB heroes with the same draft-first model as Wild Rift.
-
-    Score components are normalized to 0..100 and weighted as follows:
-      60% matchup strength against the whole enemy draft
-      20% number of entered enemies the candidate actually counters
-      15% current meta tier from MLBBDex
-       5% current role win-rate percentile
-
-    Enemy roles are inferred from lane metadata and role-specific statistics.
-    Every entered enemy remains in the calculation; inferred roles only adjust
-    the weight of the likely direct lane opponent.
-    """
+    """Rank MLBB heroes using the same draft-matrix model as WRCA."""
     raw_enemy_objs: list[tuple[dict, str]] = []
     for name, enemy_role in enemies:
         champ = _find_champ(name, snapshot)
@@ -299,8 +303,6 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             continue
         tier = _tier(cand.get("id", ""), role_ru, snapshot)
         st = _stat(cand.get("id", ""), stat_lane, "all", snapshot) if stat_lane else None
-        # Accept a stats row as role evidence too: the statistics source may
-        # learn a new flex role before static lane metadata is refreshed.
         if not lane_ok(cand, role_ru) and not st and not tier:
             continue
         candidate_rows.append((cand, tier, st))
@@ -313,88 +315,62 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             except (TypeError, ValueError):
                 pass
 
-    out = []
-    enemy_count = max(1, len(enemy_objs))
-
+    out: list[dict] = []
     for cand, tier, st in candidate_rows:
-        positives: list[str] = []
-        negatives: list[str] = []
-        neutral: list[str] = []
-        positive_strength = 0.0
-        negative_strength = 0.0
-        hard_counters = 0
-        direct_lane_edges: list[float] = []
-        weighted_edge_sum = 0.0
-        total_weight = 0.0
-
+        matrix_edges: list[DraftEdge] = []
         for enemy, inferred_role in enemy_objs:
             edge = float(_matchup_score(cand["id"], enemy["id"], role_ru, snapshot))
-            edge = max(-MATCHUP_ABS_MAX, min(MATCHUP_ABS_MAX, edge))
-            weight = _line_weight(role_ru, inferred_role)
-            total_weight += weight
-            weighted_edge_sum += (edge / MATCHUP_ABS_MAX) * weight
-
-            if weight > 1.0:
-                direct_lane_edges.append(edge)
-
-            if edge > 0:
-                positives.append(enemy["name"])
-                positive_strength += edge * weight
-                if edge >= HARD_MATCHUP_THRESHOLD:
-                    hard_counters += 1
-            elif edge < 0:
-                negatives.append(enemy["name"])
-                negative_strength += abs(edge) * weight
-            else:
-                neutral.append(enemy["name"])
-
-        avg_edge = weighted_edge_sum / total_weight if total_weight > 0 else 0.0
-        avg_edge = max(-1.0, min(1.0, avg_edge))
-        matchup_score = 50.0 + 50.0 * avg_edge
-
-        coverage_count = len(positives)
-        coverage_score = 100.0 * coverage_count / enemy_count
-        tier_score = TIER_SCORE.get(tier, 50.0)
+            matrix_edges.append(DraftEdge(
+                enemy_id=str(enemy["id"]),
+                enemy_name=str(enemy["name"]),
+                enemy_role=str(inferred_role or ""),
+                edge=edge,
+                weight=DRAFT_MATRIX.lane_weight(role_ru, inferred_role),
+            ))
+        analysis = DRAFT_MATRIX.analyze_row(matrix_edges)
 
         wr = None
         if st and st.get("win_rate") is not None:
             try:
                 wr = float(st["win_rate"])
             except (TypeError, ValueError):
-                wr = None
+                pass
         winrate_score = _winrate_percentile(wr, role_win_rates)
-
-        matchup_contribution = FINAL_WEIGHTS["matchup"] * matchup_score
-        coverage_contribution = FINAL_WEIGHTS["coverage"] * coverage_score
-        tier_contribution = FINAL_WEIGHTS["tier"] * tier_score
-        winrate_contribution = FINAL_WEIGHTS["winrate"] * winrate_score
-        score = matchup_contribution + coverage_contribution + tier_contribution + winrate_contribution
-
-        lane_hard_loss = any(edge <= -HARD_MATCHUP_THRESHOLD for edge in direct_lane_edges)
+        tier_score = TIER_SCORE.get(tier, 50.0)
+        components = DRAFT_MATRIX.final_score(
+            matchup_score=analysis["matchup_score"],
+            coverage_score=analysis["coverage_score"],
+            tier_score=tier_score,
+            winrate_score=winrate_score,
+        )
+        lane_hard_loss = any(
+            edge <= -HARD_MATCHUP_THRESHOLD for edge in analysis["direct_lane_edges"]
+        )
 
         out.append({
             "champion": cand,
-            "score": score,
-            "positive": positives,
-            "negative": negatives,
-            "neutral": neutral,
-            "positive_strength": positive_strength,
-            "negative_strength": negative_strength,
-            "hard_counters": hard_counters,
-            "coverage_count": coverage_count,
-            "coverage_total": len(enemy_objs),
-            "coverage_score": coverage_score,
-            "coverage_bonus": coverage_contribution,
+            "score": components["score"],
+            "positive": analysis["positive"],
+            "negative": analysis["negative"],
+            "neutral": analysis["neutral"],
+            "positive_strength": analysis["positive_strength"],
+            "negative_strength": analysis["negative_strength"],
+            "hard_counters": analysis["hard_counters"],
+            "coverage_count": analysis["coverage_count"],
+            "coverage_total": analysis["coverage_total"],
+            "coverage_score": analysis["coverage_score"],
+            "coverage_bonus": components["coverage"],
             "tier": tier,
             "tier_score": tier_score,
-            "tier_bonus": tier_contribution,
+            "tier_bonus": components["tier"],
             "win_rate": wr,
             "winrate_score": winrate_score,
-            "matchup_score": matchup_score,
-            "matchup_contribution": matchup_contribution,
-            "winrate_bonus": winrate_contribution,
+            "matchup_score": analysis["matchup_score"],
+            "matchup_contribution": components["matchup"],
+            "winrate_bonus": components["winrate"],
             "lane_hard_loss": lane_hard_loss,
-            "enemy_roles": {enemy["id"]: inferred_role for enemy, inferred_role in enemy_objs},
+            "enemy_roles": analysis["enemy_roles"],
+            "matrix_row": analysis["matrix_row"],
         })
 
     out.sort(
@@ -402,7 +378,7 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             not x.get("lane_hard_loss", False),
             x["score"],
             x["matchup_score"],
-            x["coverage_count"],
+            x["coverage_score"],
             TIER_ORDER.get(x.get("tier", ""), 0),
             x["winrate_score"],
             x["positive_strength"],
@@ -411,6 +387,7 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
         reverse=True,
     )
     return out[:limit]
+
 
 def _generic_threat_tags(enemy: dict) -> set[str]:
     roles = {str(x).casefold() for x in enemy.get("roles", [])}
@@ -540,46 +517,95 @@ def order_build_items(base: list[str], situational: list[str], pool: list[dict],
 
     return sorted(candidates, key=key)
 
-def recommend_build(champion_name: str, enemies: list[tuple[str, str]], snapshot: dict | None = None) -> dict:
+def recommend_build(
+    champion_name: str,
+    enemies: list[tuple[str, str]],
+    role_ru: str = "",
+    snapshot: dict | None = None,
+) -> dict:
+    """Build from the hero's live lane core, then adapt at most the flexible slots."""
     champ = _find_champ(champion_name, snapshot)
     if not champ:
         raise ValueError("Герой не найден в локальной базе")
     enemy_objs = [(_find_champ(name, snapshot), role) for name, role in enemies]
     enemy_objs = [(e, r) for e, r in enemy_objs if e]
-    pool = _item_pool(champ["id"], snapshot)
-    pool_names = {norm_item(x["item_name"]) for x in pool}
-    has_pool = bool(pool)
+    cid = str(champ["id"])
+
+    pool = _item_pool(cid, snapshot)
     arch = archetype(champ)
 
-    # Skeleton: first trend items, but avoid blindly taking 5 boots/duplicates.
-    base = []
-    boots = []
-    for p in pool:
-        name = p["item_name"]
-        cat = (p.get("category") or "").casefold()
-        if is_boot_item(name, cat):
-            boots.append(name)
-        elif name not in base:
-            base.append(name)
-    base = base[:5]
-    if boots:
-        base.append(boots[0])
+    role_build = None
+    role_situational: list[dict] = []
+    role_boots: list[dict] = []
+    if role_ru:
+        if snapshot is not None:
+            role_build = snapshot.get("role_builds", {}).get((cid, role_ru))
+            role_situational = list(snapshot.get("role_situational", {}).get((cid, role_ru), []))
+            role_boots = list(snapshot.get("role_boots", {}).get((cid, role_ru), []))
+        else:
+            role_build = db.get_role_build(cid, role_ru, "mlbb.rone")
+            role_situational = db.get_role_build_situational(cid, role_ru, "mlbb.rone")
+            role_boots = db.get_role_build_boots(cid, role_ru, "mlbb.rone")
+
+    # Start with the source's lane-specific identity. Fall back to the legacy
+    # item pool only when that specific role has no downloaded live build.
+    base_core: list[str] = []
+    base_boot = ""
+    if role_build:
+        base_core = [
+            str(x) for x in (role_build.get("items") or [])
+            if str(x).strip() and _finished_item(str(x), snapshot)
+        ][:5]
+        base_boot = str(role_build.get("boot_name") or "")
+        if base_boot and not _finished_item(base_boot, snapshot):
+            base_boot = ""
+
+    if len(base_core) < 5:
+        base_core = []
+        fallback_boots: list[str] = []
+        for p in pool:
+            name = str(p.get("item_name") or "")
+            cat = str(p.get("category") or "").casefold()
+            if is_boot_item(name, cat):
+                if name not in fallback_boots:
+                    fallback_boots.append(name)
+            elif name and name not in base_core:
+                base_core.append(name)
+        base_core = base_core[:5]
+        if not base_boot and fallback_boots:
+            base_boot = fallback_boots[0]
+
+    base = [*base_core]
+    if base_boot:
+        base.append(base_boot)
+
+    # Compatibility set includes source role variants/situational items so a
+    # legitimate lane-specific alternative is never rejected as "off-build".
+    pool_names = {norm_item(x["item_name"]) for x in pool}
+    for row in role_situational:
+        if row.get("item_name"):
+            pool_names.add(norm_item(row["item_name"]))
+    for row in role_boots:
+        if row.get("item_name"):
+            pool_names.add(norm_item(row["item_name"]))
+    pool_names.update(norm_item(x) for x in base if x)
+    has_pool = bool(pool_names)
 
     reasons = defaultdict(list)
     reason_details = defaultdict(list)
     scores = Counter()
-    threat_enemies = []
-    neutral_enemies = []
+    threat_enemies: list[str] = []
+    neutral_enemies: list[str] = []
 
-    for enemy, erole in enemy_objs:
-        edge = _matchup_score(champ["id"], enemy["id"], "", snapshot)
+    for enemy, _erole in enemy_objs:
+        edge = _matchup_score(cid, enemy["id"], role_ru, snapshot)
         if edge < 0:
             threat_enemies.append(enemy["name"])
         else:
             neutral_enemies.append(enemy["name"])
-        direct = _counter_items(enemy["id"], snapshot)
         severity = 2.0 if edge < 0 else 1.0
-        for ci in direct:
+
+        for ci in _counter_items(enemy["id"], snapshot):
             item = ci["item_name"]
             if _compatible(item, pool_names, arch, has_pool):
                 scores[item] += 2.5 * severity
@@ -587,65 +613,95 @@ def recommend_build(champion_name: str, enemies: list[tuple[str, str]], snapshot
                 reason_details[item].append({"kind": "direct", "enemy": enemy["name"]})
 
         generic_tags = _generic_threat_tags(enemy)
-        for p in pool:
-            item = p["item_name"]
-            itags = tags_for(item)
-            hit = generic_tags & itags
-            if hit:
-                scores[item] += 0.45 * severity * len(hit)
-                if "anti_magic" in hit:
-                    reasons[item].append(f"магический урон/контроль от {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_magic", "enemy": enemy["name"]})
-                if "anti_physical" in hit or "anti_auto" in hit:
-                    reasons[item].append(f"физический урон/автоатаки {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_physical", "enemy": enemy["name"]})
-                if "anti_crit" in hit:
-                    reasons[item].append(f"критический урон {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_crit", "enemy": enemy["name"]})
-                if "anti_burst" in hit:
-                    reasons[item].append(f"взрывной урон {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_burst", "enemy": enemy["name"]})
-                if "anti_tank" in hit:
-                    reasons[item].append(f"прочность {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_tank", "enemy": enemy["name"]})
-                if "anti_cc" in hit:
-                    reasons[item].append(f"контроль {enemy['name']}")
-                    reason_details[item].append({"kind": "anti_cc", "enemy": enemy["name"]})
+        candidate_names = list(dict.fromkeys(
+            [str(p.get("item_name") or "") for p in pool]
+            + [str(r.get("item_name") or "") for r in role_situational]
+            + base
+        ))
+        for item in candidate_names:
+            if not item or not _finished_item(item, snapshot):
+                continue
+            hit = generic_tags & tags_for(item)
+            if not hit:
+                continue
+            scores[item] += 0.45 * severity * len(hit)
+            if "anti_magic" in hit:
+                reasons[item].append(f"магический урон/контроль от {enemy['name']}")
+                reason_details[item].append({"kind": "anti_magic", "enemy": enemy["name"]})
+            if "anti_physical" in hit or "anti_auto" in hit:
+                reasons[item].append(f"физический урон/автоатаки {enemy['name']}")
+                reason_details[item].append({"kind": "anti_physical", "enemy": enemy["name"]})
+            if "anti_crit" in hit:
+                reasons[item].append(f"критический урон {enemy['name']}")
+                reason_details[item].append({"kind": "anti_crit", "enemy": enemy["name"]})
+            if "anti_burst" in hit:
+                reasons[item].append(f"взрывной урон {enemy['name']}")
+                reason_details[item].append({"kind": "anti_burst", "enemy": enemy["name"]})
+            if "anti_tank" in hit:
+                reasons[item].append(f"прочность {enemy['name']}")
+                reason_details[item].append({"kind": "anti_tank", "enemy": enemy["name"]})
+            if "anti_cc" in hit:
+                reasons[item].append(f"контроль {enemy['name']}")
+                reason_details[item].append({"kind": "anti_cc", "enemy": enemy["name"]})
 
-    situational = []
-    for item, score in scores.most_common():
-        if item in situational:
+    # WRC-style identity protection: first three non-boot core items are locked.
+    # Only the final two non-boot slots are adaptive by default.
+    max_swaps = 2 if len(enemy_objs) < 4 else 3
+    protected = set(base_core[:3])
+    situational: list[str] = []
+    for item, _score in scores.most_common():
+        if not item or item in base or item in situational:
             continue
-        # Don't flood the build: 2 adaptations is usually enough; 3 only if there are multiple threats.
+        if is_boot_item(item):
+            continue
+        if not _compatible(item, pool_names, arch, has_pool):
+            continue
         situational.append(item)
-        if len(situational) >= (3 if len(enemy_objs) >= 4 else 2):
+        if len(situational) >= max_swaps:
             break
 
-    # If no matchup pressure was detected, preserve champion identity and maximize normal pool.
-    neutral_mode = not threat_enemies and not situational
-    if neutral_mode:
-        situational = base[:2]
-        for i in situational:
-            reasons[i].append("нейтральный матчап: оставляем сильный предмет из обычного пула чемпиона")
-            reason_details[i].append({"kind": "core", "enemy": ""})
+    final_core = list(base_core[:5])
+    replaceable = [i for i in range(len(final_core) - 1, -1, -1) if final_core[i] not in protected]
+    for item, index in zip(situational, replaceable):
+        final_core[index] = item
 
-    base, situational = enforce_single_boot_rule(base, situational, scores)
-    ordered = order_build_items(base, situational, pool, scores)
+    # Boots remain a dedicated slot. A role-specific alternative may replace it
+    # only when it received a real counter score.
+    final_boot = base_boot
+    scored_boots = [
+        (name, float(scores.get(name, 0.0)))
+        for name in dict.fromkeys(str(r.get("item_name") or "") for r in role_boots)
+        if name and is_boot_item(name) and float(scores.get(name, 0.0)) > 0
+    ]
+    if scored_boots:
+        final_boot = max(scored_boots, key=lambda row: row[1])[0]
 
-    # Defensive invariant for every caller/UI surface: a final recommendation
-    # can never expose two pairs of boots even if a future source adds one.
+    ordered = [x for x in final_core if x]
+    if final_boot:
+        ordered.append(final_boot)
+
+    # Final invariant: six unique finished items and never two boots.
+    filtered: list[str] = []
     seen_boot = False
-    filtered_ordered = []
     for item in ordered:
+        if item in filtered or not _finished_item(item, snapshot):
+            continue
         if is_boot_item(item):
             if seen_boot:
                 continue
             seen_boot = True
-        filtered_ordered.append(item)
-    ordered = filtered_ordered
+        filtered.append(item)
+    ordered = filtered[:6]
+
+    neutral_mode = not threat_enemies and not situational
+    if neutral_mode:
+        for item in ordered:
+            reasons[item].append("нейтральный матчап: сохраняем основной билд выбранной линии")
+            reason_details[item].append({"kind": "core", "enemy": ""})
 
     return {
         "champion": champ,
+        "role": role_ru,
         "base": base,
         "situational": situational,
         "ordered": ordered,
@@ -657,4 +713,6 @@ def recommend_build(champion_name: str, enemies: list[tuple[str, str]], snapshot
         "threat_enemies": threat_enemies,
         "neutral_enemies": neutral_enemies,
         "pool_size": len(pool),
+        "source_role_build": bool(role_build),
     }
+
