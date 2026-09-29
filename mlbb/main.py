@@ -79,6 +79,7 @@ TEXT = {
         "recommended_items": "Рекомендуемые предметы",
         "build_description": "Описание сборки",
         "offline": "Основная работа офлайн; интернет нужен только для обновления базы.",
+        "attribution": "Данные: Rone Arena API / RoneAI и MLBBDex. MLBB © Moonton. Неофициальное приложение.",
     },
     "en": {
         "title": "Mobile Legends Counter Assistant",
@@ -111,6 +112,7 @@ TEXT = {
         "recommended_items": "Recommended items",
         "build_description": "Build description",
         "offline": "Normal use is offline; internet is required only for database updates.",
+        "attribution": "Data: Rone Arena API / RoneAI and MLBBDex. MLBB © Moonton. Unofficial app.",
     },
 }
 
@@ -158,6 +160,7 @@ class MobileAssistant:
         self.pick_title_text: ft.Text | None = None
         self.build_title_text: ft.Text | None = None
         self.footer_offline_text: ft.Text | None = None
+        self.footer_attribution_text: ft.Text | None = None
 
         self.status_text = ft.Text("")
         self.pick_column = ft.Column(spacing=7)
@@ -609,6 +612,7 @@ class MobileAssistant:
     def footer(self) -> ft.Control:
         self.update_button = ft.FilledButton(content=self.t("update"), icon=ft.Icons.REFRESH, on_click=self.update_data)
         self.footer_offline_text = ft.Text(self.t("offline"), size=10, color="#758997")
+        self.footer_attribution_text = ft.Text(self.t("attribution"), size=9, color="#657987")
         self.update_progress = ft.ProgressBar(
             value=0,
             height=6,
@@ -625,6 +629,7 @@ class MobileAssistant:
                     self.update_progress,
                     self.status_text,
                     self.footer_offline_text,
+                    self.footer_attribution_text,
                 ],
             ),
         )
