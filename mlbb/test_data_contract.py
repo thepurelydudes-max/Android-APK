@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from collect_mlbb_snapshot import parse_counter_evidence, parse_lane_evidence
+from moonton_gms import parse_gms_source
 from data_contract import (
     LaneEvidence,
     MatchupEvidence,
@@ -57,6 +58,23 @@ class DataContractTests(unittest.TestCase):
         self.assertAlmostEqual(by_enemy["b"].normalized_edge or 0.0, 0.25)
         self.assertAlmostEqual(by_enemy["c"].normalized_edge or 0.0, 1.0)
         self.assertAlmostEqual(by_enemy["d"].normalized_edge or 0.0, -0.5)
+
+    def test_direct_gms_keeps_raw_stats_and_matchup_swing(self):
+        payload = {"data": {"records": [{"data": {
+            "main_heroid": 1,
+            "main_hero": {"data": {"name": "Miya", "head": "https://example/miya.png"}},
+            "main_hero_win_rate": 0.5234,
+            "main_hero_appearance_rate": 0.012,
+            "main_hero_ban_rate": 0.034,
+            "sub_hero": [{"heroid": 2, "increase_win_rate": 0.024}],
+            "sub_hero_last": [{"heroid": 3, "increase_win_rate": 0.017}],
+        }}]}}
+        parsed = parse_gms_source(payload)
+        self.assertEqual(parsed["heroes"][0]["id"], "1")
+        self.assertAlmostEqual(parsed["stats"][0]["win_rate"], 52.34)
+        edges = {(row.champion_id, row.enemy_id): row.raw_edge for row in parsed["matchups"]}
+        self.assertAlmostEqual(edges[("1", "2")], 0.024)
+        self.assertAlmostEqual(edges[("1", "3")], -0.017)
 
     def test_counter_parser_orients_candidate_to_target(self):
         payload = {"data": {"records": [{"data": {
