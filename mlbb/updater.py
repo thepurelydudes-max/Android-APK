@@ -951,7 +951,12 @@ def update_all(
                 core, boot = _split_finished_build(
                     variant.get("items") or [], build_item_by_slug
                 )
-                if len(core) < 3:
+                # Academy's measured "top 3" footprint can legitimately be
+                # two non-boot core items plus one boots slot.  Treat the
+                # measured three-slot footprint as valid without pretending
+                # boots are a third damage/defense core item.
+                measured_slots = len(core) + (1 if boot else 0)
+                if len(core) < 2 or measured_slots < 3:
                     continue
                 key = tuple([*core, boot] if boot else core)
                 if key in seen_builds:
