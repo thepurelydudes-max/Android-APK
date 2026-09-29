@@ -46,6 +46,12 @@ class DraftMatrixTests(unittest.TestCase):
 
 
 class EngineTests(unittest.TestCase):
+    def test_counter_label_threshold_tracks_real_percentage_points(self):
+        self.assertAlmostEqual(
+            engine._counter_label_threshold({"matchup_edge_scale_pp_p95": 2.5}),
+            1.2,
+        )
+
     def test_pick_ranking_uses_full_draft_matrix(self):
         snapshot = {
             "champions": [
