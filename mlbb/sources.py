@@ -518,6 +518,7 @@ RONE_HERO_RANK = f"{RONE_BASE}/heroes/rank"
 RONE_ACADEMY_RECOMMENDED = f"{RONE_BASE}/academy/recommended"
 RONE_HERO_COUNTERS = RONE_BASE + "/heroes/{hero_id}/counters"
 RONE_ACADEMY_HERO_BUILDS = RONE_BASE + "/academy/heroes/{hero_id}/builds"
+RONE_HERO_RECOMMENDED = RONE_BASE + "/academy/heroes/{hero_id}/recommended"
 
 
 def _id_list(value) -> list[str]:
@@ -526,6 +527,21 @@ def _id_list(value) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(x) for x in value if x is not None and str(x).strip()]
+
+
+def _nested_lane_id_map(values) -> dict[str, str]:
+    """Return Rone road_sort_id -> normalized lane slug without hardcoding IDs."""
+    out: dict[str, str] = {}
+    for value in values or []:
+        if not isinstance(value, dict):
+            continue
+        data = value.get("data") if isinstance(value.get("data"), dict) else value
+        lane_id = str(data.get("road_sort_id") or "").strip()
+        title = clean(str(data.get("road_sort_title") or data.get("title") or ""))
+        lane = title.casefold().replace(" lane", "").strip()
+        if lane_id and lane in {"exp", "mid", "roam", "jungle", "gold"}:
+            out[lane_id] = lane
+    return out
 
 
 def _nested_titles(values, *keys: str) -> list[str]:
@@ -544,6 +560,66 @@ def _nested_titles(values, *keys: str) -> list[str]:
             title = ""
         if title and title not in out:
             out.append(title)
+    return out
+
+
+def parse_rone_recommended_variants(
+    payload: dict, equipment_by_id: dict[int, str],
+) -> list[dict]:
+    """Extract full six-item hero guide builds from Rone recommended content.
+
+    Unlike the legacy /builds endpoint, these are authored guide builds and
+    commonly contain all six equipment IDs plus a lane ID and explanation.
+    """
+    data = _json_data(payload) or {}
+    records = data.get("records", []) if isinstance(data, dict) else []
+    out: list[dict] = []
+    for record in records:
+        row = _recommended_payload_data(record)
+        hero = row.get("hero") or {}
+        cid = hero.get("hero_id") or row.get("hero_id")
+        if cid is None:
+            continue
+        lane_id = str(hero.get("hero_lane") or row.get("hero_lane") or "").strip()
+        outer = (record or {}).get("data") or {}
+        dynamic = (record or {}).get("dynamic") or {}
+        try:
+            hot = float(dynamic.get("hot") or 0.0)
+        except (TypeError, ValueError):
+            hot = 0.0
+        updated = str((record or {}).get("updatedAt") or (record or {}).get("_updatedAt") or "")
+        game_version = clean(str(row.get("game_version") or ""))
+        for equip_index, equip in enumerate(row.get("equips") or []):
+            if not isinstance(equip, dict):
+                continue
+            names: list[str] = []
+            for raw_id in equip.get("equip_ids") or []:
+                try:
+                    name = equipment_by_id.get(int(raw_id), "")
+                except (TypeError, ValueError):
+                    name = ""
+                if name and name not in names:
+                    names.append(name)
+            if len(names) < 5:
+                continue
+            out.append({
+                "champion_id": str(cid),
+                "lane_id": lane_id,
+                "items": names[:6],
+                "title": clean(str(equip.get("equip_title") or row.get("title") or "Guide")),
+                "description": clean(str(equip.get("equip_desc") or row.get("recommend") or "")),
+                "hot": hot,
+                "updated_at": updated,
+                "game_version": game_version,
+                "index": equip_index,
+            })
+    out.sort(
+        key=lambda row: (
+            float(row.get("hot") or 0.0),
+            str(row.get("updated_at") or ""),
+        ),
+        reverse=True,
+    )
     return out
 
 
@@ -607,16 +683,24 @@ def parse_rone_public_heroes(payload: dict) -> list[dict]:
             continue
         relation = row.get("relation") or {}
         roles = _nested_titles(hero.get("sortid") or row.get("sortid") or [], "sort_title", "title", "name")
+        road_values = hero.get("roadsort") or row.get("roadsort") or []
         lanes = [
             value.casefold().replace(" lane", "")
-            for value in _nested_titles(hero.get("roadsort") or row.get("roadsort") or [], "road_sort_title", "title", "name")
+            for value in _nested_titles(road_values, "road_sort_title", "title", "name")
         ]
+        lane_id_map = _nested_lane_id_map(road_values)
+        specialties = _nested_titles(
+            hero.get("speciality") or hero.get("specialties") or row.get("speciality") or [],
+            "speciality_name", "speciality_title", "tagname", "title", "name",
+        )
         out.append({
             "id": str(hero_id),
             "name": name,
             "icon_url": clean(str(hero.get("head") or row.get("head") or "")),
             "roles": roles,
             "lanes": lanes,
+            "lane_id_map": lane_id_map,
+            "specialties": specialties,
             "strong": _id_list(relation.get("strong") or {}),
             "weak": _id_list(relation.get("weak") or {}),
             "assist": _id_list(relation.get("assist") or {}),
