@@ -39,6 +39,32 @@ DRAFT_MATRIX = DraftMatrixEngine()
 MATCHUP_ABS_MAX = 1.5
 HARD_MATCHUP_THRESHOLD = MATCHUP_ABS_MAX * (2.0 / 3.0)
 
+# A matchup must improve the candidate's win rate by at least +2 percentage
+# points before the UI calls it a real counter. Smaller positive/negative edges
+# still participate fully in the recommendation score.
+COUNTER_LABEL_THRESHOLD_PP = 2.0
+DEFAULT_MATCHUP_SCALE_PP_P95 = 2.5
+
+
+def _counter_label_threshold(snapshot: dict | None = None) -> float:
+    scale_pp = 0.0
+    if snapshot is not None:
+        try:
+            scale_pp = float(snapshot.get("matchup_edge_scale_pp_p95") or 0.0)
+        except (TypeError, ValueError):
+            scale_pp = 0.0
+    if scale_pp <= 0:
+        try:
+            scale_pp = float(db.get_meta("matchup_edge_scale_pp_p95", "") or 0.0)
+        except (TypeError, ValueError):
+            scale_pp = 0.0
+    if scale_pp <= 0:
+        scale_pp = DEFAULT_MATCHUP_SCALE_PP_P95
+    return max(
+        0.0,
+        min(MATCHUP_ABS_MAX, (COUNTER_LABEL_THRESHOLD_PP / scale_pp) * MATCHUP_ABS_MAX),
+    )
+
 ITEM_TAGS = {
     "Dominance Ice": {"anti_heal", "anti_shield", "anti_physical", "anti_magic", "defense", "tank", "universal"},
     "Sea Halberd": {"anti_heal", "physical", "marksman", "fighter", "assassin"},
@@ -356,7 +382,10 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
                 edge=edge,
                 weight=DRAFT_MATRIX.lane_weight(role_ru, inferred_role),
             ))
-        analysis = DRAFT_MATRIX.analyze_row(matrix_edges)
+        analysis = DRAFT_MATRIX.analyze_row(
+            matrix_edges,
+            counter_threshold=_counter_label_threshold(snapshot),
+        )
 
         wr = None
         if st and st.get("win_rate") is not None:
