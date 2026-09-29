@@ -16,6 +16,7 @@ from sources import (
     RONE_ACADEMY_HERO_BUILDS,
     RONE_EQUIPMENT_EXPANDED,
     RONE_HERO_COUNTERS,
+    RONE_HERO_RECOMMENDED,
     RONE_HERO_RANK,
     RONE_PUBLIC_HEROES,
     Net,
@@ -32,6 +33,7 @@ from sources import (
     parse_rone_public_heroes,
     parse_rone_rank_payload,
     parse_rone_recommended_payload,
+    parse_rone_recommended_variants,
     slugish,
     apply_ru_localization,
     load_ru_localization,
@@ -155,7 +157,8 @@ def merge_mlbb_hero_sources(
             "name_ru": (clean(str(ru.get("name") or "")) if has_cyrillic(ru.get("name")) else russian_hero_name(cid, rone.get("name") or dex.get("name") or "")),
             "roles": roles,
             "lanes": lanes,
-            "specialties": list(dex.get("specialties") or []),
+            "lane_id_map": dict(rone.get("lane_id_map") or {}),
+            "specialties": list(dex.get("specialties") or rone.get("specialties") or []),
             "damage_type": _infer_damage_type(roles, str(dex.get("damage_type") or "")),
             "icon_url": str(rone.get("icon_url") or dex.get("icon_url") or ""),
             "strong": [str(x) for x in (rone.get("strong") or [])],
@@ -176,6 +179,7 @@ def merge_mlbb_hero_sources(
             "name_ru": russian_hero_name(str(dex.get("id") or key), str(dex.get("name") or "")),
             "roles": roles,
             "lanes": [str(x).casefold() for x in (dex.get("lanes") or [])],
+            "lane_id_map": {},
             "specialties": list(dex.get("specialties") or []),
             "damage_type": _infer_damage_type(roles, str(dex.get("damage_type") or "")),
             "icon_url": str(dex.get("icon_url") or ""),
@@ -765,6 +769,36 @@ def update_all(
             str(x).casefold().strip() for x in (champ.get("lanes") or [])
             if str(x).casefold().strip() in LANE_TO_ROLE_RU
         ))
+
+        # Preferred source: current Rone hero guides with complete six-item
+        # equipment sets. Map numeric hero_lane through road_sort metadata
+        # returned by Rone itself, never through guessed constants.
+        guide_variants_by_lane: dict[str, list[dict]] = {}
+        guide_url = (
+            RONE_HERO_RECOMMENDED.format(hero_id=cid)
+            + "?size=100&index=1&order=desc&lang=en"
+        )
+        try:
+            guide_payload = net.get(guide_url).json()
+            guide_variants = parse_rone_recommended_variants(
+                guide_payload, equipment_by_id
+            )
+        except Exception as exc:
+            guide_variants = []
+            summary["errors"].append(f"Rone guides {cid}: {exc}")
+
+        lane_id_map = {
+            str(k): str(v).casefold()
+            for k, v in (champ.get("lane_id_map") or {}).items()
+            if str(v).casefold() in LANE_TO_ROLE_RU
+        }
+        for variant in guide_variants:
+            lane = lane_id_map.get(str(variant.get("lane_id") or ""))
+            if not lane and len(lanes) == 1:
+                lane = lanes[0]
+            if lane in LANE_TO_ROLE_RU:
+                guide_variants_by_lane.setdefault(lane, []).append(variant)
+
         for lane in lanes:
             role_ru = LANE_TO_ROLE_RU[lane]
             url = (
@@ -772,15 +806,23 @@ def update_all(
                 + f"?rank=all&lane={lane}&size=100&index=1&lang=en"
             )
             try:
-                variants = parse_rone_build_variants(net.get(url).json(), equipment_by_id)
+                historical_variants = parse_rone_build_variants(
+                    net.get(url).json(), equipment_by_id
+                )
             except Exception as exc:
+                historical_variants = []
                 summary["errors"].append(f"Rone builds {cid}/{lane}: {exc}")
-                continue
 
+            variants = [
+                *guide_variants_by_lane.get(lane, []),
+                *historical_variants,
+            ]
             unique: list[tuple[list[str], str, dict]] = []
             seen_builds: set[tuple[str, ...]] = set()
             for variant in variants:
-                core, boot = _split_finished_build(variant.get("items") or [], item_by_slug)
+                core, boot = _split_finished_build(
+                    variant.get("items") or [], item_by_slug
+                )
                 if len(core) != 5 or not boot:
                     continue
                 key = tuple([*core, boot])
@@ -799,11 +841,18 @@ def update_all(
             for variant_index, (core, boot, meta) in enumerate(unique, 1):
                 pick = float(meta.get("pick_rate") or 0.0)
                 win = float(meta.get("win_rate") or 0.0)
-                trigger = (
-                    f"Live Rone {role_ru} build; pick {pick:.2f}%, win {win:.2f}%."
-                )
+                title = str(meta.get("title") or f"Rone #{variant_index}")
+                description = str(meta.get("description") or "").strip()
+                if description:
+                    trigger = description
+                elif pick or win:
+                    trigger = (
+                        f"Live Rone {role_ru} build; pick {pick:.2f}%, win {win:.2f}%."
+                    )
+                else:
+                    trigger = f"Rone {role_ru} guide build."
                 role_variant_rows.append((
-                    cid, role_ru, f"Rone #{variant_index}", core, trigger,
+                    cid, role_ru, title, core, trigger,
                     variant_index, [], "", current_patch, url,
                 ))
                 role_boot_rows.append((
