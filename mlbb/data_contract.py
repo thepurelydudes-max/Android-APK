@@ -147,7 +147,7 @@ def normalize_matchup_evidence(
     edges_pp = [
         edge_to_percentage_points(row.raw_edge, row.raw_unit)
         for row in materialized
-        if row.evidence_type == "measured"
+        if str(row.evidence_type or "").startswith("measured")
     ]
     scale_pp = robust_edge_scale(edges_pp, percentile=percentile)
     normalized: list[MatchupEvidence] = []
