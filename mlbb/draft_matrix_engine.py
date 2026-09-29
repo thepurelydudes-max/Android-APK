@@ -158,6 +158,76 @@ class DraftMatrixEngine:
             "matrix_row": matrix_row,
         }
 
+    @staticmethod
+    def analyze_raw_draft(edges: Iterable[DraftEdge], *, scale_pp: float) -> dict:
+        """Analyze literal percentage-point matchup edges against the selected draft.
+
+        The matchup component follows the net average across every selected enemy.
+        Coverage is deliberately strength-aware: a hero that is +0.2 pp into five
+        enemies must not receive the same breadth reward as a hero that is strongly
+        positive into five.  Effective target count is the inverse concentration
+        (participation ratio) of the positive matchup mass.
+        """
+        rows = list(edges)
+        if not rows:
+            return {
+                "sum_pp": 0.0,
+                "avg_pp": 0.0,
+                "matchup_score": 50.0,
+                "positive_strength_pp": 0.0,
+                "negative_strength_pp": 0.0,
+                "positive_count": 0,
+                "effective_coverage": 0.0,
+                "coverage_breadth_score": 0.0,
+                "coverage_strength_score": 0.0,
+                "coverage_score": 0.0,
+            }
+
+        values = [float(row.edge) for row in rows]
+        total_pp = sum(values)
+        avg_pp = total_pp / len(values)
+        scale = max(0.5, abs(float(scale_pp)))
+        matchup_score = 50.0 + 50.0 * max(-1.0, min(1.0, avg_pp / scale))
+
+        positives = [max(value, 0.0) for value in values]
+        positive_values = [value for value in positives if value > 0.0]
+        positive_sum = sum(positive_values)
+        negative_sum = sum(max(-value, 0.0) for value in values)
+
+        square_sum = sum(value * value for value in positive_values)
+        effective_coverage = (
+            (positive_sum * positive_sum) / square_sum
+            if square_sum > 0.0 else 0.0
+        )
+        coverage_breadth_score = (
+            100.0 * effective_coverage / len(values)
+            if values else 0.0
+        )
+
+        positive_mean = (
+            positive_sum / len(positive_values)
+            if positive_values else 0.0
+        )
+        coverage_strength_score = 100.0 * max(
+            0.0, min(1.0, positive_mean / scale)
+        )
+        coverage_score = (
+            coverage_breadth_score * coverage_strength_score / 100.0
+        )
+
+        return {
+            "sum_pp": total_pp,
+            "avg_pp": avg_pp,
+            "matchup_score": matchup_score,
+            "positive_strength_pp": positive_sum,
+            "negative_strength_pp": negative_sum,
+            "positive_count": len(positive_values),
+            "effective_coverage": effective_coverage,
+            "coverage_breadth_score": coverage_breadth_score,
+            "coverage_strength_score": coverage_strength_score,
+            "coverage_score": coverage_score,
+        }
+
     def final_score(
         self,
         *,
