@@ -47,9 +47,9 @@ class DataContractTests(unittest.TestCase):
 
     def test_raw_fraction_edges_are_preserved_and_normalized_separately(self):
         rows = [
-            MatchupEvidence("a", "b", 0.01, "fraction", "test"),
-            MatchupEvidence("a", "c", 0.04, "fraction", "test"),
-            MatchupEvidence("a", "d", -0.02, "fraction", "test"),
+            MatchupEvidence("a", "b", 0.01, "fraction", "test", evidence_type="measured:sub_hero"),
+            MatchupEvidence("a", "c", 0.04, "fraction", "test", evidence_type="measured:sub_hero"),
+            MatchupEvidence("a", "d", -0.02, "fraction", "test", evidence_type="measured:sub_hero_last"),
         ]
         normalized, scale = normalize_matchup_evidence(rows, percentile=1.0)
         self.assertAlmostEqual(scale, 4.0)
