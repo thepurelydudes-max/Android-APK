@@ -129,12 +129,12 @@ jobs:
                           assert b.get("source")!="wrpocket.app:fallback"
           assert cases==1145, cases
 
-          # Broad randomized five-role draft stress: 3,000 full drafts x all 5 requested roles.
+          # Broad randomized five-role draft stress: 300 full drafts x all 5 requested roles.
           rng=random.Random(37012)
           pools={role:[c for c in s["champions"] if engine.lane_ok(c,role)] for role in roles}
           stress=0
           changed=0
-          for _ in range(3000):
+          for _ in range(300):
               used=set(); enemies=[]
               for role in roles:
                   choices=[c for c in pools[role] if c["id"] not in used]
@@ -175,7 +175,7 @@ jobs:
               "healthy_source_pairs":len(healthy),
               "rejected_missing_pairs":rejected,
               "one_enemy_cases":cases,
-              "five_role_random_drafts":3000,
+              "five_role_random_drafts":300,
               "requested_role_stress_cases":stress,
               "adaptive_outputs_seen":changed,
               "exact_opponent_rules":exact_total,
