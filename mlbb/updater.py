@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 import db
+from data_contract import MatchupEvidence, normalize_matchup_evidence
 from media_cache import CHAMPION_DIR, ITEM_DIR, create_fallback_champion_icon, ensure_cache_dirs, safe_name, sync_cached_image
 from paths import APP_DIR
 from localization import has_cyrillic, russian_hero_name, russian_item_name
@@ -14,6 +15,8 @@ from sources import (
     MLBBDEX_ITEMS,
     RONE_ACADEMY_RECOMMENDED,
     RONE_ACADEMY_HERO_BUILDS,
+    RONE_ACADEMY_HEROES,
+    RONE_ACADEMY_HERO_COUNTERS,
     RONE_EQUIPMENT_EXPANDED,
     RONE_HERO_COUNTERS,
     RONE_HERO_RECOMMENDED,
@@ -28,7 +31,8 @@ from sources import (
     fetch_mlbbdex_items,
     fetch_mlbbdex_rankings,
     parse_rone_build_variants,
-    parse_rone_counter_payload,
+    parse_rone_academy_lane_filter,
+    parse_rone_academy_counter_raw,
     parse_rone_equipment,
     parse_rone_public_heroes,
     parse_rone_rank_payload,
@@ -567,6 +571,64 @@ def update_all(
         champs = db.champions()
         if not champs:
             raise RuntimeError("Не удалось получить список героев Mobile Legends из Rone Arena или MLBBDex")
+
+    # Academy lane filters are the canonical role assignment source.  The old
+    # merged metadata over-declared flex lanes and was the reason the seed audit
+    # expected 166 role builds while the live Academy only assigns 164.
+    preliminary_resolve = build_resolver(champs)
+    academy_lane_map: dict[str, list[str]] = {}
+    lane_evidence_rows: list[dict] = []
+    lane_filter_success = 0
+    for lane in LANE_TO_ROLE_RU:
+        try:
+            payload = net.get(
+                f"{RONE_ACADEMY_HEROES}?lane={lane}&size=300&index=1&order=asc&lang=en"
+            ).json()
+            raw_ids = parse_rone_academy_lane_filter(payload, lane)
+            lane_filter_success += 1
+            for raw_id in raw_ids:
+                cid = preliminary_resolve(raw_id)
+                if not cid:
+                    continue
+                values = academy_lane_map.setdefault(cid, [])
+                if lane not in values:
+                    values.append(lane)
+                    lane_evidence_rows.append({
+                        "champion_id": cid,
+                        "lane": lane,
+                        "evidence_type": "assignment",
+                        "source_lane_id": "",
+                        "rank_segment": "all",
+                        "usage_rate": None,
+                        "confidence": 1.0,
+                        "patch": "",
+                    })
+        except Exception as exc:
+            summary["errors"].append(f"Rone Academy lane {lane}: {exc}")
+
+    # Only replace role metadata when all five filters completed and practically
+    # the whole hero catalog was resolved. Partial network failures keep the
+    # last known metadata rather than silently shrinking selectable roles.
+    academy_lanes_valid = (
+        lane_filter_success == len(LANE_TO_ROLE_RU)
+        and len(academy_lane_map) >= max(1, len(champs) - 2)
+    )
+    if academy_lanes_valid:
+        for champ in champs:
+            cid = str(champ.get("id") or "")
+            if cid in academy_lane_map:
+                champ["lanes"] = [
+                    lane for lane in LANE_TO_ROLE_RU
+                    if lane in academy_lane_map[cid]
+                ]
+        summary["academy_lane_pairs"] = sum(len(v) for v in academy_lane_map.values())
+        summary["academy_lane_heroes"] = len(academy_lane_map)
+    else:
+        summary["errors"].append(
+            f"Academy lane assignment incomplete: filters={lane_filter_success}/5, "
+            f"heroes={len(academy_lane_map)}/{len(champs)}; keeping fallback lanes"
+        )
+
     for champ in champs:
         db.upsert_champion(
             str(champ["id"]), str(champ["name"]), list(champ.get("roles") or []),
@@ -575,6 +637,9 @@ def update_all(
             icon_url=str(champ.get("icon_url") or ""),
             specialties=list(champ.get("specialties") or []),
         )
+    if academy_lanes_valid and lane_evidence_rows:
+        db.replace_source_lane_evidence("mlbb.rone.academy", lane_evidence_rows)
+
     summary["champions"] = len(champs)
     valid_ids = {str(c["id"]) for c in champs}
     resolve = build_resolver(champs)
@@ -663,13 +728,16 @@ def update_all(
         if tier_dates:
             db.set_meta("tier_date", max(tier_dates))
 
-    # 3) Matchups: build a full per-hero matrix, not only relation hints.
+    # 3) Matchups: Academy counter pages preserve the raw upstream
+    # increase_win_rate values.  Normalize once across the complete matrix, keep
+    # both representations in SQLite, and only convert to the legacy +/-1.5
+    # scale at the current DraftMatrixEngine compatibility boundary.
     emit(update_text("loading_matchups", lang))
     relation_rows = relation_matchups(champs)
     detailed_matchups: list[tuple[str, str, str, float]] = []
-    matchup_source = "mlbb.rone.counters"
+    matchup_source = "mlbb.rone.academy.counters"
     matchup_patch = current_patch or "current"
-    cached_matchups = db.get_matchup_page_cache(matchup_source, matchup_patch)
+    raw_matchup_rows: dict[tuple[str, str, str], dict] = {}
     counter_pages_ok = 0
 
     for index, champ in enumerate(champs, 1):
@@ -678,27 +746,78 @@ def update_all(
         if not cid:
             continue
         url = (
-            RONE_HERO_COUNTERS.format(hero_id=cid)
-            + "?days=7&rank=all&size=300&index=1&lang=en"
+            RONE_ACADEMY_HERO_COUNTERS.format(hero_id=cid)
+            + "?rank=all&size=300&index=1&lang=en"
         )
-        rows: list[tuple[str, str, str, float]] = []
         try:
-            rows = parse_rone_counter_payload(net.get(url).json())
-            rows = [row for row in rows if row[0] in valid_ids and row[1] in valid_ids]
-            if rows:
-                db.upsert_matchup_page_cache(
-                    matchup_source, matchup_patch, cid, rows, source_url=url
-                )
+            page_rows = parse_rone_academy_counter_raw(net.get(url).json(), cid)
+            page_rows = [
+                row for row in page_rows
+                if str(row.get("champion_id") or "") in valid_ids
+                and str(row.get("enemy_id") or "") in valid_ids
+            ]
+            if page_rows:
                 counter_pages_ok += 1
+                for row in page_rows:
+                    key = (
+                        str(row.get("champion_id") or ""),
+                        str(row.get("enemy_id") or ""),
+                        str(row.get("role") or ""),
+                    )
+                    old = raw_matchup_rows.get(key)
+                    if old is None or abs(float(row.get("raw_edge") or 0.0)) > abs(float(old.get("raw_edge") or 0.0)):
+                        raw_matchup_rows[key] = row
         except Exception as exc:
-            summary["errors"].append(f"Rone counters {cid}: {exc}")
-        if not rows:
-            rows = list(cached_matchups.get(cid) or [])
-        detailed_matchups.extend(rows)
+            summary["errors"].append(f"Rone Academy counters {cid}: {exc}")
+
+    normalized_evidence: list[MatchupEvidence] = []
+    matchup_scale_pp = 0.0
+    matrix_expected = len(valid_ids) * max(0, len(valid_ids) - 1)
+    matrix_good = (
+        counter_pages_ok >= max(1, len(valid_ids) - 3)
+        and len(raw_matchup_rows) >= int(matrix_expected * 0.95)
+    )
+    if matrix_good:
+        evidence_objects = [
+            MatchupEvidence(
+                champion_id=str(row["champion_id"]),
+                enemy_id=str(row["enemy_id"]),
+                raw_edge=float(row.get("raw_edge") or 0.0),
+                raw_unit=str(row.get("raw_unit") or "fraction"),
+                source=matchup_source,
+                evidence_type=str(row.get("evidence_type") or "measured"),
+                role=str(row.get("role") or ""),
+                rank_segment=str(row.get("rank_segment") or "all"),
+                sample_window=str(row.get("sample_window") or "academy-current"),
+                confidence=float(row.get("confidence", 1.0) or 0.0),
+                patch=matchup_patch,
+            )
+            for row in raw_matchup_rows.values()
+        ]
+        normalized_evidence, matchup_scale_pp = normalize_matchup_evidence(evidence_objects)
+        db.replace_source_matchup_evidence(
+            matchup_source, [row.to_dict() for row in normalized_evidence]
+        )
+        detailed_matchups = [
+            (
+                row.champion_id,
+                row.enemy_id,
+                row.role,
+                max(-1.0, min(1.0, float(row.normalized_edge or 0.0))) * 1.5,
+            )
+            for row in normalized_evidence
+        ]
+        db.set_meta("matchup_edge_scale_pp_p95", f"{matchup_scale_pp:.6f}")
+        db.set_meta("matchup_evidence_source", matchup_source)
+    else:
+        summary["errors"].append(
+            f"Academy matchup matrix incomplete: pages={counter_pages_ok}/{len(valid_ids)}, "
+            f"edges={len(raw_matchup_rows)}/{matrix_expected}; keeping previous runtime matrix"
+        )
 
     summary["counter_pages"] = counter_pages_ok
-    if counter_pages_ok == len([c for c in champs if c.get("id")]):
-        db.prune_matchup_page_cache(matchup_source, matchup_patch)
+    summary["matchup_evidence"] = len(normalized_evidence)
+    summary["matchup_edge_scale_pp_p95"] = matchup_scale_pp
 
     # 4) Items and builds. MLBBDex defines the final shop catalog; Rone adds
     # icons/details and lane-specific build variants.
@@ -900,10 +1019,33 @@ def update_all(
     summary["role_variants"] = len(role_variant_rows)
     summary["role_build_pages"] = role_pages_ok
 
-    matchups = _merge_matchups(
-        relation_rows, detailed_matchups, live_matchups, valid_ids=valid_ids
-    )
-    db.replace_source_matchups("mlbb.matchups", matchups)
+    if detailed_matchups:
+        # Measured Academy matrix has priority. Relation/recommended hints fill
+        # only pairs absent from the measured matrix and never overwrite a
+        # smaller but real statistical edge merely because their heuristic
+        # magnitude is numerically larger.
+        measured = _merge_matchups(detailed_matchups, valid_ids=valid_ids)
+        by_key = {(a, b, role): (a, b, role, score) for a, b, role, score in measured}
+        for row in _merge_matchups(relation_rows, live_matchups, valid_ids=valid_ids):
+            key = (row[0], row[1], row[2])
+            by_key.setdefault(key, row)
+        matchups = list(by_key.values())
+        db.replace_source_matchups("mlbb.matchups", matchups)
+    else:
+        # A transient provider failure must not replace the last known-good full
+        # matrix with a tiny heuristic subset.
+        with db.connect() as con:
+            old_rows = con.execute(
+                "SELECT champion_id,enemy_id,role,score FROM matchups WHERE source='mlbb.matchups'"
+            ).fetchall()
+        matchups = [
+            (str(row["champion_id"]), str(row["enemy_id"]), str(row["role"]), float(row["score"]))
+            for row in old_rows
+        ]
+        if not matchups:
+            matchups = _merge_matchups(relation_rows, live_matchups, valid_ids=valid_ids)
+            if matchups:
+                db.replace_source_matchups("mlbb.matchups", matchups)
     summary["matchups"] = len(matchups)
 
     # 5) MLBB-specific item adaptation rules.
