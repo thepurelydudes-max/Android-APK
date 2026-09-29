@@ -1,0 +1,62 @@
+name: Exhaustive fallback diagnostic
+
+on:
+  push:
+    branches:
+      - diagnostic-build-adaptation-20260929
+    paths:
+      - "wild_rift/diagnose_fallback_exhaustive.py"
+      - ".github/workflows/diagnostic-fallback-exhaustive.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download canonical 3.7.12 APK seed
+        uses: actions/download-artifact@v4
+        with:
+          name: FARLINER-Wild-Rift-APK
+          path: ${{ runner.temp }}/wrca_base_apk
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 36425019210
+
+      - name: Restore exact hotfix database
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "${{ runner.temp }}/wrca_base_apk" -type f -name '*.apk' -print -quit)"
+          unzip -p "$APK" assets/app.zip > "${{ runner.temp }}/wrca_app.zip"
+          rm -rf wild_rift/assets/cache wild_rift/assets/data "${{ runner.temp }}/wrca_app"
+          mkdir -p "${{ runner.temp }}/wrca_app"
+          unzip -q "${{ runner.temp }}/wrca_app.zip" 'assets/cache/*' 'assets/data/*' -d "${{ runner.temp }}/wrca_app"
+          cp -a "${{ runner.temp }}/wrca_app/assets/cache" wild_rift/assets/
+          cp -a "${{ runner.temp }}/wrca_app/assets/data" wild_rift/assets/
+          python - <<'PY'
+          from pathlib import Path
+          import base64,lzma,sqlite3
+          dbp=Path("wild_rift/assets/data/wildrift.db")
+          sql=lzma.decompress(base64.b64decode(Path("wild_rift/preseed/pc_updated_3_7_12.sql.xz.b64").read_text())).decode()
+          con=sqlite3.connect(dbp); con.executescript(sql); con.commit()
+          print("quick_check",con.execute("pragma quick_check").fetchone()[0])
+          con.close()
+          PY
+
+      - name: Run exhaustive fallback diagnostic
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/wrca_runtime
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+        run: |
+          cd wild_rift
+          python diagnose_fallback_exhaustive.py
