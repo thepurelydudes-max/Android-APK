@@ -53,7 +53,10 @@ class EngineTests(unittest.TestCase):
             },
             "item_pools": {},
             "counter_items": {},
-            "role_builds": {},
+            "role_builds": {
+                ("a", "EXP"): {"items": ["Blade Armor", "Corrosion Scythe", "Demon Hunter Sword"], "boot_name": "", "source": "test"},
+                ("b", "EXP"): {"items": ["Blade Armor", "Corrosion Scythe", "Demon Hunter Sword"], "boot_name": "", "source": "test"},
+            },
             "role_variants": {},
             "role_situational": {},
             "role_boots": {},
@@ -66,6 +69,32 @@ class EngineTests(unittest.TestCase):
         result = engine.recommend_picks("EXP", [("Enemy1", ""), ("Enemy2", "")], snapshot=snapshot)
         self.assertEqual(result[0]["champion"]["id"], "a")
         self.assertTrue(result[0]["matrix_row"])
+
+    def test_pick_excludes_hero_without_selected_role_build(self):
+        items = {
+            name: {"name": name, "tier": "Upgraded", "category": "Attack"}
+            for name in ["Axe", "Spear", "Bow"]
+        }
+        champions = [
+            {"id": "a", "name": "A", "name_ru": "А", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
+            {"id": "b", "name": "B", "name_ru": "Б", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
+            {"id": "e", "name": "Enemy", "name_ru": "Враг", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
+        ]
+        snapshot = {
+            "champions": champions,
+            "champions_by_id": {c["id"]: c for c in champions},
+            "champion_aliases": {c["name"].casefold(): c for c in champions},
+            "champion_alias_ids": {c["name"].casefold(): {c["id"]} for c in champions},
+            "matchups": {("a", "e"): [("", 0.2)], ("b", "e"): [("", 1.5)]},
+            "tiers": {("a", "EXP"): "A", ("b", "EXP"): "S+"},
+            "stats": {("a", "exp", "all"): {"win_rate": 50.0}, ("b", "exp", "all"): {"win_rate": 60.0}},
+            "item_pools": {}, "counter_items": {},
+            "role_builds": {("a", "EXP"): {"items": ["Axe", "Spear", "Bow"], "boot_name": "", "source": "test"}},
+            "role_variants": {}, "role_situational": {}, "role_boots": {},
+            "role_opponent_adaptations": {}, "items": items,
+        }
+        result = engine.recommend_picks("EXP", [("Enemy", "")], snapshot=snapshot)
+        self.assertEqual([row["champion"]["id"] for row in result], ["a"])
 
     def test_role_build_keeps_core_and_adapts_flexible_slot(self):
         champion = {"id": "a", "name": "A", "name_ru": "А", "lanes": ["gold"], "roles": ["marksman"], "damage_type": "physical"}
