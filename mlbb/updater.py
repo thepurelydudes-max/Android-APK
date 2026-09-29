@@ -623,6 +623,7 @@ def update_all(
 
     stored_tiers = 0
     tier_dates: list[str] = []
+    tier_role_rows: list[tuple[str, str, str]] = []
     for row in dex_stats:
         cid = resolve(row.get("id") or row.get("name"))
         champ = next((c for c in champs if c["id"] == cid), None) if cid else None
@@ -634,16 +635,24 @@ def update_all(
             tier_dates.append(tier_date)
         lanes = list(champ.get("lanes") or []) or [""]
         for lane in lanes:
+            lane_norm = str(lane).casefold()
             db.upsert_stat_tier(
                 cid,
-                str(lane).casefold(),
+                lane_norm,
                 "all",
                 tier,
                 tier_date,
                 "MLBBDex /api/v1/rankings",
             )
+            role_ru = LANE_TO_ROLE_RU.get(lane_norm)
+            if role_ru:
+                tier_role_rows.append((cid, role_ru, tier))
             stored_tiers += 1
     summary["tiers"] = stored_tiers
+    if tier_role_rows:
+        db.replace_source_champion_tiers_partial(
+            "mlbbdex", tier_role_rows, patch=current_patch
+        )
     if stored_tiers:
         db.set_meta("tier_source", "MLBBDex /api/v1/rankings")
         if tier_dates:
