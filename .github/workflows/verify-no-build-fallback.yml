@@ -53,6 +53,12 @@ jobs:
           con.close()
           PY
 
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r wild_rift/requirements.txt
+
       - name: Run regression tests
         shell: bash
         env:
