@@ -43,16 +43,17 @@ DEFAULT_MATCHUP_SCALE_PP_P95 = 2.5
 
 
 def _dominant_matchup_targets(edges: list[DraftEdge], *, positive: bool = True) -> tuple[list[str], dict[str, float]]:
-    """Attribute the candidate matchup advantage across the current enemy draft.
+    """Find the enemies that actually explain the candidate's matchup advantage.
 
-    Same-sign raw percentage-point edges are converted to shares of 100%.
-    A target is called a counter when its share is at least the equal-share
-    baseline across all selected enemies: 20% for five, 25% for four, etc.
-    This makes the label relative to the current draft instead of an arbitrary
-    global matchup threshold.
+    The label is relative to this selected draft, not to a fixed global pp
+    threshold.  First keep above-equal-share contributors.  If they still explain
+    less than 80% of the same-sign matchup mass, add the next strongest targets.
+    A single overwhelming target stays single when it is at least twice the
+    second contribution.  Near-ties at the selection boundary are kept together.
     """
     if not edges:
         return [], {}
+
     values: list[tuple[str, float]] = []
     for row in edges:
         raw = float(row.edge)
@@ -62,19 +63,56 @@ def _dominant_matchup_targets(edges: list[DraftEdge], *, positive: bool = True) 
     if not values:
         return [], {}
 
+    values.sort(key=lambda item: item[1], reverse=True)
     total = sum(value for _name, value in values)
     if total <= 0.0:
         return [], {}
+
     shares = {name: 100.0 * value / total for name, value in values}
     baseline = 100.0 / max(1, len(edges))
-    epsilon = 1e-9
-    targets = [
-        name for name, value in sorted(values, key=lambda item: item[1], reverse=True)
-        if shares[name] + epsilon >= baseline
+    selected = [
+        (name, value) for name, value in values
+        if shares[name] + 1e-9 >= baseline
     ]
-    if not targets:
-        targets = [max(values, key=lambda item: item[1])[0]]
-    return targets, shares
+    if not selected:
+        selected = [values[0]]
+
+    # Preserve a genuinely concentrated one-target counter instead of forcing
+    # it to absorb a tiny second target merely to cross the cumulative target.
+    if (
+        len(selected) == 1
+        and len(values) > 1
+        and selected[0][1] >= 2.0 * values[1][1]
+    ):
+        return [selected[0][0]], shares
+
+    selected_names = {name for name, _value in selected}
+    cumulative = sum(shares[name] for name in selected_names)
+    for name, value in values:
+        if cumulative + 1e-9 >= 80.0:
+            break
+        if name in selected_names:
+            continue
+        selected.append((name, value))
+        selected_names.add(name)
+        cumulative += shares[name]
+
+    # If the next contribution is practically tied with the boundary target,
+    # keep it too.  This makes an even five-way matchup correctly show all five.
+    if selected:
+        boundary = selected[-1][1]
+        for name, value in values:
+            if name in selected_names:
+                continue
+            if boundary > 0.0 and value >= 0.80 * boundary:
+                selected.append((name, value))
+                selected_names.add(name)
+
+    ordered_names = [
+        name for name, _value in values
+        if name in selected_names
+    ]
+    return ordered_names, shares
 
 ITEM_TAGS = {
     "Dominance Ice": {"anti_heal", "anti_shield", "anti_physical", "anti_magic", "defense", "tank", "universal"},
@@ -395,7 +433,13 @@ def _has_valid_role_build(champion_id: str, role_ru: str, snapshot: dict | None 
 
 
 def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
-    """Rank role-valid heroes by their total matchup against the whole draft."""
+    """Recommend from the ten strongest literal draft-matchup rows.
+
+    Stage 1 is intentionally pure: every selected enemy contributes its raw
+    percentage-point edge and the ten greatest net sums become the candidate
+    pool.  Stage 2 ranks only that pool with the established 60/20/15/5 model:
+    matchup, strength-aware coverage, tier and role win rate.
+    """
     raw_enemy_objs: list[tuple[dict, str]] = []
     for name, enemy_role in enemies:
         champ = _find_champ(name, snapshot)
@@ -428,6 +472,21 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             except (TypeError, ValueError):
                 pass
 
+    try:
+        if snapshot is not None:
+            score_scale_pp = float(
+                snapshot.get("matchup_edge_scale_pp_p95")
+                or DEFAULT_MATCHUP_SCALE_PP_P95
+            )
+        else:
+            score_scale_pp = float(
+                db.get_meta("matchup_edge_scale_pp_p95", str(DEFAULT_MATCHUP_SCALE_PP_P95))
+                or DEFAULT_MATCHUP_SCALE_PP_P95
+            )
+    except (TypeError, ValueError):
+        score_scale_pp = DEFAULT_MATCHUP_SCALE_PP_P95
+    score_scale_pp = max(0.5, score_scale_pp)
+
     out: list[dict] = []
     for cand, tier, st in candidate_rows:
         matrix_edges: list[DraftEdge] = []
@@ -449,17 +508,22 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
                 weight=1.0,
             ))
 
-        # Every visible recommendation must be a counter to at least one member
-        # of the selected draft. Neutral/negative-only candidates are excluded.
+        # A visible recommendation must counter at least one selected opponent.
+        # Negative and neutral cells still remain in the sum and can pull the
+        # candidate down against the complete five-hero draft.
         if not any(float(row.edge) > 0.0 for row in raw_edges):
             continue
 
-        analysis = DRAFT_MATRIX.analyze_row(matrix_edges)
+        lane_analysis = DRAFT_MATRIX.analyze_row(matrix_edges)
+        raw_analysis = DRAFT_MATRIX.analyze_raw_draft(
+            raw_edges, scale_pp=score_scale_pp
+        )
+
         counter_targets, counter_shares = _dominant_matchup_targets(raw_edges, positive=True)
         threat_targets, threat_shares = _dominant_matchup_targets(raw_edges, positive=False)
         dominant_names = set(counter_targets) | set(threat_targets)
         neutral_targets = [
-            str(row.enemy_name) for row in matrix_edges
+            str(row.enemy_name) for row in raw_edges
             if str(row.enemy_name) not in dominant_names
         ]
 
@@ -471,40 +535,25 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
                 pass
         winrate_score = _winrate_percentile(wr, role_win_rates)
         tier_score = TIER_SCORE.get(tier, 50.0)
+
         components = DRAFT_MATRIX.final_score(
-            matchup_score=analysis["matchup_score"],
-            coverage_score=analysis["coverage_score"],
+            matchup_score=raw_analysis["matchup_score"],
+            coverage_score=raw_analysis["coverage_score"],
             tier_score=tier_score,
             winrate_score=winrate_score,
         )
         lane_hard_loss = any(
-            edge <= -HARD_MATCHUP_THRESHOLD for edge in analysis["direct_lane_edges"]
-        )
-        draft_matchup_sum_pp = sum(float(row.edge) for row in raw_edges)
-        draft_matchup_avg_pp = (
-            draft_matchup_sum_pp / len(raw_edges) if raw_edges else 0.0
-        )
-        try:
-            score_scale_pp = float(
-                (snapshot or {}).get("matchup_edge_scale_pp_p95")
-                or DEFAULT_MATCHUP_SCALE_PP_P95
-            )
-        except (TypeError, ValueError):
-            score_scale_pp = DEFAULT_MATCHUP_SCALE_PP_P95
-        score_scale_pp = max(0.5, score_scale_pp)
-        draft_matchup_score = 50.0 + 50.0 * max(
-            -1.0, min(1.0, draft_matchup_avg_pp / score_scale_pp)
+            edge <= -HARD_MATCHUP_THRESHOLD
+            for edge in lane_analysis["direct_lane_edges"]
         )
 
         out.append({
             "champion": cand,
-            # Rank and visible score both follow the literal sum/average against
-            # the selected enemies. Lane weighting and meta remain tie-breakers.
-            "score": draft_matchup_score,
+            "score": components["score"],
             "meta_score": components["score"],
-            "draft_matchup_sum": draft_matchup_sum_pp,
-            "draft_matchup_sum_pp": draft_matchup_sum_pp,
-            "draft_matchup_avg_pp": draft_matchup_avg_pp,
+            "draft_matchup_sum": raw_analysis["sum_pp"],
+            "draft_matchup_sum_pp": raw_analysis["sum_pp"],
+            "draft_matchup_avg_pp": raw_analysis["avg_pp"],
             "matchup_raw_row": [
                 {
                     "enemy_id": row.enemy_id,
@@ -516,44 +565,63 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
                 }
                 for row in raw_edges
             ],
-            "draft_matchup_score": draft_matchup_score,
+            "draft_matchup_score": raw_analysis["matchup_score"],
             "positive": counter_targets,
             "negative": threat_targets,
             "neutral": neutral_targets,
             "counter_shares": counter_shares,
             "threat_shares": threat_shares,
-            "positive_strength": analysis["positive_strength"],
-            "negative_strength": analysis["negative_strength"],
-            "hard_counters": analysis["hard_counters"],
+            "positive_strength": raw_analysis["positive_strength_pp"],
+            "positive_strength_pp": raw_analysis["positive_strength_pp"],
+            "negative_strength": raw_analysis["negative_strength_pp"],
+            "negative_strength_pp": raw_analysis["negative_strength_pp"],
+            "hard_counters": lane_analysis["hard_counters"],
             "coverage_count": len(counter_targets),
-            "coverage_total": analysis["coverage_total"],
-            "coverage_score": analysis["coverage_score"],
+            "coverage_total": len(raw_edges),
+            "effective_coverage": raw_analysis["effective_coverage"],
+            "coverage_breadth_score": raw_analysis["coverage_breadth_score"],
+            "coverage_strength_score": raw_analysis["coverage_strength_score"],
+            "coverage_score": raw_analysis["coverage_score"],
             "coverage_bonus": components["coverage"],
             "tier": tier,
             "tier_score": tier_score,
             "tier_bonus": components["tier"],
             "win_rate": wr,
             "winrate_score": winrate_score,
-            "matchup_score": analysis["matchup_score"],
+            "matchup_score": raw_analysis["matchup_score"],
+            "lane_matchup_score": lane_analysis["matchup_score"],
             "matchup_contribution": components["matchup"],
             "winrate_bonus": components["winrate"],
             "lane_hard_loss": lane_hard_loss,
-            "enemy_roles": analysis["enemy_roles"],
-            "matrix_row": analysis["matrix_row"],
+            "enemy_roles": lane_analysis["enemy_roles"],
+            "matrix_row": lane_analysis["matrix_row"],
         })
 
-    out.sort(
+    # Stage 1: matrix discovery.  Meta strength cannot sneak a hero into the
+    # recommendation table if its literal matchup sum is outside the best ten.
+    shortlist = sorted(
+        out,
         key=lambda x: (
-            x["draft_matchup_sum"],
+            x["draft_matchup_sum_pp"],
+            x["draft_matchup_score"],
+            x["positive_strength_pp"],
+        ),
+        reverse=True,
+    )[:10]
+
+    # Stage 2: order the already matchup-qualified pool with the full model.
+    shortlist.sort(
+        key=lambda x: (
+            x["score"],
+            x["draft_matchup_sum_pp"],
+            x["coverage_score"],
             not x.get("lane_hard_loss", False),
-            x["matchup_score"],
-            x.get("meta_score", 0.0),
             TIER_ORDER.get(x.get("tier", ""), 0),
             x["winrate_score"],
         ),
         reverse=True,
     )
-    return out[:limit]
+    return shortlist[:max(0, min(int(limit), 10))]
 
 def _generic_threat_tags(enemy: dict) -> set[str]:
     roles = {str(x).casefold() for x in enemy.get("roles", [])}
