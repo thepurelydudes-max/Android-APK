@@ -258,16 +258,6 @@ def _item_dataset_headers() -> dict[str, str]:
     return headers
 
 
-def _catalog_items_for_wanted(wanted_items: set[str]) -> list[tuple[str, str, str]]:
-    wanted_slugs = {slugish(clean_item_name(x)) for x in wanted_items if clean_item_name(x)}
-    rows = []
-    for item in db.item_catalog_rows():
-        if wanted_slugs and slugish(clean_item_name(item.get("name", ""))) not in wanted_slugs:
-            continue
-        rows.append((item.get("name", ""), item.get("category", ""), item.get("icon_url", "")))
-    return rows
-
-
 def _catalog_finished_items() -> list[tuple[str, str, str]]:
     """Return the complete local WR Pocket catalog of final, fully upgraded items."""
     rows: list[tuple[str, str, str]] = []
