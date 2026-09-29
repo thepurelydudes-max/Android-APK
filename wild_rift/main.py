@@ -127,18 +127,6 @@ TEXT = {
 }
 
 
-def _safe_json_list(value) -> list[str]:
-    if isinstance(value, list):
-        return [str(x) for x in value]
-    if not value:
-        return []
-    try:
-        data = json.loads(value)
-        return [str(x) for x in data] if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
 class MobileAssistant:
     """Portrait Android UI which mirrors the desktop application's information density."""
 
