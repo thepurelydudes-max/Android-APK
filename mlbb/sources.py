@@ -647,7 +647,11 @@ def parse_rone_build_variants(payload: dict, equipment_by_id: dict[int, str]) ->
                     name = ""
                 if name and name not in names:
                     names.append(name)
-            if len(names) < 4:
+            # Rone's measured MLBB build statistics commonly expose the
+            # three-item core. That is valid source data, not an incomplete
+            # six-slot build: MLCA protects these three core items and fills
+            # only the flexible tail later.
+            if len(names) < 3:
                 continue
             try:
                 pick = float(build.get("build_pick_rate") or 0.0)
