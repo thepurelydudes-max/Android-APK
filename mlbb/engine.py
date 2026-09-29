@@ -198,7 +198,14 @@ def _matchup_score(champion_id: str, enemy_id: str, preferred_role: str = "", sn
 def _snapshot_matchup_pp(snapshot: dict, champion_id: str, enemy_id: str, preferred_role: str = "") -> float:
     rows = snapshot.get("matchup_raw_pp", {}).get((champion_id, enemy_id), [])
     if not rows:
-        return 0.0
+        # Backward compatibility for older bundled snapshots/tests that only
+        # contain the historical internal -1.5..+1.5 matrix.
+        internal = _snapshot_matchup_score(snapshot, champion_id, enemy_id, preferred_role)
+        try:
+            scale_pp = float(snapshot.get("matchup_edge_scale_pp_p95") or DEFAULT_MATCHUP_SCALE_PP_P95)
+        except (TypeError, ValueError):
+            scale_pp = DEFAULT_MATCHUP_SCALE_PP_P95
+        return (float(internal) / MATCHUP_ABS_MAX) * scale_pp
     role_norm = preferred_role.casefold()
     if role_norm:
         exact = [float(score) for role, score in rows if str(role).casefold() == role_norm]
