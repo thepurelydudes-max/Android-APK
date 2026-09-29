@@ -1,0 +1,95 @@
+name: Test strict role-build invariant
+
+on:
+  push:
+    branches:
+      - role-build-required-invariant-20260929
+    paths:
+      - "wild_rift/engine.py"
+      - "wild_rift/test_regressions.py"
+      - ".github/workflows/test-strict-role-build-invariant.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "requests>=2.32.0" "Pillow>=10.4.0" "beautifulsoup4>=4.12.0"
+      - name: Download canonical 3.7.12 APK seed
+        uses: actions/download-artifact@v4
+        with:
+          name: FARLINER-Wild-Rift-APK
+          path: ${{ runner.temp }}/wrca_base_apk
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 36425019210
+      - name: Restore exact updated database
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "${{ runner.temp }}/wrca_base_apk" -type f -name '*.apk' -print -quit)"
+          unzip -p "$APK" assets/app.zip > "${{ runner.temp }}/app.zip"
+          rm -rf wild_rift/assets/cache wild_rift/assets/data "${{ runner.temp }}/app"
+          mkdir -p "${{ runner.temp }}/app"
+          unzip -q "${{ runner.temp }}/app.zip" 'assets/cache/*' 'assets/data/*' -d "${{ runner.temp }}/app"
+          cp -a "${{ runner.temp }}/app/assets/cache" wild_rift/assets/
+          cp -a "${{ runner.temp }}/app/assets/data" wild_rift/assets/
+          python - <<'PY'
+          from pathlib import Path
+          import base64,lzma,sqlite3
+          root=Path("wild_rift")
+          sql=lzma.decompress(base64.b64decode((root/"preseed"/"pc_updated_3_7_12.sql.xz.b64").read_text())).decode()
+          con=sqlite3.connect(root/"assets"/"data"/"wildrift.db")
+          con.executescript(sql); con.commit()
+          assert con.execute("PRAGMA quick_check").fetchone()[0]=="ok"
+          assert con.execute("SELECT COUNT(*) FROM role_builds").fetchone()[0]==226
+          con.close()
+          PY
+      - name: Run regression suite and real invariant
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/runtime
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+        run: |
+          set -euo pipefail
+          cd wild_rift
+          python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py main.py
+          python -m unittest -v test_regressions.py
+          python - <<'PY'
+          import db, engine
+          from paths import ensure_initial_data
+          ensure_initial_data(); db.init_db()
+          s=db.load_runtime_snapshot()
+          legal=[]; supported=[]; unsupported=[]
+          for c in s["champions"]:
+              for role in engine.CANONICAL_ROLES:
+                  if not engine.lane_ok(c,role):
+                      continue
+                  pair=(c["id"],role); legal.append(pair)
+                  (supported if engine._has_usable_role_build(c,role,s) else unsupported).append(pair)
+          print("legal_pairs",len(legal))
+          print("supported_pairs",len(supported))
+          print("unsupported_pairs",unsupported)
+          for role in engine.CANONICAL_ROLES:
+              enemy=next(c for c in s["champions"] if engine.lane_ok(c,role))
+              results=engine.recommend_picks(role,[(enemy["id"],role)],limit=500,snapshot=s)
+              returned={r["champion"]["id"] for r in results}
+              assert all(engine._has_usable_role_build(r["champion"],role,s) for r in results)
+              assert all(cid not in returned for cid,r in unsupported if r==role)
+          for cid,role in unsupported:
+              try:
+                  engine.recommend_build(cid,[],role_ru=role,snapshot=s)
+              except ValueError:
+                  pass
+              else:
+                  raise AssertionError((cid,role))
+          print("STRICT_ROLE_BUILD_INVARIANT_OK")
+          PY
