@@ -1,0 +1,74 @@
+name: Exhaustive build audit
+
+on:
+  push:
+    branches:
+      - exhaustive-build-audit-20260929
+    paths:
+      - "wild_rift/exhaustive_build_audit.py"
+      - ".github/workflows/exhaustive-build-audit.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download canonical 3.7.12 APK seed
+        uses: actions/download-artifact@v4
+        with:
+          name: FARLINER-Wild-Rift-APK
+          path: ${{ runner.temp }}/wrca_base_apk
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 36425019210
+
+      - name: Restore exact updated database/cache used by final 3.7.12 hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "${{ runner.temp }}/wrca_base_apk" -type f -name '*.apk' -print -quit)"
+          test -n "$APK" && test -f "$APK"
+          cp "$GITHUB_WORKSPACE/wild_rift/assets/cache/items/Soul_Transfer.png" "${{ runner.temp }}/Soul_Transfer.png"
+          unzip -p "$APK" assets/app.zip > "${{ runner.temp }}/wrca_app.zip"
+          rm -rf "$GITHUB_WORKSPACE/wild_rift/assets/cache" "$GITHUB_WORKSPACE/wild_rift/assets/data"
+          rm -rf "${{ runner.temp }}/wrca_app"
+          mkdir -p "${{ runner.temp }}/wrca_app"
+          unzip -q "${{ runner.temp }}/wrca_app.zip" 'assets/cache/*' 'assets/data/*' -d "${{ runner.temp }}/wrca_app"
+          cp -a "${{ runner.temp }}/wrca_app/assets/cache" "$GITHUB_WORKSPACE/wild_rift/assets/"
+          cp -a "${{ runner.temp }}/wrca_app/assets/data" "$GITHUB_WORKSPACE/wild_rift/assets/"
+          cp "${{ runner.temp }}/Soul_Transfer.png" "$GITHUB_WORKSPACE/wild_rift/assets/cache/items/Soul_Transfer.png"
+          python - <<'PY'
+          from pathlib import Path
+          import base64, lzma, sqlite3
+          root=Path("wild_rift")
+          p=root/"preseed"/"pc_updated_3_7_12.sql.xz.b64"
+          sql=lzma.decompress(base64.b64decode(p.read_text(encoding="ascii"))).decode("utf-8")
+          con=sqlite3.connect(root/"assets"/"data"/"wildrift.db")
+          con.executescript(sql); con.commit()
+          print("quick_check", con.execute("PRAGMA quick_check").fetchone()[0])
+          print("role_builds", con.execute("SELECT COUNT(*) FROM role_builds").fetchone()[0])
+          print("variants", con.execute("SELECT COUNT(*) FROM role_build_variants").fetchone()[0])
+          print("situational", con.execute("SELECT COUNT(*) FROM role_build_situational").fetchone()[0])
+          print("opponent_adaptations", con.execute("SELECT COUNT(*) FROM role_build_opponent_adaptations").fetchone()[0])
+          con.close()
+          PY
+
+      - name: Run exhaustive source/fallback audit and stress matrix
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/wrca_audit_runtime
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/wild_rift"
+          python exhaustive_build_audit.py
