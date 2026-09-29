@@ -126,6 +126,44 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result[0]["champion"]["id"], "a")
         self.assertTrue(result[0]["matrix_row"])
 
+    def test_pick_ranking_uses_raw_five_enemy_sum(self):
+        champions = [
+            {"id": "a", "name": "A", "name_ru": "А", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
+            {"id": "b", "name": "B", "name_ru": "Б", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
+            {"id": "e1", "name": "E1", "name_ru": "E1", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
+            {"id": "e2", "name": "E2", "name_ru": "E2", "lanes": ["mid"], "roles": ["mage"], "damage_type": "magic"},
+        ]
+        items = {
+            name: {"name": name, "tier": "Upgraded", "category": "Attack"}
+            for name in ["Axe", "Spear", "Bow"]
+        }
+        snapshot = {
+            "champions": champions,
+            "champions_by_id": {row["id"]: row for row in champions},
+            "champion_aliases": {row["name"].casefold(): row for row in champions},
+            "champion_alias_ids": {row["name"].casefold(): {row["id"]} for row in champions},
+            "matchups": {
+                ("a", "e1"): [("", 1.5)], ("a", "e2"): [("", 1.5)],
+                ("b", "e1"): [("", 0.2)], ("b", "e2"): [("", 0.2)],
+            },
+            "matchup_raw_pp": {
+                ("a", "e1"): [("", 1.0)], ("a", "e2"): [("", 1.0)],
+                ("b", "e1"): [("", 3.0)], ("b", "e2"): [("", -0.5)],
+            },
+            "tiers": {("a", "EXP"): "S+", ("b", "EXP"): "A"},
+            "stats": {("a", "exp", "all"): {"win_rate": 60.0}, ("b", "exp", "all"): {"win_rate": 50.0}},
+            "item_pools": {}, "counter_items": {},
+            "role_builds": {
+                ("a", "EXP"): {"items": ["Axe", "Spear", "Bow"], "boot_name": "", "source": "test"},
+                ("b", "EXP"): {"items": ["Axe", "Spear", "Bow"], "boot_name": "", "source": "test"},
+            },
+            "role_variants": {}, "role_situational": {}, "role_boots": {},
+            "role_opponent_adaptations": {}, "items": items,
+        }
+        result = engine.recommend_picks("EXP", [("E1", ""), ("E2", "")], snapshot=snapshot)
+        self.assertEqual(result[0]["champion"]["id"], "b")
+        self.assertAlmostEqual(result[0]["draft_matchup_sum_pp"], 2.5)
+        self.assertEqual(result[0]["positive"], ["E1"])
     def test_pick_excludes_hero_without_selected_role_build(self):
         items = {
             name: {"name": name, "tier": "Upgraded", "category": "Attack"}
