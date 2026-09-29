@@ -344,6 +344,27 @@ def _counter_items(enemy_id: str, snapshot: dict | None = None) -> list[dict]:
     return [row for row in rows if _finished_item(row.get("item_name", ""), snapshot)]
 
 
+def _has_usable_role_build(
+    champ: dict,
+    role_ru: str,
+    snapshot: dict | None = None,
+) -> bool:
+    """Return True only for a healthy exact champion+role WRC build.
+
+    Lane metadata is not sufficient for recommendations. If WildRiftCore does
+    not provide at least three finished core items for this exact role, the
+    champion is not recommendable on that role.
+    """
+    row = _role_build_row(champ.get("id", ""), role_ru, snapshot)
+    if row is None:
+        return False
+    core = _finished_only(
+        [str(x) for x in (row.get("items") or [])],
+        snapshot,
+    )
+    return len(core) >= 3
+
+
 def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
     """Rank legal role candidates against the complete entered enemy draft.
 
@@ -379,17 +400,11 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
         # rank a legal flex pick but can never invent a role for that champion.
         if not lane_ok(cand, role_ru):
             continue
-        # Production recommendations must have a complete WildRiftCore build
-        # for this exact champion+role. This keeps the old WR Pocket fallback
-        # unreachable from normal draft recommendations.
-        if snapshot is None or snapshot.get("role_builds"):
-            row = _role_build_row(cand.get("id", ""), role_ru, snapshot)
-            healthy_core = (
-                _finished_only([str(x) for x in (row.get("items") or [])], snapshot)
-                if row else []
-            )
-            if row is None or len(healthy_core) < 3:
-                continue
+        # A legal lane is recommendable only when the exact champion+role has
+        # a healthy WildRiftCore build. This rule is data-driven and therefore
+        # also covers any future flex role automatically.
+        if not _has_usable_role_build(cand, role_ru, snapshot):
+            continue
         candidate_rows.append((cand, tier, st))
 
     role_win_rates: list[float] = []
