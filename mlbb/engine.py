@@ -301,8 +301,13 @@ def _has_valid_role_build(champion_id: str, role_ru: str, snapshot: dict | None 
         str(name) for name in (row.get("items") or [])
         if str(name).strip() and _finished_item(str(name), snapshot)
     ]
-    # Academy measured builds legitimately expose a three-item statistical core.
-    return len(items) >= 3
+    boot = str(row.get("boot_name") or "").strip()
+    if boot and not _finished_item(boot, snapshot):
+        boot = ""
+    # Academy's measured top-three footprint may be either 3 non-boot items or
+    # 2 non-boot items + boots. Both are real lane evidence; the flexible tail
+    # is filled later from the downloaded champion pool.
+    return len(items) >= 3 or (len(items) >= 2 and bool(boot))
 
 
 def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
