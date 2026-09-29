@@ -61,13 +61,7 @@ class DraftMatrixEngine:
             return 1.5 if enemy_role in {"Голд", "Роум"} else 1.0
         return 1.0
 
-    def analyze_row(
-        self,
-        edges: Iterable[DraftEdge],
-        *,
-        counter_threshold: float = 0.0,
-        threat_threshold: float | None = None,
-    ) -> dict:
+    def analyze_row(self, edges: Iterable[DraftEdge]) -> dict:
         rows = list(edges)
         if not rows:
             return {
@@ -105,13 +99,6 @@ class DraftMatrixEngine:
         enemy_roles: dict[str, str] = {}
         matrix_row: list[dict] = []
 
-        threshold = max(0.0, min(1.5, float(counter_threshold)))
-        danger_threshold = (
-            threshold
-            if threat_threshold is None
-            else max(0.0, min(1.5, float(threat_threshold)))
-        )
-
         for row in rows:
             edge = self.clamp_edge(row.edge)
             weight = max(0.0, float(row.weight))
@@ -122,27 +109,15 @@ class DraftMatrixEngine:
             if weight > 1.0:
                 direct_lane_edges.append(edge)
 
-            # Scoring remains continuous: even a small positive/negative matchup
-            # still contributes to the recommendation. The threshold below is
-            # only for the human-facing "Counters / Threats" classification.
             if edge > 0:
+                positives.append(row.enemy_name)
                 positive_weight += weight
                 positive_strength += edge * weight
-            elif edge < 0:
-                negative_strength += abs(edge) * weight
-
-            is_counter = edge > 0 if threshold <= 0 else edge >= threshold
-            is_threat = (
-                edge < 0
-                if danger_threshold <= 0
-                else edge <= -danger_threshold
-            )
-            if is_counter:
-                positives.append(row.enemy_name)
-                if edge >= max(1.0, threshold):
+                if edge >= 1.0:
                     hard_counters += 1
-            elif is_threat:
+            elif edge < 0:
                 negatives.append(row.enemy_name)
+                negative_strength += abs(edge) * weight
             else:
                 neutral.append(row.enemy_name)
 
@@ -157,11 +132,6 @@ class DraftMatrixEngine:
         avg_edge = weighted_edge_sum / total_weight if total_weight > 0 else 0.0
         avg_edge = max(-1.0, min(1.0, avg_edge))
         matchup_score = 50.0 + 50.0 * avg_edge
-
-        # Coverage answers a different question from matchup strength:
-        # "what share of this draft do I actually beat?" The direct lane target
-        # uses the same role weight as MATCHUP so an off-role counter cannot
-        # outweigh a direct EXP/Mid/Gold/Roam/Jungle matchup.
         coverage_score = (
             100.0 * positive_weight / total_weight
             if total_weight > 0 else 0.0
