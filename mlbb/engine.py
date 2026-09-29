@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 import re
+import statistics
 
 import db
 from draft_matrix_engine import DraftEdge, DraftMatrixEngine
@@ -66,24 +67,43 @@ def _counter_label_threshold(snapshot: dict | None = None) -> float:
     )
 
 
-def _adaptive_counter_threshold(
-    best_edges: list[float],
-    target_count: int,
-    strict_threshold: float,
-) -> float:
-    """Use the strongest threshold that still leaves enough counter candidates."""
-    positives = sorted(
-        (float(edge) for edge in best_edges if float(edge) > 0.0),
-        reverse=True,
-    )
-    if target_count <= 0 or not positives:
-        return max(0.0, float(strict_threshold))
-    if len(positives) < target_count:
-        return 0.0
-    return max(
-        0.0,
-        min(float(strict_threshold), positives[target_count - 1]),
-    )
+def _dominant_matchup_targets(edges: list[DraftEdge], *, positive: bool = True) -> tuple[list[str], dict[str, float]]:
+    """Return the dominant matchup targets relative to this exact enemy draft.
+
+    Positive (or negative) matchup magnitudes are converted to shares of the
+    candidate's total same-sign pressure. A clear natural break separates the
+    dominant group from weak incidental edges. If there is no clear break, all
+    same-sign targets are kept, which correctly handles an evenly spread draft.
+    """
+    values: list[tuple[str, float]] = []
+    for row in edges:
+        raw = float(row.edge)
+        magnitude = raw if positive else -raw
+        if magnitude > 0.0:
+            values.append((str(row.enemy_name), magnitude))
+    if not values:
+        return [], {}
+
+    values.sort(key=lambda item: item[1], reverse=True)
+    total = sum(value for _name, value in values)
+    shares = {name: (100.0 * value / total if total > 0 else 0.0) for name, value in values}
+    if len(values) == 1:
+        return [values[0][0]], shares
+    if len(values) == 2:
+        top, second = values[0][1], values[1][1]
+        if second > 0 and top >= second * 2.0:
+            return [values[0][0]], shares
+        return [name for name, _value in values], shares
+
+    share_values = [shares[name] for name, _value in values]
+    gaps = [share_values[i] - share_values[i + 1] for i in range(len(share_values) - 1)]
+    largest_gap = max(gaps)
+    split_index = gaps.index(largest_gap) + 1
+    median_gap = float(statistics.median(gaps))
+    clear_break = largest_gap > 0.0 and (median_gap <= 0.0 or largest_gap > 2.0 * median_gap)
+    if not clear_break:
+        return [name for name, _value in values], shares
+    return [name for name, _value in values[:split_index]], shares
 
 ITEM_TAGS = {
     "Dominance Ice": {"anti_heal", "anti_shield", "anti_physical", "anti_magic", "defense", "tank", "universal"},
@@ -357,7 +377,7 @@ def _has_valid_role_build(champion_id: str, role_ru: str, snapshot: dict | None 
 
 
 def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
-    """Rank role-valid MLBB counter candidates against the whole enemy draft."""
+    """Rank role-valid heroes by their total matchup against the whole draft."""
     raw_enemy_objs: list[tuple[dict, str]] = []
     for name, enemy_role in enemies:
         champ = _find_champ(name, snapshot)
@@ -390,7 +410,7 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             except (TypeError, ValueError):
                 pass
 
-    staged: list[tuple[dict, str, dict | None, list[DraftEdge], float]] = []
+    out: list[dict] = []
     for cand, tier, st in candidate_rows:
         matrix_edges: list[DraftEdge] = []
         for enemy, inferred_role in enemy_objs:
@@ -402,33 +422,20 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
                 edge=edge,
                 weight=DRAFT_MATRIX.lane_weight(role_ru, inferred_role),
             ))
-        best_edge = max((row.edge for row in matrix_edges), default=0.0)
-        staged.append((cand, tier, st, matrix_edges, best_edge))
 
-    target_count = min(max(0, int(limit)), len(staged))
-    strict_counter_threshold = _counter_label_threshold(snapshot)
-    adaptive_counter_threshold = _adaptive_counter_threshold(
-        [row[4] for row in staged],
-        target_count,
-        strict_counter_threshold,
-    )
+        # Every visible recommendation must be a counter to at least one member
+        # of the selected draft. Neutral/negative-only candidates are excluded.
+        if not any(float(row.edge) > 0.0 for row in matrix_edges):
+            continue
 
-    positive_staged = [row for row in staged if row[4] > 0.0]
-    if len(positive_staged) >= target_count and target_count > 0:
-        eligible_staged = [
-            row for row in positive_staged
-            if row[4] >= adaptive_counter_threshold
+        analysis = DRAFT_MATRIX.analyze_row(matrix_edges)
+        counter_targets, counter_shares = _dominant_matchup_targets(matrix_edges, positive=True)
+        threat_targets, threat_shares = _dominant_matchup_targets(matrix_edges, positive=False)
+        dominant_names = set(counter_targets) | set(threat_targets)
+        neutral_targets = [
+            str(row.enemy_name) for row in matrix_edges
+            if str(row.enemy_name) not in dominant_names
         ]
-    else:
-        eligible_staged = positive_staged
-
-    out: list[dict] = []
-    for cand, tier, st, matrix_edges, best_edge in eligible_staged:
-        analysis = DRAFT_MATRIX.analyze_row(
-            matrix_edges,
-            counter_threshold=adaptive_counter_threshold,
-            threat_threshold=strict_counter_threshold,
-        )
 
         wr = None
         if st and st.get("win_rate") is not None:
@@ -447,17 +454,24 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
         lane_hard_loss = any(
             edge <= -HARD_MATCHUP_THRESHOLD for edge in analysis["direct_lane_edges"]
         )
+        draft_matchup_sum = sum(float(row.edge) * max(0.0, float(row.weight)) for row in matrix_edges)
 
         out.append({
             "champion": cand,
-            "score": components["score"],
-            "positive": analysis["positive"],
-            "negative": analysis["negative"],
-            "neutral": analysis["neutral"],
+            # The visible score now follows the same matchup quantity that
+            # determines rank. Meta/tier remain secondary tie-break information.
+            "score": analysis["matchup_score"],
+            "meta_score": components["score"],
+            "draft_matchup_sum": draft_matchup_sum,
+            "positive": counter_targets,
+            "negative": threat_targets,
+            "neutral": neutral_targets,
+            "counter_shares": counter_shares,
+            "threat_shares": threat_shares,
             "positive_strength": analysis["positive_strength"],
             "negative_strength": analysis["negative_strength"],
             "hard_counters": analysis["hard_counters"],
-            "coverage_count": analysis["coverage_count"],
+            "coverage_count": len(counter_targets),
             "coverage_total": analysis["coverage_total"],
             "coverage_score": analysis["coverage_score"],
             "coverage_bonus": components["coverage"],
@@ -472,21 +486,16 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             "lane_hard_loss": lane_hard_loss,
             "enemy_roles": analysis["enemy_roles"],
             "matrix_row": analysis["matrix_row"],
-            "best_counter_edge": best_edge,
-            "counter_threshold": adaptive_counter_threshold,
-            "strict_counter_threshold": strict_counter_threshold,
         })
 
     out.sort(
         key=lambda x: (
-            not x.get("lane_hard_loss", False),
-            x["score"],
+            x["draft_matchup_sum"],
             x["matchup_score"],
-            x["coverage_score"],
+            not x.get("lane_hard_loss", False),
+            x.get("meta_score", 0.0),
             TIER_ORDER.get(x.get("tier", ""), 0),
             x["winrate_score"],
-            x["positive_strength"],
-            -x["negative_strength"],
         ),
         reverse=True,
     )
