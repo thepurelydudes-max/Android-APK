@@ -529,7 +529,7 @@ def update_all(
         _check_cancel(cancel_check)
         raw_progress(message)
 
-    net = Net(delay=0.08)
+    net = Net(delay=0.22)
     now = datetime.now().astimezone()
     now_iso = now.isoformat()
     previous_patch = db.get_meta("patch_version", "")
@@ -898,34 +898,39 @@ def update_all(
             if str(x).casefold().strip() in LANE_TO_ROLE_RU
         ))
 
-        # Preferred source: current Rone hero guides with complete six-item
-        # equipment sets. Map numeric hero_lane through road_sort metadata
-        # returned by Rone itself, never through guessed constants.
+        # First use the exact-lane measured Academy build. Hero-specific guide
+        # pages are fetched lazily only when the measured lane feed has no
+        # usable three-slot footprint. This cuts more than a hundred redundant
+        # requests from a normal refresh and makes the updater much less likely
+        # to hit source rate limits.
         guide_variants_by_lane: dict[str, list[dict]] = {}
+        guide_loaded = False
         guide_url = (
             RONE_HERO_RECOMMENDED.format(hero_id=cid)
             + "?size=100&index=1&order=desc&lang=en"
         )
-        try:
-            guide_payload = net.get(guide_url).json()
-            guide_variants = parse_rone_recommended_variants(
-                guide_payload, equipment_by_id
-            )
-        except Exception as exc:
-            guide_variants = []
-            summary["errors"].append(f"Rone guides {cid}: {exc}")
-
         lane_id_map = {
             str(k): str(v).casefold()
             for k, v in (champ.get("lane_id_map") or {}).items()
             if str(v).casefold() in LANE_TO_ROLE_RU
         }
-        for variant in guide_variants:
-            lane = lane_id_map.get(str(variant.get("lane_id") or ""))
-            if not lane and len(lanes) == 1:
-                lane = lanes[0]
-            if lane in LANE_TO_ROLE_RU:
-                guide_variants_by_lane.setdefault(lane, []).append(variant)
+
+        def normalize_unique_variants(source_variants: list[dict]) -> list[tuple[list[str], str, dict]]:
+            unique: list[tuple[list[str], str, dict]] = []
+            seen_builds: set[tuple[str, ...]] = set()
+            for variant in source_variants:
+                core, boot = _split_finished_build(
+                    variant.get("items") or [], build_item_by_slug
+                )
+                measured_slots = len(core) + (1 if boot else 0)
+                if len(core) < 2 or measured_slots < 3:
+                    continue
+                key = tuple([*core, boot] if boot else core)
+                if key in seen_builds:
+                    continue
+                seen_builds.add(key)
+                unique.append((core, boot, variant))
+            return unique
 
         for lane in lanes:
             role_ru = LANE_TO_ROLE_RU[lane]
@@ -941,34 +946,35 @@ def update_all(
                 historical_variants = []
                 summary["errors"].append(f"Rone builds {cid}/{lane}: {exc}")
 
-            variants = [
-                *guide_variants_by_lane.get(lane, []),
-                *historical_variants,
-            ]
-            unique: list[tuple[list[str], str, dict]] = []
-            seen_builds: set[tuple[str, ...]] = set()
-            for variant in variants:
-                core, boot = _split_finished_build(
-                    variant.get("items") or [], build_item_by_slug
+            unique = normalize_unique_variants(historical_variants)
+
+            # A guide request is a fallback, not a mandatory per-hero request.
+            if not unique:
+                if not guide_loaded:
+                    guide_loaded = True
+                    try:
+                        guide_payload = net.get(guide_url).json()
+                        guide_variants = parse_rone_recommended_variants(
+                            guide_payload, equipment_by_id
+                        )
+                    except Exception as exc:
+                        guide_variants = []
+                        summary["errors"].append(f"Rone guides {cid}: {exc}")
+
+                    for variant in guide_variants:
+                        guide_lane = lane_id_map.get(str(variant.get("lane_id") or ""))
+                        if not guide_lane and len(lanes) == 1:
+                            guide_lane = lanes[0]
+                        if guide_lane in LANE_TO_ROLE_RU:
+                            guide_variants_by_lane.setdefault(guide_lane, []).append(variant)
+
+                unique = normalize_unique_variants(
+                    guide_variants_by_lane.get(lane, [])
                 )
-                # Academy's measured "top 3" footprint can legitimately be
-                # two non-boot core items plus one boots slot.  Treat the
-                # measured three-slot footprint as valid without pretending
-                # boots are a third damage/defense core item.
-                measured_slots = len(core) + (1 if boot else 0)
-                if len(core) < 2 or measured_slots < 3:
-                    continue
-                key = tuple([*core, boot] if boot else core)
-                if key in seen_builds:
-                    continue
-                seen_builds.add(key)
-                unique.append((core, boot, variant))
 
             if not unique:
                 continue
             role_pages_ok += 1
-            # Prefer a complete guide build when available; otherwise preserve
-            # the statistically measured 3-item core for this exact lane.
             unique.sort(
                 key=lambda row: (
                     len(row[0]) >= 5 and bool(row[1]),
@@ -1000,13 +1006,15 @@ def update_all(
                     trigger = f"Rone {role_ru} guide build."
                 role_variant_rows.append((
                     cid, role_ru, title, core, trigger,
-                    variant_index, [], "", current_patch, url,
+                    variant_index, [], "", current_patch,
+                    guide_url if meta.get("title") else url,
                 ))
-                role_boot_rows.append((
-                    cid, role_ru, boot,
-                    f"Boot option from live Rone build #{variant_index}",
-                    variant_index,
-                ))
+                if boot:
+                    role_boot_rows.append((
+                        cid, role_ru, boot,
+                        f"Boot option from live Rone build #{variant_index}",
+                        variant_index,
+                    ))
                 for pos, item_name in enumerate(core, 1):
                     role_pool_rows.append((cid, item_name, role_ru, variant_index * 10 + pos))
                     if item_name not in base_set:
