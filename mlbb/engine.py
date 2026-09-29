@@ -567,20 +567,23 @@ def recommend_build(
         if base_boot and not _finished_item(base_boot, snapshot):
             base_boot = ""
 
-    if len(base_core) < 5:
-        base_core = []
-        fallback_boots: list[str] = []
-        for p in pool:
-            name = str(p.get("item_name") or "")
-            cat = str(p.get("category") or "").casefold()
-            if is_boot_item(name, cat):
-                if name not in fallback_boots:
-                    fallback_boots.append(name)
-            elif name and name not in base_core:
-                base_core.append(name)
-        base_core = base_core[:5]
-        if not base_boot and fallback_boots:
-            base_boot = fallback_boots[0]
+    # A measured MLBB build may intentionally contain only its three statistical
+    # core items. Preserve them and fill only the flexible tail from the hero's
+    # downloaded pool instead of discarding the measured core.
+    fallback_boots: list[str] = []
+    for p in pool:
+        name = str(p.get("item_name") or "")
+        cat = str(p.get("category") or "").casefold()
+        if not name or not _finished_item(name, snapshot):
+            continue
+        if is_boot_item(name, cat):
+            if name not in fallback_boots:
+                fallback_boots.append(name)
+        elif name not in base_core and len(base_core) < 5:
+            base_core.append(name)
+    base_core = base_core[:5]
+    if not base_boot and fallback_boots:
+        base_boot = fallback_boots[0]
 
     base = [*base_core]
     if base_boot:
