@@ -875,11 +875,43 @@ def update_all(
     # independent matchup signal.
     live_pools: list[tuple[str, str, str, int]] = []
     live_matchups: list[tuple[str, str, str, float]] = []
+    global_guide_variants: list[dict] = []
     try:
         recommended = net.get(f"{RONE_ACADEMY_RECOMMENDED}?size=300&index=1&order=desc&lang=en").json()
         live_pools, live_matchups = parse_rone_recommended_payload(recommended, equipment_by_id)
+        global_guide_variants = parse_rone_recommended_variants(
+            recommended, equipment_by_id
+        )
     except Exception as exc:
         summary["errors"].append(f"Rone Academy recommendations: {exc}")
+
+    # The global Recommended feed is the current Academy build source and can
+    # carry complete six-slot authored builds. Resolve its numeric hero_lane
+    # through each hero's own road_sort metadata so no lane constants are
+    # guessed.
+    champion_by_id = {str(row.get("id") or ""): row for row in champs}
+    global_guides_by_role: dict[tuple[str, str], list[dict]] = {}
+    for variant in global_guide_variants:
+        guide_cid = str(variant.get("champion_id") or "")
+        champ_row = champion_by_id.get(guide_cid)
+        if not champ_row:
+            continue
+        guide_lanes = [
+            str(x).casefold().strip() for x in (champ_row.get("lanes") or [])
+            if str(x).casefold().strip() in LANE_TO_ROLE_RU
+        ]
+        lane_id_map = {
+            str(k): str(v).casefold()
+            for k, v in (champ_row.get("lane_id_map") or {}).items()
+            if str(v).casefold() in LANE_TO_ROLE_RU
+        }
+        guide_lane = lane_id_map.get(str(variant.get("lane_id") or ""))
+        if not guide_lane and len(guide_lanes) == 1:
+            guide_lane = guide_lanes[0]
+        if guide_lane in LANE_TO_ROLE_RU:
+            global_guides_by_role.setdefault(
+                (guide_cid, guide_lane), []
+            ).append(variant)
 
     # WRCA-parity role-build model: one core build per supported lane plus every
     # unique live Rone variant. These rows are what ship inside the APK seed.
@@ -898,23 +930,9 @@ def update_all(
             if str(x).casefold().strip() in LANE_TO_ROLE_RU
         ))
 
-        # First use the exact-lane measured Academy build. Hero-specific guide
-        # pages are fetched lazily only when the measured lane feed has no
-        # usable three-slot footprint. This cuts more than a hundred redundant
-        # requests from a normal refresh and makes the updater much less likely
-        # to hit source rate limits.
-        guide_variants_by_lane: dict[str, list[dict]] = {}
-        guide_loaded = False
-        guide_url = (
-            RONE_HERO_RECOMMENDED.format(hero_id=cid)
-            + "?size=100&index=1&order=desc&lang=en"
-        )
-        lane_id_map = {
-            str(k): str(v).casefold()
-            for k, v in (champ.get("lane_id_map") or {}).items()
-            if str(v).casefold() in LANE_TO_ROLE_RU
-        }
-
+        # Prefer the current global Recommended guide when it has a complete
+        # role-specific build. Fall back to the older measured /builds endpoint
+        # only for roles not represented in the current guide feed.
         def normalize_unique_variants(source_variants: list[dict]) -> list[tuple[list[str], str, dict]]:
             unique: list[tuple[list[str], str, dict]] = []
             seen_builds: set[tuple[str, ...]] = set()
@@ -934,43 +952,24 @@ def update_all(
 
         for lane in lanes:
             role_ru = LANE_TO_ROLE_RU[lane]
+            guide_url = RONE_ACADEMY_RECOMMENDED
             url = (
                 RONE_ACADEMY_HERO_BUILDS.format(hero_id=cid)
                 + f"?rank=all&lane={lane}&size=100&index=1&lang=en"
             )
-            try:
-                historical_variants = parse_rone_build_variants(
-                    net.get(url).json(), equipment_by_id
-                )
-            except Exception as exc:
-                historical_variants = []
-                summary["errors"].append(f"Rone builds {cid}/{lane}: {exc}")
 
-            unique = normalize_unique_variants(historical_variants)
-
-            # A guide request is a fallback, not a mandatory per-hero request.
+            unique = normalize_unique_variants(
+                global_guides_by_role.get((cid, lane), [])
+            )
             if not unique:
-                if not guide_loaded:
-                    guide_loaded = True
-                    try:
-                        guide_payload = net.get(guide_url).json()
-                        guide_variants = parse_rone_recommended_variants(
-                            guide_payload, equipment_by_id
-                        )
-                    except Exception as exc:
-                        guide_variants = []
-                        summary["errors"].append(f"Rone guides {cid}: {exc}")
-
-                    for variant in guide_variants:
-                        guide_lane = lane_id_map.get(str(variant.get("lane_id") or ""))
-                        if not guide_lane and len(lanes) == 1:
-                            guide_lane = lanes[0]
-                        if guide_lane in LANE_TO_ROLE_RU:
-                            guide_variants_by_lane.setdefault(guide_lane, []).append(variant)
-
-                unique = normalize_unique_variants(
-                    guide_variants_by_lane.get(lane, [])
-                )
+                try:
+                    historical_variants = parse_rone_build_variants(
+                        net.get(url).json(), equipment_by_id
+                    )
+                except Exception as exc:
+                    historical_variants = []
+                    summary["errors"].append(f"Rone builds {cid}/{lane}: {exc}")
+                unique = normalize_unique_variants(historical_variants)
 
             if not unique:
                 continue
@@ -985,9 +984,10 @@ def update_all(
                 reverse=True,
             )
             base_core, base_boot, base_meta = unique[0]
+            is_guide = bool(base_meta.get("title"))
             role_build_rows.append((
                 cid, role_ru, base_core, base_boot, current_patch,
-                guide_url if base_meta.get("title") else url,
+                guide_url if is_guide else url,
             ))
 
             base_set = set(base_core)
@@ -1094,6 +1094,8 @@ def update_all(
     summary["role_builds"] = len(role_build_rows)
     summary["role_variants"] = len(role_variant_rows)
     summary["role_build_pages"] = role_pages_ok
+    summary["global_guide_variants"] = len(global_guide_variants)
+    summary["global_guide_role_pairs"] = len(global_guides_by_role)
 
     if detailed_matchups:
         # Measured Academy matrix has priority. Relation/recommended hints fill
