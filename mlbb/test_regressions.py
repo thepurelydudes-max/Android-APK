@@ -61,7 +61,10 @@ class EngineTests(unittest.TestCase):
             "role_situational": {},
             "role_boots": {},
             "role_opponent_adaptations": {},
-            "items": {},
+            "items": {
+                name: {"name": name, "tier": "Upgraded", "category": "Attack"}
+                for name in ["Blade Armor", "Corrosion Scythe", "Demon Hunter Sword"]
+            },
         }
         snapshot["champions_by_id"] = {c["id"]: c for c in snapshot["champions"]}
         snapshot["champion_aliases"] = {c["name"].casefold(): c for c in snapshot["champions"]}
