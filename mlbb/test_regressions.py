@@ -99,6 +99,32 @@ class EngineTests(unittest.TestCase):
         result = engine.recommend_picks("EXP", [("Enemy", "")], snapshot=snapshot)
         self.assertEqual([row["champion"]["id"] for row in result], ["a"])
 
+    def test_pick_accepts_two_core_plus_boots_measured_footprint(self):
+        items = {
+            "Axe": {"name": "Axe", "tier": "Upgraded", "category": "Attack"},
+            "Spear": {"name": "Spear", "tier": "Upgraded", "category": "Attack"},
+            "Tough Boots": {"name": "Tough Boots", "tier": "Upgraded", "category": "Movement"},
+        }
+        champions = [
+            {"id": "a", "name": "A", "name_ru": "А", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
+            {"id": "e", "name": "Enemy", "name_ru": "Враг", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
+        ]
+        snapshot = {
+            "champions": champions,
+            "champions_by_id": {c["id"]: c for c in champions},
+            "champion_aliases": {c["name"].casefold(): c for c in champions},
+            "champion_alias_ids": {c["name"].casefold(): {c["id"]} for c in champions},
+            "matchups": {("a", "e"): [("", 0.4)]},
+            "tiers": {("a", "EXP"): "A"},
+            "stats": {("a", "exp", "all"): {"win_rate": 51.0}},
+            "item_pools": {}, "counter_items": {},
+            "role_builds": {("a", "EXP"): {"items": ["Axe", "Spear"], "boot_name": "Tough Boots", "source": "test"}},
+            "role_variants": {}, "role_situational": {}, "role_boots": {},
+            "role_opponent_adaptations": {}, "items": items,
+        }
+        result = engine.recommend_picks("EXP", [("Enemy", "")], snapshot=snapshot)
+        self.assertEqual([row["champion"]["id"] for row in result], ["a"])
+
     def test_role_build_keeps_core_and_adapts_flexible_slot(self):
         champion = {"id": "a", "name": "A", "name_ru": "А", "lanes": ["gold"], "roles": ["marksman"], "damage_type": "physical"}
         enemy = {"id": "e", "name": "Enemy", "name_ru": "Враг", "lanes": ["gold"], "roles": ["marksman"], "damage_type": "physical"}
