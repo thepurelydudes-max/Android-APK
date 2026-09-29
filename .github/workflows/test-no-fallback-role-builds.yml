@@ -1,0 +1,151 @@
+name: Test no-fallback role builds
+
+on:
+  push:
+    branches:
+      - no-fallback-role-builds-20260929
+    paths:
+      - "wild_rift/engine.py"
+      - "wild_rift/test_regressions.py"
+      - ".github/workflows/test-no-fallback-role-builds.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "requests>=2.32.0" "Pillow>=10.4.0" "beautifulsoup4>=4.12.0"
+
+      - name: Download canonical 3.7.12 APK seed
+        uses: actions/download-artifact@v4
+        with:
+          name: FARLINER-Wild-Rift-APK
+          path: ${{ runner.temp }}/wrca_base_apk
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 36425019210
+
+      - name: Restore exact updated 3.7.12 database/cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "${{ runner.temp }}/wrca_base_apk" -type f -name '*.apk' -print -quit)"
+          test -n "$APK" && test -f "$APK"
+          cp "$GITHUB_WORKSPACE/wild_rift/assets/cache/items/Soul_Transfer.png" "${{ runner.temp }}/Soul_Transfer.png"
+          unzip -p "$APK" assets/app.zip > "${{ runner.temp }}/wrca_app.zip"
+          rm -rf "$GITHUB_WORKSPACE/wild_rift/assets/cache" "$GITHUB_WORKSPACE/wild_rift/assets/data"
+          mkdir -p "${{ runner.temp }}/wrca_app"
+          unzip -q "${{ runner.temp }}/wrca_app.zip" 'assets/cache/*' 'assets/data/*' -d "${{ runner.temp }}/wrca_app"
+          cp -a "${{ runner.temp }}/wrca_app/assets/cache" "$GITHUB_WORKSPACE/wild_rift/assets/"
+          cp -a "${{ runner.temp }}/wrca_app/assets/data" "$GITHUB_WORKSPACE/wild_rift/assets/"
+          cp "${{ runner.temp }}/Soul_Transfer.png" "$GITHUB_WORKSPACE/wild_rift/assets/cache/items/Soul_Transfer.png"
+          python - <<'PY'
+          from pathlib import Path
+          import base64, lzma, sqlite3
+          root=Path("wild_rift")
+          sql=lzma.decompress(base64.b64decode((root/"preseed"/"pc_updated_3_7_12.sql.xz.b64").read_text())).decode()
+          con=sqlite3.connect(root/"assets"/"data"/"wildrift.db")
+          con.executescript(sql); con.commit()
+          assert con.execute("PRAGMA quick_check").fetchone()[0]=="ok"
+          assert con.execute("SELECT COUNT(*) FROM role_builds").fetchone()[0]==226
+          con.close()
+          PY
+
+      - name: Run regression suite
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/wrca_test_runtime
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/wild_rift"
+          python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py main.py
+          python -m unittest -v test_regressions.py
+
+      - name: Verify real database recommendation invariant
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/wrca_invariant_runtime
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/wild_rift"
+          python - <<'PY'
+          import db, engine
+          from paths import ensure_initial_data
+
+          ensure_initial_data()
+          db.init_db()
+          snapshot=db.load_runtime_snapshot()
+          champs=snapshot["champions"]
+
+          legal=[]
+          supported=[]
+          unsupported=[]
+          for champ in champs:
+              for role in engine.CANONICAL_ROLES:
+                  if not engine.lane_ok(champ, role):
+                      continue
+                  pair=(champ["id"], role)
+                  legal.append(pair)
+                  if engine._has_usable_role_build(champ, role, snapshot):
+                      supported.append(pair)
+                  else:
+                      unsupported.append(pair)
+
+          print("legal_pairs", len(legal))
+          print("supported_pairs", len(supported))
+          print("unsupported_pairs", unsupported)
+
+          # Every normal recommendation must have a healthy exact-role WRC build.
+          for role in engine.CANONICAL_ROLES:
+              enemy=next(c for c in champs if engine.lane_ok(c, role))
+              results=engine.recommend_picks(
+                  role, [(enemy["id"], role)], limit=500, snapshot=snapshot
+              )
+              for row in results:
+                  champ=row["champion"]
+                  assert engine._has_usable_role_build(champ, role, snapshot), (champ["id"], role)
+
+              returned={row["champion"]["id"] for row in results}
+              for cid, bad_role in unsupported:
+                  if bad_role == role:
+                      assert cid not in returned, (cid, role)
+
+          # Direct requests for unsupported role builds must refuse rather than
+          # entering the historical WR Pocket fallback.
+          enemy=champs[0]
+          for cid, role in unsupported:
+              try:
+                  engine.recommend_build(cid, [(enemy["id"], "")], role_ru=role, snapshot=snapshot)
+              except ValueError as exc:
+                  assert "нет полноценной сборки WildRiftCore" in str(exc)
+              else:
+                  raise AssertionError(f"unsupported role build did not fail: {cid}/{role}")
+
+          # Every supported role build must stay on the WRC path.
+          enemy=champs[0]
+          for cid, role in supported:
+              if cid == enemy["id"]:
+                  other=champs[1]
+              else:
+                  other=enemy
+              result=engine.recommend_build(cid, [(other["id"], "")], role_ru=role, snapshot=snapshot)
+              assert result.get("source") != "wrpocket.app:fallback", (cid, role)
+              assert not result.get("fallback_used", False), (cid, role)
+
+          print("NO_FALLBACK_INVARIANT_OK")
+          PY
