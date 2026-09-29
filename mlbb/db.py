@@ -178,6 +178,7 @@ def init_db() -> None:
         _ensure_column(con, "champions", "name_ru", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "champions", "icon_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "champions", "icon_path", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(con, "champions", "specialties_json", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(con, "items", "name_ru", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "icon_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "icon_path", "TEXT NOT NULL DEFAULT ''")
@@ -238,17 +239,30 @@ def get_meta(key: str, default: str = "") -> str:
     return row[0] if row else default
 
 
-def upsert_champion(champ_id: str, name: str, roles: list[str], lanes: list[str], damage_type: str, source: str, updated_at: str = "", name_ru: str = "", icon_url: str = "", icon_path: str = "") -> None:
+def upsert_champion(
+    champ_id: str, name: str, roles: list[str], lanes: list[str], damage_type: str,
+    source: str, updated_at: str = "", name_ru: str = "", icon_url: str = "",
+    icon_path: str = "", specialties: list[str] | None = None,
+) -> None:
+    specialties = list(specialties or [])
     with connect() as con:
         con.execute(
-            """INSERT INTO champions(id,name,roles_json,lanes_json,damage_type,source,updated_at,name_ru,icon_url,icon_path)
-            VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+            """INSERT INTO champions(
+                id,name,roles_json,lanes_json,damage_type,source,updated_at,
+                name_ru,icon_url,icon_path,specialties_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
             name=excluded.name, roles_json=excluded.roles_json, lanes_json=excluded.lanes_json,
             damage_type=excluded.damage_type, source=excluded.source, updated_at=excluded.updated_at,
             name_ru=CASE WHEN excluded.name_ru<>'' THEN excluded.name_ru ELSE champions.name_ru END,
             icon_url=CASE WHEN excluded.icon_url<>'' THEN excluded.icon_url ELSE champions.icon_url END,
-            icon_path=CASE WHEN excluded.icon_path<>'' THEN excluded.icon_path ELSE champions.icon_path END""",
-            (champ_id, name, json.dumps(roles, ensure_ascii=False), json.dumps(lanes, ensure_ascii=False), damage_type or "", source, updated_at or "", name_ru or "", icon_url or "", icon_path or ""),
+            icon_path=CASE WHEN excluded.icon_path<>'' THEN excluded.icon_path ELSE champions.icon_path END,
+            specialties_json=CASE WHEN excluded.specialties_json<>'[]' THEN excluded.specialties_json ELSE champions.specialties_json END""",
+            (
+                champ_id, name, json.dumps(roles, ensure_ascii=False),
+                json.dumps(lanes, ensure_ascii=False), damage_type or "", source,
+                updated_at or "", name_ru or "", icon_url or "", icon_path or "",
+                json.dumps(specialties, ensure_ascii=False),
+            ),
         )
     aliases = [champ_id, name, name_ru, *COMMON_CHAMPION_ALIASES.get(champ_id, ())]
     replace_champion_aliases(champ_id, [x for x in aliases if x])
@@ -865,7 +879,7 @@ def champions() -> list[dict]:
         rows = con.execute("SELECT * FROM champions ORDER BY name COLLATE NOCASE").fetchall()
     out=[]
     for r in rows:
-        d=dict(r); d["roles"]=json.loads(d.pop("roles_json") or "[]"); d["lanes"]=json.loads(d.pop("lanes_json") or "[]"); out.append(d)
+        d=dict(r); d["roles"]=json.loads(d.pop("roles_json") or "[]"); d["lanes"]=json.loads(d.pop("lanes_json") or "[]"); d["specialties"]=json.loads(d.pop("specialties_json", "[]") or "[]"); out.append(d)
     return out
 
 
@@ -1016,6 +1030,7 @@ def load_runtime_snapshot() -> dict:
         champ = dict(row)
         champ["roles"] = json.loads(champ.pop("roles_json") or "[]")
         champ["lanes"] = json.loads(champ.pop("lanes_json") or "[]")
+        champ["specialties"] = json.loads(champ.pop("specialties_json", "[]") or "[]")
         champions_list.append(champ)
         champions_by_id[champ["id"]] = champ
 
