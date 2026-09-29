@@ -664,6 +664,37 @@ class RecommendationRegressionTests(unittest.TestCase):
                 role_ru="Барон", snapshot=snapshot,
             )
 
+
+        partial_core = names[:3]
+        partial_snapshot = make_snapshot(
+            champions,
+            matchups={("Malphite", "Irelia"): [("Барон", 3.0)]},
+            items=items,
+            role_builds={
+                ("Malphite", "Барон"): {
+                    "champion_id": "Malphite",
+                    "role": "Барон",
+                    "items": partial_core,
+                    "boot_name": "Plated Steelcaps",
+                    "source": "wildriftcore.com",
+                    "source_url": "https://example.invalid/malphite/builds",
+                }
+            },
+        )
+        partial_picks = engine.recommend_picks(
+            "Барон", [("Irelia", "Барон")], limit=8,
+            snapshot=partial_snapshot,
+        )
+        self.assertNotIn(
+            "Malphite",
+            [row["champion"]["id"] for row in partial_picks],
+        )
+        with self.assertRaisesRegex(ValueError, "WildRiftCore"):
+            engine.recommend_build(
+                "Malphite", [("Irelia", "Барон")],
+                role_ru="Барон", snapshot=partial_snapshot,
+            )
+
     def test_healthy_role_build_remains_preferred_over_fallback(self):
         champions = [
             {"id": "Malphite", "name": "Malphite", "name_ru": "Мальфит", "roles": ["Tank"], "lanes": ["top"], "damage_type": "Magic"},
