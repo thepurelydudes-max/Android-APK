@@ -1,0 +1,178 @@
+name: Verify no build fallback
+
+on:
+  push:
+    branches:
+      - fix-disable-build-fallback-20260929
+    paths:
+      - "wild_rift/engine.py"
+      - "wild_rift/test_regressions.py"
+      - ".github/workflows/verify-no-build-fallback.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download canonical 3.7.12 APK seed
+        uses: actions/download-artifact@v4
+        with:
+          name: FARLINER-Wild-Rift-APK
+          path: ${{ runner.temp }}/wrca_base_apk
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 36425019210
+
+      - name: Restore exact final hotfix database
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "${{ runner.temp }}/wrca_base_apk" -type f -name '*.apk' -print -quit)"
+          unzip -p "$APK" assets/app.zip > "${{ runner.temp }}/wrca_app.zip"
+          rm -rf wild_rift/assets/cache wild_rift/assets/data "${{ runner.temp }}/wrca_app"
+          mkdir -p "${{ runner.temp }}/wrca_app"
+          unzip -q "${{ runner.temp }}/wrca_app.zip" 'assets/cache/*' 'assets/data/*' -d "${{ runner.temp }}/wrca_app"
+          cp -a "${{ runner.temp }}/wrca_app/assets/cache" wild_rift/assets/
+          cp -a "${{ runner.temp }}/wrca_app/assets/data" wild_rift/assets/
+          python - <<'PY'
+          from pathlib import Path
+          import base64,lzma,sqlite3
+          dbp=Path("wild_rift/assets/data/wildrift.db")
+          sql=lzma.decompress(base64.b64decode(Path("wild_rift/preseed/pc_updated_3_7_12.sql.xz.b64").read_text())).decode()
+          con=sqlite3.connect(dbp); con.executescript(sql); con.commit()
+          assert con.execute("pragma quick_check").fetchone()[0]=="ok"
+          con.close()
+          PY
+
+      - name: Run regression tests
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/wrca_tests
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+        run: |
+          cd wild_rift
+          python -m unittest test_regressions.py -v
+
+      - name: Prove fallback unreachable from normal recommendations
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/wrca_verify
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+        run: |
+          cd wild_rift
+          python - <<'PY'
+          import random
+          import db, engine
+          from paths import ensure_initial_data
+
+          ensure_initial_data(); db.init_db()
+          s=db.load_runtime_snapshot()
+          roles=list(engine.CANONICAL_ROLES)
+
+          legal=[]
+          healthy=[]
+          rejected=[]
+          for champ in s["champions"]:
+              for role in roles:
+                  if not engine.lane_ok(champ, role):
+                      continue
+                  legal.append((champ["id"],role))
+                  row=s.get("role_builds",{}).get((champ["id"],role))
+                  if row and len(engine._finished_only([str(x) for x in row.get("items",[])],s))>=3:
+                      healthy.append((champ["id"],role))
+                      r=engine.recommend_build(champ["id"],[],role_ru=role,snapshot=s)
+                      assert not r.get("fallback_used",False)
+                      assert r.get("source")!="wrpocket.app:fallback"
+                      assert len(r.get("ordered") or [])>=3
+                  else:
+                      try:
+                          engine.recommend_build(champ["id"],[],role_ru=role,snapshot=s)
+                      except ValueError as e:
+                          assert "WildRiftCore" in str(e)
+                          rejected.append((champ["id"],role))
+                      else:
+                          raise AssertionError(("missing role build did not reject",champ["id"],role))
+
+          assert len(legal)==229, len(legal)
+          assert len(healthy)==226, len(healthy)
+          assert sorted(rejected)==sorted([("Nidalee","Барон"),("Shen","Лес"),("Viego","Барон")]), rejected
+
+          # Exhaust every legal one-enemy role state x every requested role.
+          cases=0
+          for enemy in s["champions"]:
+              for erole in roles:
+                  if not engine.lane_ok(enemy,erole):
+                      continue
+                  for myrole in roles:
+                      recs=engine.recommend_picks(myrole,[(enemy["id"],erole)],limit=8,snapshot=s)
+                      cases+=1
+                      for rec in recs:
+                          key=(rec["champion"]["id"],myrole)
+                          assert key in healthy, ("unhealthy recommendation",key,enemy["id"],erole)
+                          b=engine.recommend_build(key[0],[(enemy["id"],erole)],role_ru=myrole,snapshot=s)
+                          assert not b.get("fallback_used",False)
+                          assert b.get("source")!="wrpocket.app:fallback"
+          assert cases==1145, cases
+
+          # Broad randomized five-role draft stress: 20,000 full drafts x all 5 requested roles.
+          rng=random.Random(37012)
+          pools={role:[c for c in s["champions"] if engine.lane_ok(c,role)] for role in roles}
+          stress=0
+          changed=0
+          for _ in range(20000):
+              used=set(); enemies=[]
+              for role in roles:
+                  choices=[c for c in pools[role] if c["id"] not in used]
+                  c=rng.choice(choices); used.add(c["id"]); enemies.append((c["id"],role))
+              for myrole in roles:
+                  recs=engine.recommend_picks(myrole,enemies,limit=8,snapshot=s)
+                  for rec in recs:
+                      cid=rec["champion"]["id"]
+                      assert (cid,myrole) in healthy
+                      b=engine.recommend_build(cid,enemies,role_ru=myrole,snapshot=s)
+                      assert not b.get("fallback_used",False)
+                      assert b.get("source")!="wrpocket.app:fallback"
+                      assert len(b.get("ordered") or [])>=3
+                      if b.get("situational") or b.get("selected_variant"):
+                          changed+=1
+                  stress+=1
+
+          # Exhaust all 68 exact WRC opponent adaptation rows.
+          exact_total=0
+          for (cid,role),rows in s.get("role_opponent_adaptations",{}).items():
+              for row in rows:
+                  exact_total+=1
+                  enemy=db.resolve_snapshot_champion(s,str(row.get("enemy_name") or ""))
+                  assert enemy is not None
+                  b=engine.recommend_build(cid,[(enemy["id"],"")],role_ru=role,snapshot=s)
+                  hits=b.get("exact_opponent_adaptations") or []
+                  wanted_enemy=db.normalize_search(str(row.get("enemy_name") or ""))
+                  wanted_item=str(row.get("item_name") or "")
+                  assert any(
+                      db.normalize_search(str(h.get("enemy") or ""))==wanted_enemy
+                      and str(h.get("item") or "")==wanted_item
+                      for h in hits
+                  ), (cid,role,row)
+
+          assert exact_total==68, exact_total
+          print({
+              "legal_pairs":len(legal),
+              "healthy_source_pairs":len(healthy),
+              "rejected_missing_pairs":rejected,
+              "one_enemy_cases":cases,
+              "five_role_random_drafts":20000,
+              "requested_role_stress_cases":stress,
+              "adaptive_outputs_seen":changed,
+              "exact_opponent_rules":exact_total,
+              "fallback_hits":0,
+          })
+          PY
