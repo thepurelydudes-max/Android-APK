@@ -344,6 +344,23 @@ def _counter_items(enemy_id: str, snapshot: dict | None = None) -> list[dict]:
     return [row for row in rows if _finished_item(row.get("item_name", ""), snapshot)]
 
 
+def _has_usable_role_build(
+    champ: dict,
+    role_ru: str,
+    snapshot: dict | None = None,
+) -> bool:
+    """True only when this exact champion+role has a usable WRC build.
+
+    Role metadata alone is not enough for a recommendation. If WildRiftCore
+    does not provide a healthy role build (at least three finished core items),
+    the champion must not enter the recommendation list for that role.
+    """
+    core, _boot, _situational, _boots, source_row = _approved_role_build(
+        champ, role_ru, snapshot
+    )
+    return source_row is not None and len(core) >= 3
+
+
 def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
     """Rank legal role candidates against the complete entered enemy draft.
 
@@ -378,6 +395,12 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
         # Selected role is a hard eligibility gate. Niche/noisy stat rows can
         # rank a legal flex pick but can never invent a role for that champion.
         if not lane_ok(cand, role_ru):
+            continue
+        # A legal lane without a healthy WildRiftCore role build is not a
+        # recommendable pick. This is a general invariant, not a champion list:
+        # future flex roles automatically stay hidden until WRC publishes a
+        # usable build for that exact champion+role.
+        if not _has_usable_role_build(cand, role_ru, snapshot):
             continue
         candidate_rows.append((cand, tier, st))
 
@@ -1597,12 +1620,13 @@ def recommend_build(
         champ["id"], effective_role, snapshot
     )
 
-    # Never let a temporary WildRiftCore parser/cache/network failure erase the
-    # working recommendation foundation. A healthy champion+role source still
-    # wins; only missing/incomplete core data falls back to the proven pool
-    # builder that existed before the source-driven rewrite.
+    # Never fabricate a role build from a champion-wide fallback pool.
+    # recommend_picks() filters these champion+role pairs out up front; keep the
+    # same invariant here as a final safety gate for any direct build request.
     if source_row is None or len(core) < 3:
-        return _fallback_pool_build(champ, enemy_objs, effective_role, snapshot)
+        raise ValueError(
+            "Для выбранной роли нет полноценной сборки WildRiftCore"
+        )
 
     reasons = defaultdict(list)
     reason_details = defaultdict(list)
