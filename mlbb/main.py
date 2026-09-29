@@ -76,6 +76,7 @@ TEXT = {
         "lang": "EN",
         "selected": "Мой герой",
         "score": "Оценка",
+        "draft_matchup": "Матчап Σ",
         "recommended_items": "Рекомендуемые предметы",
         "build_description": "Описание сборки",
         "offline": "Основная работа офлайн; интернет нужен только для обновления базы.",
@@ -109,6 +110,7 @@ TEXT = {
         "lang": "RU",
         "selected": "My hero",
         "score": "Score",
+        "draft_matchup": "Matchup Σ",
         "recommended_items": "Recommended items",
         "build_description": "Build description",
         "offline": "Normal use is offline; internet is required only for database updates.",
@@ -872,7 +874,15 @@ class MobileAssistant:
                     controls=[
                         ft.Text(f"{rank}. {self.champ_name(champ)}", size=13, weight=ft.FontWeight.BOLD, color=P["gold_bright"]),
                         ft.Text(
-                            f"{self.t('score')} {float(result.get('score') or 0):.2f} · {tier_text} · {self.t('winrate')} {wr_text}",
+                            (
+                                f"{self.t('draft_matchup')} "
+                                f"{float(result.get('draft_matchup_sum_pp') or 0):+.2f} pp"
+                                if self.lang == "en"
+                                else
+                                f"{self.t('draft_matchup')} "
+                                f"{float(result.get('draft_matchup_sum_pp') or 0):+.2f} п.п."
+                            )
+                            + f" · {tier_text} · {self.t('winrate')} {wr_text}",
                             size=9,
                             color=P["muted"],
                         ),
