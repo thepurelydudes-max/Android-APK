@@ -391,10 +391,11 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
 
 def _generic_threat_tags(enemy: dict) -> set[str]:
     roles = {str(x).casefold() for x in enemy.get("roles", [])}
+    specialties = {str(x).casefold() for x in enemy.get("specialties", [])}
     typ = str(enemy.get("damage_type", "")).casefold()
     tags = set()
     if "marksman" in roles:
-        tags |= {"anti_physical", "anti_crit", "anti_auto"}
+        tags |= {"anti_physical", "anti_crit", "anti_auto", "anti_attack_speed"}
     if "assassin" in roles:
         tags.add("anti_burst")
     if "mage" in roles or "ap" in typ or "magic" in typ:
@@ -405,6 +406,12 @@ def _generic_threat_tags(enemy: dict) -> set[str]:
         tags.add("anti_cc")
     if "fighter" in roles and "ap" not in typ and "magic" not in typ:
         tags.add("anti_physical")
+    if specialties & {"regen", "heal", "healing", "sustain"}:
+        tags |= {"anti_heal", "anti_shield"}
+    if specialties & {"burst", "reap"}:
+        tags.add("anti_burst")
+    if specialties & {"control", "crowd control", "cc", "initiator"}:
+        tags.add("anti_cc")
     return tags
 
 
