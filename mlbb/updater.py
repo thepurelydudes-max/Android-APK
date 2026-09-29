@@ -569,6 +569,7 @@ def update_all(
             list(champ.get("lanes") or []), str(champ.get("damage_type") or ""),
             "Rone Arena + MLBBDex", now_iso, name_ru=str(champ.get("name_ru") or ""),
             icon_url=str(champ.get("icon_url") or ""),
+            specialties=list(champ.get("specialties") or []),
         )
     summary["champions"] = len(champs)
     valid_ids = {str(c["id"]) for c in champs}
