@@ -61,7 +61,7 @@ class DraftMatrixEngine:
             return 1.5 if enemy_role in {"Голд", "Роум"} else 1.0
         return 1.0
 
-    def analyze_row(self, edges: Iterable[DraftEdge]) -> dict:
+    def analyze_row(self, edges: Iterable[DraftEdge], *, counter_threshold: float = 0.0) -> dict:
         rows = list(edges)
         if not rows:
             return {
@@ -99,6 +99,8 @@ class DraftMatrixEngine:
         enemy_roles: dict[str, str] = {}
         matrix_row: list[dict] = []
 
+        threshold = max(0.0, min(1.5, float(counter_threshold)))
+
         for row in rows:
             edge = self.clamp_edge(row.edge)
             weight = max(0.0, float(row.weight))
@@ -109,15 +111,23 @@ class DraftMatrixEngine:
             if weight > 1.0:
                 direct_lane_edges.append(edge)
 
+            # Scoring remains continuous: even a small positive/negative matchup
+            # still contributes to the recommendation. The threshold below is
+            # only for the human-facing "Counters / Threats" classification.
             if edge > 0:
-                positives.append(row.enemy_name)
                 positive_weight += weight
                 positive_strength += edge * weight
-                if edge >= 1.0:
-                    hard_counters += 1
             elif edge < 0:
-                negatives.append(row.enemy_name)
                 negative_strength += abs(edge) * weight
+
+            is_counter = edge > 0 if threshold <= 0 else edge >= threshold
+            is_threat = edge < 0 if threshold <= 0 else edge <= -threshold
+            if is_counter:
+                positives.append(row.enemy_name)
+                if edge >= max(1.0, threshold):
+                    hard_counters += 1
+            elif is_threat:
+                negatives.append(row.enemy_name)
             else:
                 neutral.append(row.enemy_name)
 
