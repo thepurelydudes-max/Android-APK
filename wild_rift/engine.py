@@ -338,9 +338,9 @@ def _has_usable_role_build(
 ) -> bool:
     """Return True only for a healthy exact champion+role WRC build.
 
-    Lane metadata is not sufficient for recommendations. If WildRiftCore does
-    not provide at least three finished core items for this exact role, the
-    champion is not recommendable on that role.
+    Lane metadata is not sufficient for recommendations. The exact role must
+    have five finished WildRiftCore core items plus a valid finished boot; if
+    not, the champion is not recommendable on that role.
     """
     row = _role_build_row(champ.get("id", ""), role_ru, snapshot)
     if row is None:
@@ -1160,7 +1160,7 @@ def recommend_build(
     # Never invent a build from a different source when the exact
     # champion+role WildRiftCore build is missing. Production draft ranking
     # filters these pairs before they can be recommended; this guard also
-    # protects direct callers from silently entering the legacy fallback.
+    # protects direct callers from receiving an invented substitute build.
     if source_row is None or len(core) != 5 or not baseline_boot:
         raise ValueError(
             "Для выбранной роли нет полной сборки WildRiftCore"
