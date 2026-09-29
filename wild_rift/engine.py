@@ -362,7 +362,12 @@ def _has_usable_role_build(
         [str(x) for x in (row.get("items") or [])],
         snapshot,
     )
-    return len(core) >= 3
+    boot = str(row.get("boot_name") or "")
+    return (
+        len(core) == 5
+        and bool(boot)
+        and _finished_item(boot, snapshot)
+    )
 
 
 def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
@@ -1627,7 +1632,7 @@ def recommend_build(
     # champion+role WildRiftCore build is missing. Production draft ranking
     # filters these pairs before they can be recommended; this guard also
     # protects direct callers from silently entering the legacy fallback.
-    if source_row is None or len(core) < 3:
+    if source_row is None or len(core) != 5 or not baseline_boot:
         raise ValueError(
             "Для выбранной роли нет полной сборки WildRiftCore"
         )
