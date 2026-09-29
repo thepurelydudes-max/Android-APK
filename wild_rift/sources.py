@@ -2540,33 +2540,6 @@ def _main_item_image(soup, item_name: str = ""):
     return None
 
 
-def _item_section_lines(card, start_label: str, stop_labels: set[str]) -> list[str]:
-    """Extract a textual section from one WR Pocket item card.
-
-    The site changes element nesting fairly often, but the visible labels
-    ``Stats``, ``Effect`` and ``Recipe`` have remained stable. Parsing the
-    flattened line stream makes the updater resilient to harmless DOM changes.
-    """
-    lines = [clean(x) for x in card.get_text("\n", strip=True).splitlines()]
-    lines = [x for x in lines if x]
-    start = -1
-    wanted = start_label.casefold()
-    for idx, line in enumerate(lines):
-        if line.casefold() == wanted:
-            start = idx + 1
-            break
-    if start < 0:
-        return []
-    out: list[str] = []
-    stops = {x.casefold() for x in stop_labels}
-    for line in lines[start:]:
-        folded = line.casefold()
-        if folded in stops or folded.startswith("detail page"):
-            break
-        out.append(line)
-    return out
-
-
 def _item_section_candidates(card, start_label: str, stop_labels: set[str]) -> list[list[str]]:
     """Return every visible section matching ``start_label``.
 
