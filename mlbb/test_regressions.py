@@ -46,6 +46,36 @@ class DraftMatrixTests(unittest.TestCase):
 
 
 class EngineTests(unittest.TestCase):
+    def test_relative_counter_group_finds_dominant_three(self):
+        edges = [
+            DraftEdge("e1", "E1", "", 0.30, 1.0),
+            DraftEdge("e2", "E2", "", 0.27, 1.0),
+            DraftEdge("e3", "E3", "", 0.23, 1.0),
+            DraftEdge("e4", "E4", "", 0.12, 1.0),
+            DraftEdge("e5", "E5", "", 0.08, 1.0),
+        ]
+        names, shares = engine._dominant_matchup_targets(edges, positive=True)
+        self.assertEqual(names, ["E1", "E2", "E3"])
+        self.assertAlmostEqual(sum(shares.values()), 100.0)
+
+    def test_relative_counter_group_keeps_even_five(self):
+        edges = [
+            DraftEdge(str(i), f"E{i}", "", 0.20, 1.0)
+            for i in range(1, 6)
+        ]
+        names, _shares = engine._dominant_matchup_targets(edges, positive=True)
+        self.assertEqual(names, ["E1", "E2", "E3", "E4", "E5"])
+
+    def test_relative_counter_group_keeps_only_clear_dominator(self):
+        edges = [
+            DraftEdge("e1", "E1", "", 0.70, 1.0),
+            DraftEdge("e2", "E2", "", 0.10, 1.0),
+            DraftEdge("e3", "E3", "", 0.08, 1.0),
+            DraftEdge("e4", "E4", "", 0.07, 1.0),
+            DraftEdge("e5", "E5", "", 0.05, 1.0),
+        ]
+        names, _shares = engine._dominant_matchup_targets(edges, positive=True)
+        self.assertEqual(names, ["E1"])
     def test_counter_label_threshold_tracks_real_percentage_points(self):
         self.assertAlmostEqual(
             engine._counter_label_threshold({"matchup_edge_scale_pp_p95": 2.5}),
