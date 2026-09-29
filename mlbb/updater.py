@@ -823,9 +823,9 @@ def update_all(
                 core, boot = _split_finished_build(
                     variant.get("items") or [], item_by_slug
                 )
-                if len(core) != 5 or not boot:
+                if len(core) < 3:
                     continue
-                key = tuple([*core, boot])
+                key = tuple([*core, boot] if boot else core)
                 if key in seen_builds:
                     continue
                 seen_builds.add(key)
@@ -834,8 +834,22 @@ def update_all(
             if not unique:
                 continue
             role_pages_ok += 1
+            # Prefer a complete guide build when available; otherwise preserve
+            # the statistically measured 3-item core for this exact lane.
+            unique.sort(
+                key=lambda row: (
+                    len(row[0]) >= 5 and bool(row[1]),
+                    len(row[0]),
+                    float(row[2].get("hot") or 0.0),
+                    float(row[2].get("score") or 0.0),
+                ),
+                reverse=True,
+            )
             base_core, base_boot, base_meta = unique[0]
-            role_build_rows.append((cid, role_ru, base_core, base_boot, current_patch, url))
+            role_build_rows.append((
+                cid, role_ru, base_core, base_boot, current_patch,
+                guide_url if base_meta.get("title") else url,
+            ))
 
             base_set = set(base_core)
             for variant_index, (core, boot, meta) in enumerate(unique, 1):
