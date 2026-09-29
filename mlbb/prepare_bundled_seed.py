@@ -208,7 +208,7 @@ def _audit() -> dict:
     for _cid, role in expected_builds:
         expected_by_role[role] = expected_by_role.get(role, 0) + 1
     actual_by_role = role_distribution
-    min_total_builds = max(80, int(len(expected_builds) * 0.50)) if expected_builds else 80
+    min_total_builds = max(140, int(len(expected_builds) * 0.90)) if expected_builds else 140
     if counts["role_builds"] < min_total_builds:
         raise RuntimeError(
             f"Too few role-specific MLBB builds in bundled seed: "
@@ -217,7 +217,7 @@ def _audit() -> dict:
     weak_roles = {}
     for role, expected_count in expected_by_role.items():
         actual_count = int(actual_by_role.get(role, 0))
-        required = max(5, int(expected_count * 0.35))
+        required = max(8, int(expected_count * 0.80))
         if actual_count < required:
             weak_roles[role] = {
                 "actual": actual_count,
