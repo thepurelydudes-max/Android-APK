@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from collect_mlbb_snapshot import parse_counter_evidence, parse_lane_filter_evidence
+from sources import parse_rone_academy_counter_raw
 from moonton_gms import parse_gms_source
 from data_contract import (
     LaneEvidence,
@@ -82,18 +83,38 @@ class DataContractTests(unittest.TestCase):
         self.assertAlmostEqual(edges[("1", "2")], 0.024)
         self.assertAlmostEqual(edges[("1", "3")], -0.017)
 
-    def test_counter_parser_orients_candidate_to_target(self):
+    def test_counter_parser_preserves_signed_candidate_to_target_edge(self):
         payload = {"data": {"records": [{"data": {
             "main_heroid": 17,
-            "sub_hero": [{"heroid": 1, "increase_win_rate": 0.025}],
-            "sub_hero_last": [{"heroid": 2, "increase_win_rate": -0.015}],
+            "sub_hero": [
+                {"heroid": 1, "increase_win_rate": 0.025},
+                {"heroid": 2, "increase_win_rate": -0.011633},
+            ],
+            "sub_hero_last": [{"heroid": 3, "increase_win_rate": -0.015}],
         }}]}}
         rows = parse_counter_evidence(payload, "17", rank_segment="mythic")
         edges = {(row.champion_id, row.enemy_id): row.raw_edge for row in rows}
         self.assertAlmostEqual(edges[("1", "17")], 0.025)
-        self.assertAlmostEqual(edges[("17", "1")], -0.025)
-        self.assertAlmostEqual(edges[("2", "17")], -0.015)
-        self.assertAlmostEqual(edges[("17", "2")], 0.015)
+        self.assertAlmostEqual(edges[("2", "17")], -0.011633)
+        self.assertAlmostEqual(edges[("3", "17")], -0.015)
+        self.assertNotIn(("17", "1"), edges)
+        self.assertNotIn(("17", "2"), edges)
+        self.assertNotIn(("17", "3"), edges)
+
+    def test_runtime_academy_parser_does_not_abs_negative_subhero(self):
+        payload = {"data": {"records": [{"data": {
+            "main_heroid": 17,
+            "sub_hero": [
+                {"heroid": 39, "increase_win_rate": -0.011633},
+                {"heroid": 20, "increase_win_rate": 0.048121},
+            ],
+        }}]}}
+        rows = parse_rone_academy_counter_raw(payload, "17")
+        edges = {(row["champion_id"], row["enemy_id"]): row["raw_edge"] for row in rows}
+        self.assertAlmostEqual(edges[("39", "17")], -0.011633)
+        self.assertAlmostEqual(edges[("20", "17")], 0.048121)
+        self.assertNotIn(("17", "39"), edges)
+        self.assertNotIn(("17", "20"), edges)
 
 
 if __name__ == "__main__":
