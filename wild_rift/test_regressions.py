@@ -580,7 +580,7 @@ class RecommendationRegressionTests(unittest.TestCase):
             sorted((row["score"] for row in results), reverse=True),
         )
 
-    def test_missing_role_build_falls_back_to_existing_champion_item_pool(self):
+    def test_missing_role_build_is_rejected_instead_of_wrpocket_fallback(self):
         champions = [
             {"id": "Malphite", "name": "Malphite", "name_ru": "Мальфит", "roles": ["Tank"], "lanes": ["top"], "damage_type": "Magic"},
             {"id": "Irelia", "name": "Irelia", "name_ru": "Ирелия", "roles": ["Fighter"], "lanes": ["top"], "damage_type": "Physical"},
@@ -622,13 +622,11 @@ class RecommendationRegressionTests(unittest.TestCase):
             item_pools=item_pools,
         )
 
-        build = engine.recommend_build(
-            "Malphite", [("Irelia", "Барон")], role_ru="Барон", snapshot=snapshot
-        )
-        self.assertTrue(build.get("fallback_used"))
-        self.assertEqual(build.get("source"), "wrpocket.app:fallback")
-        self.assertGreaterEqual(len(build.get("ordered") or []), 5)
-        self.assertIn("Plated Steelcaps", build.get("ordered") or [])
+        with self.assertRaisesRegex(ValueError, "WildRiftCore"):
+            engine.recommend_build(
+                "Malphite", [("Irelia", "Барон")],
+                role_ru="Барон", snapshot=snapshot,
+            )
 
     def test_healthy_role_build_remains_preferred_over_fallback(self):
         champions = [
