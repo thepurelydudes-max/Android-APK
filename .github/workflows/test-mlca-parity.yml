@@ -41,21 +41,6 @@ jobs:
           python -m py_compile db.py data_contract.py moonton_gms.py collect_mlbb_snapshot.py draft_matrix_engine.py engine.py sources.py updater.py main.py prepare_bundled_seed.py
           python -m unittest -v test_regressions.py test_data_contract.py
 
-      - name: Collect API-first diagnostic snapshot
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd mlbb
-          python collect_mlbb_snapshot.py --rank all --days 7 --output mlbb_api_snapshot.json
-
-      - name: Upload MLBB API diagnostic
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mlbb-api-snapshot
-          path: mlbb/mlbb_api_snapshot.json
-          if-no-files-found: warn
-
       - name: Build and audit offline seed
         shell: bash
         env:
