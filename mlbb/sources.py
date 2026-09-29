@@ -214,6 +214,8 @@ MLBBDEX_PATCHES = f"{MLBBDEX_BASE}/patches"
 MLBBDEX_RANKINGS = f"{MLBBDEX_BASE}/rankings"
 RONE_EQUIPMENT_EXPANDED = f"{RONE_BASE}/academy/equipment/expanded"
 RONE_VERSION = f"{RONE_BASE}/academy/meta/version"
+RONE_ACADEMY_HEROES = f"{RONE_BASE}/academy/heroes"
+RONE_ACADEMY_HERO_COUNTERS = RONE_BASE + "/academy/heroes/{hero_id}/counters"
 INSIGHT_COUNTERS = f"{INSIGHT_RAW_BASE}/heroes/hero_counters.json"
 INSIGHT_BUILDS = f"{INSIGHT_RAW_BASE}/guides/guide_builds.json"
 
@@ -380,6 +382,90 @@ def parse_mlbbdex_rankings(payload: dict) -> list[dict]:
         })
     return out
 
+
+
+def parse_rone_academy_lane_filter(payload: dict, lane: str) -> list[str]:
+    """Return hero IDs explicitly assigned to one Academy lane filter."""
+    lane = clean(str(lane or "")).casefold()
+    if lane not in {"exp", "jungle", "mid", "gold", "roam"}:
+        return []
+    data = _json_data(payload) or {}
+    records = data.get("records", []) if isinstance(data, dict) else []
+    out: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        row = (record or {}).get("data") or {}
+        hero = row.get("hero") if isinstance(row.get("hero"), dict) else {}
+        hero_data = hero.get("data") if isinstance(hero.get("data"), dict) else {}
+        raw_id = row.get("hero_id") or row.get("heroid")
+        cid = str(raw_id or "").strip()
+        if not cid:
+            cid = clean(str(hero_data.get("name") or row.get("hero_name") or ""))
+        if cid and cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out
+
+
+def parse_rone_academy_counter_raw(
+    payload: dict, target_id: str,
+) -> list[dict]:
+    """Preserve Academy counter deltas before any MLCA scoring conversion.
+
+    The endpoint represents increase_win_rate as a fractional win-rate change.
+    sub_hero is oriented as a favorable answer into the target and
+    sub_hero_last as unfavorable, matching the existing Rone adapter. A
+    symmetric reverse row is emitted because the draft matrix is directional.
+    """
+    data = _json_data(payload) or {}
+    records = data.get("records", []) if isinstance(data, dict) else []
+    edges: dict[tuple[str, str], dict] = {}
+    fallback_target = str(target_id or "").strip()
+    for record in records:
+        row = (record or {}).get("data") or {}
+        target = str(row.get("main_heroid") or row.get("heroid") or fallback_target).strip()
+        if not target:
+            continue
+        for key, sign in (("sub_hero", 1.0), ("sub_hero_last", -1.0)):
+            for sub in row.get(key) or []:
+                if not isinstance(sub, dict):
+                    continue
+                candidate = str(sub.get("heroid") or "").strip()
+                if not candidate or candidate == target:
+                    continue
+                try:
+                    delta = abs(float(sub.get("increase_win_rate") or 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if delta <= 0:
+                    continue
+                edge = sign * delta
+                base = {
+                    "champion_id": candidate,
+                    "enemy_id": target,
+                    "role": "",
+                    "raw_edge": edge,
+                    "raw_unit": "fraction",
+                    "evidence_type": f"measured:{key}",
+                    "rank_segment": "all",
+                    "sample_window": "academy-current",
+                    "confidence": 1.0,
+                }
+                reverse = {
+                    **base,
+                    "champion_id": target,
+                    "enemy_id": candidate,
+                    "raw_edge": -edge,
+                    "evidence_type": f"measured:reverse:{key}",
+                    "confidence": 0.95,
+                }
+                old = edges.get((candidate, target))
+                if old is None or abs(edge) > abs(float(old.get("raw_edge") or 0.0)):
+                    edges[(candidate, target)] = base
+                old_rev = edges.get((target, candidate))
+                if old_rev is None or abs(edge) > abs(float(old_rev.get("raw_edge") or 0.0)):
+                    edges[(target, candidate)] = reverse
+    return list(edges.values())
 
 
 def parse_rone_counter_payload(payload: dict) -> list[tuple[str, str, str, float]]:
