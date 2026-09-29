@@ -861,6 +861,15 @@ def update_all(
         items = [dict(row) for row in db.item_catalog_rows() if str(row.get("tier") or "").casefold() == "upgraded"]
         apply_builtin_ru_item_localization(items)
     item_by_slug = {slugish(row.get("name", "")): row for row in items if row.get("name")}
+    # Build parsing must understand the full current Rone equipment namespace,
+    # not only the smaller MLBBDex terminal catalog.  We still add only items
+    # that are actually referenced by a live build/recommendation to the final
+    # APK catalog, so components cannot become normal recommended end-items.
+    rone_item_by_slug = {
+        slugish(row.get("name", "")): row for row in rone_items if row.get("name")
+    }
+    build_item_by_slug = dict(rone_item_by_slug)
+    build_item_by_slug.update(item_by_slug)
 
     # General Academy recommendations remain a fallback pool and a second
     # independent matchup signal.
@@ -940,7 +949,7 @@ def update_all(
             seen_builds: set[tuple[str, ...]] = set()
             for variant in variants:
                 core, boot = _split_finished_build(
-                    variant.get("items") or [], item_by_slug
+                    variant.get("items") or [], build_item_by_slug
                 )
                 if len(core) < 3:
                     continue
@@ -1001,6 +1010,60 @@ def update_all(
                             f"Alternative item from live Rone build #{variant_index}",
                             variant_index * 10 + pos,
                         ))
+
+    # Promote Rone equipment to the canonical final catalog only when the live
+    # Academy actually references it in a measured/guide build.  This bridges
+    # Rone equipment IDs to our item table without marking every component in
+    # the 152-row equipment feed as a finished recommendation item.
+    used_build_item_names: set[str] = set()
+    for _cid, _role, core, boot, _patch, _url in role_build_rows:
+        used_build_item_names.update(str(x) for x in core if str(x).strip())
+        if str(boot or "").strip():
+            used_build_item_names.add(str(boot))
+    for row in role_variant_rows:
+        for name in (row[3] or []):
+            if str(name).strip():
+                used_build_item_names.add(str(name))
+    for _cid, item_name, _category, _priority in [*live_pools, *role_pool_rows]:
+        if str(item_name).strip():
+            used_build_item_names.add(str(item_name))
+
+    known_item_slugs = {slugish(row.get("name", "")) for row in items if row.get("name")}
+    used_item_slugs = {slugish(name) for name in used_build_item_names if slugish(name)}
+    promoted_rone_items = [
+        dict(row) for key, row in rone_item_by_slug.items()
+        if key in used_item_slugs and key not in known_item_slugs
+    ]
+    if promoted_rone_items:
+        items.extend(promoted_rone_items)
+        apply_ru_localization([], items, ru_localization)
+        apply_builtin_ru_item_localization(items)
+        db.replace_source_items(
+            "mlbb.catalog",
+            [
+                (
+                    row["name"], row.get("category", ""), row.get("name_ru", ""),
+                    row.get("icon_url", ""), "Upgraded",
+                )
+                for row in items if row.get("name")
+            ],
+        )
+        for row in promoted_rone_items:
+            changed = db.upsert_item_details(
+                row["name"],
+                price=int(row.get("price") or 0),
+                stats=list(row.get("stats") or []),
+                effect_en=str(row.get("effect_en") or ""),
+                effect_ru=str(row.get("effect_ru") or ""),
+                data_hash=_item_hash(row),
+                data_patch=current_patch,
+                source_url=RONE_EQUIPMENT_EXPANDED,
+            )
+            summary["item_details_changed"] += int(bool(changed))
+        item_by_slug = {
+            slugish(row.get("name", "")): row for row in items if row.get("name")
+        }
+    summary["promoted_rone_build_items"] = len(promoted_rone_items)
 
     if role_build_rows:
         db.replace_source_role_builds_partial(
