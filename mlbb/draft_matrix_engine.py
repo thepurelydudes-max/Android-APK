@@ -61,7 +61,13 @@ class DraftMatrixEngine:
             return 1.5 if enemy_role in {"Голд", "Роум"} else 1.0
         return 1.0
 
-    def analyze_row(self, edges: Iterable[DraftEdge], *, counter_threshold: float = 0.0) -> dict:
+    def analyze_row(
+        self,
+        edges: Iterable[DraftEdge],
+        *,
+        counter_threshold: float = 0.0,
+        threat_threshold: float | None = None,
+    ) -> dict:
         rows = list(edges)
         if not rows:
             return {
@@ -100,6 +106,11 @@ class DraftMatrixEngine:
         matrix_row: list[dict] = []
 
         threshold = max(0.0, min(1.5, float(counter_threshold)))
+        danger_threshold = (
+            threshold
+            if threat_threshold is None
+            else max(0.0, min(1.5, float(threat_threshold)))
+        )
 
         for row in rows:
             edge = self.clamp_edge(row.edge)
@@ -121,7 +132,11 @@ class DraftMatrixEngine:
                 negative_strength += abs(edge) * weight
 
             is_counter = edge > 0 if threshold <= 0 else edge >= threshold
-            is_threat = edge < 0 if threshold <= 0 else edge <= -threshold
+            is_threat = (
+                edge < 0
+                if danger_threshold <= 0
+                else edge <= -danger_threshold
+            )
             if is_counter:
                 positives.append(row.enemy_name)
                 if edge >= max(1.0, threshold):
