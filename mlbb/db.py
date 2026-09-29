@@ -59,6 +59,37 @@ def init_db() -> None:
                 score REAL NOT NULL, source TEXT NOT NULL,
                 PRIMARY KEY (champion_id, enemy_id, role, source)
             );
+            CREATE TABLE IF NOT EXISTS hero_lane_evidence (
+                champion_id TEXT NOT NULL, lane TEXT NOT NULL,
+                evidence_type TEXT NOT NULL, source TEXT NOT NULL,
+                source_lane_id TEXT NOT NULL DEFAULT '',
+                rank_segment TEXT NOT NULL DEFAULT 'all',
+                usage_rate REAL, confidence REAL NOT NULL DEFAULT 1.0,
+                patch TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (champion_id,lane,evidence_type,source,rank_segment)
+            );
+            CREATE INDEX IF NOT EXISTS idx_hero_lane_evidence_lookup
+                ON hero_lane_evidence(champion_id,lane,source,rank_segment);
+            CREATE TABLE IF NOT EXISTS matchup_evidence (
+                champion_id TEXT NOT NULL, enemy_id TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT '',
+                raw_edge REAL NOT NULL, raw_unit TEXT NOT NULL,
+                normalized_edge REAL NOT NULL,
+                evidence_type TEXT NOT NULL DEFAULT 'measured',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                rank_segment TEXT NOT NULL DEFAULT 'all',
+                sample_window TEXT NOT NULL DEFAULT '',
+                patch TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (
+                    champion_id,enemy_id,role,evidence_type,source,
+                    rank_segment,sample_window
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_matchup_evidence_lookup
+                ON matchup_evidence(champion_id,enemy_id,role,rank_segment,source);
             CREATE TABLE IF NOT EXISTS champion_tiers (
                 champion_id TEXT NOT NULL, role TEXT NOT NULL, tier TEXT NOT NULL,
                 source TEXT NOT NULL, patch TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -369,6 +400,67 @@ def replace_source_matchups(source: str, rows: Iterable[tuple[str, str, str, flo
     with connect() as con:
         con.execute("DELETE FROM matchups WHERE source=?", (source,))
         con.executemany("INSERT OR REPLACE INTO matchups(champion_id,enemy_id,role,score,source) VALUES(?,?,?,?,?)", [(a,b,r,s,source) for a,b,r,s in rows])
+
+
+def replace_source_lane_evidence(source: str, rows: Iterable[dict]) -> None:
+    clean = []
+    for row in rows:
+        champion_id = str(row.get("champion_id") or "").strip()
+        lane = str(row.get("lane") or "").strip().casefold()
+        evidence_type = str(row.get("evidence_type") or "assignment").strip()
+        if not champion_id or not lane:
+            continue
+        usage_rate = row.get("usage_rate")
+        clean.append((
+            champion_id, lane, evidence_type, source,
+            str(row.get("source_lane_id") or ""),
+            str(row.get("rank_segment") or "all"),
+            None if usage_rate is None else float(usage_rate),
+            max(0.0, min(1.0, float(row.get("confidence", 1.0) or 0.0))),
+            str(row.get("patch") or ""),
+        ))
+    with connect() as con:
+        con.execute("DELETE FROM hero_lane_evidence WHERE source=?", (source,))
+        con.executemany(
+            """INSERT OR REPLACE INTO hero_lane_evidence(
+                champion_id,lane,evidence_type,source,source_lane_id,rank_segment,
+                usage_rate,confidence,patch,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            clean,
+        )
+
+
+def replace_source_matchup_evidence(source: str, rows: Iterable[dict]) -> None:
+    clean = []
+    for row in rows:
+        champion_id = str(row.get("champion_id") or "").strip()
+        enemy_id = str(row.get("enemy_id") or "").strip()
+        if not champion_id or not enemy_id or champion_id == enemy_id:
+            continue
+        clean.append((
+            champion_id,
+            enemy_id,
+            str(row.get("role") or "").strip().casefold(),
+            float(row.get("raw_edge") or 0.0),
+            str(row.get("raw_unit") or "percentage_points"),
+            max(-1.0, min(1.0, float(row.get("normalized_edge") or 0.0))),
+            str(row.get("evidence_type") or "measured"),
+            max(0.0, min(1.0, float(row.get("confidence", 1.0) or 0.0))),
+            str(row.get("rank_segment") or "all"),
+            str(row.get("sample_window") or ""),
+            str(row.get("patch") or ""),
+            source,
+        ))
+    with connect() as con:
+        con.execute("DELETE FROM matchup_evidence WHERE source=?", (source,))
+        con.executemany(
+            """INSERT OR REPLACE INTO matchup_evidence(
+                champion_id,enemy_id,role,raw_edge,raw_unit,normalized_edge,
+                evidence_type,confidence,rank_segment,sample_window,patch,source,
+                updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            clean,
+        )
 
 
 def replace_source_item_pools(source: str, rows: Iterable[tuple[str, str, str, int]]) -> None:
@@ -998,6 +1090,14 @@ def load_runtime_snapshot() -> dict:
         champion_rows = con.execute("SELECT * FROM champions ORDER BY name COLLATE NOCASE").fetchall()
         alias_rows = con.execute("SELECT champion_id,alias_norm FROM champion_aliases").fetchall()
         matchup_rows = con.execute("SELECT champion_id,enemy_id,role,score FROM matchups").fetchall()
+        matchup_evidence_rows = con.execute(
+            "SELECT champion_id,enemy_id,role,normalized_edge,evidence_type,confidence,"
+            "rank_segment,sample_window,patch,source FROM matchup_evidence"
+        ).fetchall()
+        lane_evidence_rows = con.execute(
+            "SELECT champion_id,lane,evidence_type,source,source_lane_id,rank_segment,"
+            "usage_rate,confidence,patch FROM hero_lane_evidence"
+        ).fetchall()
         trait_rows = con.execute(
             "SELECT champion_id,trait,confidence,evidence_count,mentions,source,patch "
             "FROM champion_traits"
@@ -1050,8 +1150,32 @@ def load_runtime_snapshot() -> dict:
     }
 
     matchups: dict[tuple[str, str], list[tuple[str, float]]] = {}
-    for row in matchup_rows:
-        matchups.setdefault((row["champion_id"], row["enemy_id"]), []).append((row["role"], float(row["score"])))
+    # New API-first evidence uses a source-independent -1..+1 contract.  The
+    # current DraftMatrixEngine still consumes the historical -1.5..+1.5
+    # internal scale, so convert only at this compatibility boundary.  Once the
+    # engine migrates, raw evidence and normalization remain untouched.
+    if matchup_evidence_rows:
+        preferred = {}
+        for row in matchup_evidence_rows:
+            key = (str(row["champion_id"]), str(row["enemy_id"]), str(row["role"] or ""))
+            rank_bonus = 2 if str(row["rank_segment"] or "") == "all" else 1
+            measured_bonus = 2 if str(row["evidence_type"] or "") == "measured" else 1
+            priority = (rank_bonus, measured_bonus, float(row["confidence"] or 0.0))
+            current = preferred.get(key)
+            if current is None or priority > current[0]:
+                preferred[key] = (priority, row)
+        for (_, _, _), (_, row) in preferred.items():
+            edge = max(-1.0, min(1.0, float(row["normalized_edge"] or 0.0))) * 1.5
+            matchups.setdefault(
+                (str(row["champion_id"]), str(row["enemy_id"])), []
+            ).append((str(row["role"] or ""), edge))
+    else:
+        for row in matchup_rows:
+            matchups.setdefault((row["champion_id"], row["enemy_id"]), []).append((row["role"], float(row["score"])))
+
+    lane_evidence: dict[str, list[dict]] = {}
+    for row in lane_evidence_rows:
+        lane_evidence.setdefault(str(row["champion_id"]), []).append(dict(row))
 
     champion_traits: dict[str, list[dict]] = {}
     for row in trait_rows:
@@ -1126,6 +1250,8 @@ def load_runtime_snapshot() -> dict:
         "champion_aliases": champion_aliases,
         "champion_alias_ids": alias_ids,
         "matchups": matchups,
+        "matchup_evidence": [dict(row) for row in matchup_evidence_rows],
+        "lane_evidence": lane_evidence,
         "champion_traits": champion_traits,
         "tiers": tiers,
         "stats": stats,
