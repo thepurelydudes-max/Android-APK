@@ -68,13 +68,16 @@ def _counter_label_threshold(snapshot: dict | None = None) -> float:
 
 
 def _dominant_matchup_targets(edges: list[DraftEdge], *, positive: bool = True) -> tuple[list[str], dict[str, float]]:
-    """Return the dominant matchup targets relative to this exact enemy draft.
+    """Attribute the candidate matchup advantage across the current enemy draft.
 
-    Positive (or negative) matchup magnitudes are converted to shares of the
-    candidate's total same-sign pressure. A clear natural break separates the
-    dominant group from weak incidental edges. If there is no clear break, all
-    same-sign targets are kept, which correctly handles an evenly spread draft.
+    Same-sign raw percentage-point edges are converted to shares of 100%.
+    A target is called a counter when its share is at least the equal-share
+    baseline across all selected enemies: 20% for five, 25% for four, etc.
+    This makes the label relative to the current draft instead of an arbitrary
+    global matchup threshold.
     """
+    if not edges:
+        return [], {}
     values: list[tuple[str, float]] = []
     for row in edges:
         raw = float(row.edge)
@@ -84,26 +87,19 @@ def _dominant_matchup_targets(edges: list[DraftEdge], *, positive: bool = True) 
     if not values:
         return [], {}
 
-    values.sort(key=lambda item: item[1], reverse=True)
     total = sum(value for _name, value in values)
-    shares = {name: (100.0 * value / total if total > 0 else 0.0) for name, value in values}
-    if len(values) == 1:
-        return [values[0][0]], shares
-    if len(values) == 2:
-        top, second = values[0][1], values[1][1]
-        if second > 0 and top >= second * 2.0:
-            return [values[0][0]], shares
-        return [name for name, _value in values], shares
-
-    share_values = [shares[name] for name, _value in values]
-    gaps = [share_values[i] - share_values[i + 1] for i in range(len(share_values) - 1)]
-    largest_gap = max(gaps)
-    split_index = gaps.index(largest_gap) + 1
-    median_gap = float(statistics.median(gaps))
-    clear_break = largest_gap > 0.0 and (median_gap <= 0.0 or largest_gap > 2.0 * median_gap)
-    if not clear_break:
-        return [name for name, _value in values], shares
-    return [name for name, _value in values[:split_index]], shares
+    if total <= 0.0:
+        return [], {}
+    shares = {name: 100.0 * value / total for name, value in values}
+    baseline = 100.0 / max(1, len(edges))
+    epsilon = 1e-9
+    targets = [
+        name for name, value in sorted(values, key=lambda item: item[1], reverse=True)
+        if shares[name] + epsilon >= baseline
+    ]
+    if not targets:
+        targets = [max(values, key=lambda item: item[1])[0]]
+    return targets, shares
 
 ITEM_TAGS = {
     "Dominance Ice": {"anti_heal", "anti_shield", "anti_physical", "anti_magic", "defense", "tank", "universal"},
@@ -198,6 +194,46 @@ def _matchup_score(champion_id: str, enemy_id: str, preferred_role: str = "", sn
     if snapshot is not None:
         return _snapshot_matchup_score(snapshot, champion_id, enemy_id, preferred_role)
     return db.get_matchup_score(champion_id, enemy_id, preferred_role)
+
+def _snapshot_matchup_pp(snapshot: dict, champion_id: str, enemy_id: str, preferred_role: str = "") -> float:
+    rows = snapshot.get("matchup_raw_pp", {}).get((champion_id, enemy_id), [])
+    if not rows:
+        return 0.0
+    role_norm = preferred_role.casefold()
+    if role_norm:
+        exact = [float(score) for role, score in rows if str(role).casefold() == role_norm]
+        if exact:
+            return max(exact, key=abs)
+        general = [float(score) for role, score in rows if not str(role).strip()]
+        return max(general, key=abs) if general else 0.0
+    return max((float(score) for _role, score in rows), key=abs)
+
+
+def _matchup_pp(champion_id: str, enemy_id: str, preferred_role: str = "", snapshot: dict | None = None) -> float:
+    if snapshot is not None:
+        return _snapshot_matchup_pp(snapshot, champion_id, enemy_id, preferred_role)
+    with db.connect() as con:
+        rows = con.execute(
+            "SELECT role,raw_edge,raw_unit FROM matchup_evidence "
+            "WHERE champion_id=? AND enemy_id=? ORDER BY confidence DESC",
+            (champion_id, enemy_id),
+        ).fetchall()
+    if not rows:
+        return 0.0
+    converted = []
+    for row in rows:
+        raw = float(row["raw_edge"] or 0.0)
+        unit = str(row["raw_unit"] or "").strip().casefold()
+        pp = raw * 100.0 if unit in {"rate", "fraction", "probability"} else raw
+        converted.append((str(row["role"] or ""), pp))
+    role_norm = preferred_role.casefold()
+    if role_norm:
+        exact = [score for role, score in converted if role.casefold() == role_norm]
+        if exact:
+            return max(exact, key=abs)
+        general = [score for role, score in converted if not role.strip()]
+        return max(general, key=abs) if general else 0.0
+    return max((score for _role, score in converted), key=abs)
 
 
 def _stat(champion_id: str, lane: str, rank_segment: str = "all", snapshot: dict | None = None):
@@ -413,6 +449,7 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
     out: list[dict] = []
     for cand, tier, st in candidate_rows:
         matrix_edges: list[DraftEdge] = []
+        raw_edges: list[DraftEdge] = []
         for enemy, inferred_role in enemy_objs:
             edge = float(_matchup_score(cand["id"], enemy["id"], role_ru, snapshot))
             matrix_edges.append(DraftEdge(
@@ -422,15 +459,22 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
                 edge=edge,
                 weight=DRAFT_MATRIX.lane_weight(role_ru, inferred_role),
             ))
+            raw_edges.append(DraftEdge(
+                enemy_id=str(enemy["id"]),
+                enemy_name=str(enemy["name"]),
+                enemy_role=str(inferred_role or ""),
+                edge=float(_matchup_pp(cand["id"], enemy["id"], role_ru, snapshot)),
+                weight=1.0,
+            ))
 
         # Every visible recommendation must be a counter to at least one member
         # of the selected draft. Neutral/negative-only candidates are excluded.
-        if not any(float(row.edge) > 0.0 for row in matrix_edges):
+        if not any(float(row.edge) > 0.0 for row in raw_edges):
             continue
 
         analysis = DRAFT_MATRIX.analyze_row(matrix_edges)
-        counter_targets, counter_shares = _dominant_matchup_targets(matrix_edges, positive=True)
-        threat_targets, threat_shares = _dominant_matchup_targets(matrix_edges, positive=False)
+        counter_targets, counter_shares = _dominant_matchup_targets(raw_edges, positive=True)
+        threat_targets, threat_shares = _dominant_matchup_targets(raw_edges, positive=False)
         dominant_names = set(counter_targets) | set(threat_targets)
         neutral_targets = [
             str(row.enemy_name) for row in matrix_edges
@@ -467,6 +511,19 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             "score": draft_matchup_score,
             "meta_score": components["score"],
             "draft_matchup_sum": draft_matchup_sum,
+            "draft_matchup_sum_pp": draft_matchup_sum,
+            "draft_matchup_avg_pp": draft_matchup_avg,
+            "matchup_raw_row": [
+                {
+                    "enemy_id": row.enemy_id,
+                    "enemy_name": row.enemy_name,
+                    "enemy_role": row.enemy_role,
+                    "edge_pp": float(row.edge),
+                    "share_positive": float(counter_shares.get(row.enemy_name, 0.0)),
+                    "share_negative": float(threat_shares.get(row.enemy_name, 0.0)),
+                }
+                for row in raw_edges
+            ],
             "draft_matchup_score": draft_matchup_score,
             "positive": counter_targets,
             "negative": threat_targets,
