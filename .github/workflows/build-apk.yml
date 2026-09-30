@@ -320,6 +320,49 @@ jobs:
           done
           cp -a "$GITHUB_WORKSPACE/wild_rift/assets" "$RUNTIME_PROJECT/assets"
 
+          # Android 12+ renders native splash artwork inside a circular system
+          # mask. The old splash_android.png had an opaque 2048x2048 background
+          # and a wordmark spanning ~85% of the width, so the system crop could
+          # cut the left/right edges. Rebuild the splash from the transparent
+          # canonical logo and keep the complete artwork inside the safe circle.
+          python - <<'PY'
+          from math import hypot
+          from pathlib import Path
+          from PIL import Image
+
+          root = Path(r"${{ runner.temp }}") / "wild_rift_runtime" / "assets"
+          src = Image.open(root / "wildrift_logo.png").convert("RGBA")
+          size = 2048
+          target_w = 1200
+          target_h = round(src.height * target_w / src.width)
+          logo = src.resize((target_w, target_h), Image.Resampling.LANCZOS)
+          splash = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+          x = (size - target_w) // 2
+          y = (size - target_h) // 2
+          splash.alpha_composite(logo, (x, y))
+          out = root / "splash_android.png"
+          splash.save(out, optimize=True)
+
+          bbox = splash.getchannel("A").getbbox()
+          assert bbox is not None
+          cx = cy = size / 2
+          l, t, r, b = bbox
+          farthest = max(
+              hypot(px - cx, py - cy)
+              for px, py in ((l, t), (r, t), (l, b), (r, b))
+          )
+          safe_radius = size / 3
+          assert farthest <= safe_radius, (bbox, farthest, safe_radius)
+          print(
+              "Android splash reframed:",
+              out,
+              "logo_px=", (target_w, target_h),
+              "alpha_bbox=", bbox,
+              "safe_radius=", round(safe_radius, 2),
+              "farthest_artwork_corner=", round(farthest, 2),
+          )
+          PY
+
           # Android runtime must not carry tests, diagnostics, PC builders or
           # seed-generation utilities. They stay in the repository for
           # development but are deliberately excluded from the APK payload.
@@ -366,6 +409,8 @@ jobs:
               --build-number "$BUILD_NUMBER" \
               --output "$GITHUB_WORKSPACE/apk_output/wild_rift" \
               --python-version 3.12 \
+              --splash-color "#07131F" \
+              --splash-dark-color "#07131F" \
               --yes \
               --verbose; then
               break
