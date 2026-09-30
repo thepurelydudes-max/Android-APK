@@ -241,7 +241,7 @@ jobs:
           python -m unittest -v test_regressions.py test_data_contract.py
 
       - name: Refresh bundled MLBB database and media
-        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        if: ${{ (steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded != 'true' }}
         shell: bash
         env:
           FLET_APP_STORAGE_DATA: ${{ runner.temp }}/mlca_bundled_seed
