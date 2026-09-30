@@ -979,9 +979,6 @@ class MobileAssistant:
             ft.Icons.CHECK_CIRCLE if selected else ft.Icons.CHEVRON_RIGHT,
             color=P["gold_bright"] if selected else P["muted"],
         )
-        self.pick_card_boxes[cid] = card
-        self.pick_card_indicators[cid] = indicator
-        return card
 
         identity = ft.Row(
             spacing=8,
@@ -998,7 +995,12 @@ class MobileAssistant:
                     spacing=1,
                     expand=True,
                     controls=[
-                        ft.Text(f"{rank}. {self.champ_name(champ)}", size=13, weight=ft.FontWeight.BOLD, color=P["gold_bright"]),
+                        ft.Text(
+                            f"{rank}. {self.champ_name(champ)}",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=P["gold_bright"],
+                        ),
                         ft.Text(
                             (
                                 f"{self.t('draft_matchup')} "
@@ -1035,13 +1037,21 @@ class MobileAssistant:
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Text(self.t("items") + ":", size=9, weight=ft.FontWeight.BOLD, color=P["muted"]),
+                            ft.Text(
+                                self.t("items") + ":",
+                                size=9,
+                                weight=ft.FontWeight.BOLD,
+                                color=P["muted"],
+                            ),
                             self.build_preview(build),
                         ],
                     ),
                 ],
             ),
         )
+        self.pick_card_boxes[cid] = card
+        self.pick_card_indicators[cid] = indicator
+        return card
 
     def item_card(self, canonical: str, build: dict) -> ft.Control:
         row = self.item_record(canonical)
