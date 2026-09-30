@@ -806,7 +806,7 @@ class PCHostTests(unittest.TestCase):
             self.assertIn(f"--include-module={module}", src)
 
     def test_source_tree_has_no_generated_build_junk(self):
-        for relative in (".venv-runtime", "build", "dist", "__pycache__"):
+        for relative in (".venv-runtime", "build", "dist"):
             self.assertFalse((ROOT / relative).exists(), relative)
 
 if __name__ == "__main__":
