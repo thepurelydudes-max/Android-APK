@@ -975,6 +975,14 @@ class MobileAssistant:
         tier_text = f"Tier {tier}" if tier else "Tier —"
         build = self.pick_builds.get(cid)
 
+        indicator = ft.Icon(
+            ft.Icons.CHECK_CIRCLE if selected else ft.Icons.CHEVRON_RIGHT,
+            color=P["gold_bright"] if selected else P["muted"],
+        )
+        self.pick_card_boxes[cid] = card
+        self.pick_card_indicators[cid] = indicator
+        return card
+
         identity = ft.Row(
             spacing=8,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -1006,11 +1014,11 @@ class MobileAssistant:
                         ),
                     ],
                 ),
-                ft.Icon(ft.Icons.CHECK_CIRCLE if selected else ft.Icons.CHEVRON_RIGHT, color=P["gold_bright"] if selected else P["muted"]),
+                indicator,
             ],
         )
 
-        return ft.Container(
+        card = ft.Container(
             data=cid,
             padding=9,
             border=ft.Border.all(2, P["gold_bright"] if selected else P["border"]),
@@ -1105,7 +1113,9 @@ class MobileAssistant:
             ),
         )
 
-    def render_outputs(self) -> None:
+    def render_pick_results(self) -> None:
+        self.pick_card_boxes = {}
+        self.pick_card_indicators = {}
         if not self.pick_results:
             self.pick_column.controls = [
                 ft.Text(self.t("pick_hint") if not self.selected_enemies() else self.t("no_results"), color=P["muted"])
@@ -1113,6 +1123,9 @@ class MobileAssistant:
         else:
             self.pick_column.controls = [self.pick_card(r, i + 1) for i, r in enumerate(self.pick_results)]
 
+
+
+    def render_current_build(self) -> None:
         if not self.current_build:
             self.build_column.controls = [ft.Text("—", color=P["muted"])]
             return
@@ -1161,6 +1174,12 @@ class MobileAssistant:
             *details,
         ]
 
+
+
+    def render_outputs(self) -> None:
+        self.render_pick_results()
+        self.render_current_build()
+
     def refresh_language_controls(self) -> None:
         """Translate existing controls in place without clearing the page."""
         if self.header_subtitle_text is not None:
@@ -1195,7 +1214,12 @@ class MobileAssistant:
             for option in dd.options or []:
                 champ = self.champ_by_id(str(option.key or ""))
                 if champ:
-                    option.text = self.champ_name(champ)
+                    name = self.champ_name(champ)
+                    option.text = name
+                    row = getattr(option, "content", None)
+                    controls = getattr(row, "controls", None)
+                    if controls and len(controls) > 1 and isinstance(controls[1], ft.Text):
+                        controls[1].value = name
         for button in self.enemy_clear_buttons:
             button.tooltip = self.t("clear")
 
