@@ -876,7 +876,7 @@ class MobileAssistant:
             selected = pick_id == new_id
             if box is not None:
                 box.border = ft.Border.all(
-                    2 if selected else 1,
+                    2,
                     P["gold_bright"] if selected else P["border"],
                 )
             if indicator is not None:
@@ -1293,12 +1293,37 @@ class MobileAssistant:
 
         worker = asyncio.create_task(asyncio.to_thread(updater.update_all, report_progress, self.lang))
         try:
+            # Update can emit hundreds of page/media messages. Drain bursts and
+            # repaint at most a few times per second instead of saturating the
+            # Flutter bridge with page-wide updates.
+            pending_message = ""
+            last_progress_paint = 0.0
+            min_progress_interval = 0.16
             while not worker.done() or not progress_queue.empty():
                 try:
-                    message = await asyncio.wait_for(progress_queue.get(), timeout=0.15)
+                    pending_message = await asyncio.wait_for(
+                        progress_queue.get(), timeout=0.06
+                    )
+                    while True:
+                        try:
+                            pending_message = progress_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
                 except asyncio.TimeoutError:
-                    continue
-                self._apply_update_progress(message)
+                    pass
+
+                now_tick = loop.time()
+                if pending_message and (
+                    worker.done()
+                    or now_tick - last_progress_paint >= min_progress_interval
+                ):
+                    self._apply_update_progress(pending_message)
+                    self.page.update()
+                    pending_message = ""
+                    last_progress_paint = now_tick
+
+            if pending_message:
+                self._apply_update_progress(pending_message)
                 self.page.update()
 
             summary = await worker
