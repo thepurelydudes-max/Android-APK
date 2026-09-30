@@ -75,8 +75,7 @@ TEXT = {
         "last_update": "База",
         "lang": "EN",
         "selected": "Мой герой",
-        "score": "Оценка",
-        "draft_matchup": "Матчап Σ",
+        "draft_matchup": "Матчап",
         "recommended_items": "Рекомендуемые предметы",
         "build_description": "Описание сборки",
         "offline": "Основная работа офлайн; интернет нужен только для обновления базы.",
@@ -109,8 +108,7 @@ TEXT = {
         "last_update": "Database",
         "lang": "RU",
         "selected": "My hero",
-        "score": "Score",
-        "draft_matchup": "Matchup Σ",
+        "draft_matchup": "Matchup",
         "recommended_items": "Recommended items",
         "build_description": "Build description",
         "offline": "Normal use is offline; internet is required only for database updates.",
@@ -171,6 +169,16 @@ class MobileAssistant:
         self.update_progress: ft.ProgressBar | None = None
         self._update_stage = 0
 
+        # Android hot-path caches: avoid repeated filesystem path resolution,
+        # recomputing the same role+draft recommendations, and rebuilding all
+        # recommendation cards when only the selected card changes.
+        self._media_src_cache: dict[tuple[str, str, str], str] = {}
+        self._local_media_src_cache: dict[str, str] = {}
+        self._recommendation_cache: dict[tuple, tuple[list[dict], dict[str, dict]]] = {}
+        self._recommendation_cache_order: list[tuple] = []
+        self.pick_card_boxes: dict[str, ft.Container] = {}
+        self.pick_card_indicators: dict[str, ft.Icon] = {}
+
         self.reload_snapshot()
         self.configure_page()
         self.rebuild_page()
@@ -189,6 +197,10 @@ class MobileAssistant:
     def reload_snapshot(self) -> None:
         db.init_db()
         self.snapshot = db.load_runtime_snapshot()
+        self._media_src_cache.clear()
+        self._local_media_src_cache.clear()
+        self._recommendation_cache.clear()
+        self._recommendation_cache_order.clear()
 
     def champ_name(self, champ: dict | None) -> str:
         if not champ:
@@ -213,18 +225,35 @@ class MobileAssistant:
         return self.snapshot.get("champions_by_id", {}).get(str(cid or ""))
 
     def item_record(self, canonical: str) -> dict:
-        return self.snapshot.get("items", {}).get(canonical) or db.get_item(canonical) or {}
+        # Runtime cards should never open SQLite while Flutter is laying out or
+        # scrolling. The snapshot is authoritative until the next data refresh.
+        return self.snapshot.get("items", {}).get(canonical) or {}
+
+    def _cached_local_media_src(self, record: dict | None) -> str:
+        value = str((record or {}).get("icon_path") or "")
+        if not value:
+            return ""
+        cached = self._local_media_src_cache.get(value)
+        if cached is not None:
+            return cached
+        p = resolve_media_path(value)
+        result = str(p) if p.is_file() else ""
+        self._local_media_src_cache[value] = result
+        return result
 
     def image_src(self, record: dict | None, fallback: str = "mobilelegends_icon.png") -> str:
         if not record:
             return fallback
         value = str(record.get("icon_path") or "")
-        if value:
-            p = resolve_media_path(value)
-            if p.is_file():
-                return str(p)
         url = str(record.get("icon_url") or "")
-        return url or fallback
+        key = (value, url, fallback)
+        cached = self._media_src_cache.get(key)
+        if cached is not None:
+            return cached
+        local = self._cached_local_media_src(record)
+        result = local or url or fallback
+        self._media_src_cache[key] = result
+        return result
 
     def avatar_content(self, champ: dict | None, size: int = 48) -> ft.Control:
         """Desktop-like avatar content: '?' while empty, portrait after selection.
@@ -458,7 +487,17 @@ class MobileAssistant:
                 ft.DropdownOption(
                     key=str(champ["id"]),
                     text=name,
-                    leading_icon=option_avatar,
+                    # Match WRCA: Flet's built-in leading_icon reserves a much
+                    # wider gap on Android. A compact Row keeps icon/name spacing
+                    # explicit and also avoids the heavier leading slot layout.
+                    content=ft.Row(
+                        spacing=6,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            option_avatar,
+                            ft.Text(name, color="#FFFFFF"),
+                        ],
+                    ),
                     style=ft.ButtonStyle(
                         color={
                             ft.ControlState.DEFAULT: "#FFFFFF",
@@ -478,9 +517,6 @@ class MobileAssistant:
                 )
             )
         return options
-
-    def portrait(self, champ: dict | None, size: int = 48) -> ft.Container:
-        return self.avatar_box(champ, size)
 
     def enemy_control(self, index: int) -> ft.Control:
         champ = self.champ_by_id(self.enemy_ids[index])
