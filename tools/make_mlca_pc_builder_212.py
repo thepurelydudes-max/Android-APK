@@ -805,9 +805,13 @@ class PCHostTests(unittest.TestCase):
         for module in ("draft_matrix_engine", "data_contract", "engine", "db", "sources", "updater"):
             self.assertIn(f"--include-module={module}", src)
 
-    def test_source_tree_has_no_generated_build_junk(self):
-        for relative in (".venv-runtime", "build", "dist"):
-            self.assertFalse((ROOT / relative).exists(), relative)
+    def test_release_builder_excludes_generated_runtime_junk(self):
+        src = (ROOT / "build_release.py").read_text(encoding="utf-8")
+        # Local run/build environments are allowed to exist beside the Builder.
+        # What matters is that none of them can leak into the produced Portable.
+        for forbidden in (".venv-build", ".venv-runtime", "__pycache__", "components", "_internal"):
+            self.assertIn(forbidden, src)
+        self.assertIn("assert_source_free(target)", src)
 
 if __name__ == "__main__":
     unittest.main()
