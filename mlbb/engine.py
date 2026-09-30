@@ -15,18 +15,6 @@ ROLE_TO_LANES = {
 }
 ROLE_TO_STAT = {"EXP": "exp", "Лес": "jungle", "Мид": "mid", "Голд": "gold", "Роум": "roam"}
 
-# Same normalized recommendation model as the Wild Rift project.  The draft
-# itself is the main signal: matchup quality + multi-target coverage = 80%.
-# MLBB tier data is cached from MLBBDex /api/v1/rankings during database update.
-# If that provider is temporarily unavailable, the last known-good tier remains
-# in SQLite; heroes without a tier fall back to the neutral score of 50.
-FINAL_WEIGHTS = {
-    "matchup": 0.60,
-    "coverage": 0.20,
-    "tier": 0.15,
-    "winrate": 0.05,
-}
-
 TIER_SCORE = {"S+": 100.0, "S": 80.0, "A": 60.0, "B": 40.0, "C": 20.0, "D": 0.0}
 TIER_ORDER = {"S+": 6, "S": 5, "A": 4, "B": 3, "C": 2, "D": 1, "": 0}
 CANONICAL_ROLES = ("EXP", "Лес", "Мид", "Голд", "Роум")
@@ -348,19 +336,6 @@ def _infer_enemy_roles(enemy_objs: list[tuple[dict, str]], snapshot: dict | None
             result[idx][1] = max(options)[2]
 
     return [(champ, role) for champ, role in result]
-
-
-def _line_weight(my_role: str, enemy_role: str) -> float:
-    """Weight the likely lane opponent without excluding the rest of the draft."""
-    if not enemy_role:
-        return 1.0
-    if my_role in {"EXP", "Мид"}:
-        return 2.0 if enemy_role == my_role else 1.0
-    if my_role == "Лес":
-        return 1.5 if enemy_role == "Лес" else 1.0
-    if my_role in {"Голд", "Роум"}:
-        return 1.5 if enemy_role in {"Голд", "Роум"} else 1.0
-    return 1.0
 
 
 def _winrate_percentile(win_rate: float | None, population: list[float]) -> float:
