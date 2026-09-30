@@ -689,6 +689,26 @@ class MobileAssistant:
         self.page.add(ft.SafeArea(content=content))
         self.page.update()
 
+    def _recommendation_key(self) -> tuple:
+        return (
+            self.role,
+            tuple(str(cid or "") for cid in self.enemy_ids),
+        )
+
+    def _remember_recommendations(
+        self,
+        key: tuple,
+        picks: list[dict],
+        builds: dict[str, dict],
+    ) -> None:
+        self._recommendation_cache[key] = (picks, builds)
+        if key in self._recommendation_cache_order:
+            self._recommendation_cache_order.remove(key)
+        self._recommendation_cache_order.append(key)
+        while len(self._recommendation_cache_order) > 32:
+            oldest = self._recommendation_cache_order.pop(0)
+            self._recommendation_cache.pop(oldest, None)
+
     def selected_enemies(self) -> list[tuple[str, str]]:
         rows = []
         for cid in self.enemy_ids:
@@ -715,12 +735,21 @@ class MobileAssistant:
         if role == self.role:
             return
         self.role = role
-        # The calculation is fast; the old delay/flicker came from page.clean()
-        # and rebuilding five 134-entry dropdowns. Update only role styling and
-        # the two result columns, then send one UI diff to Flutter.
         self.refresh_role_controls()
         self.recalculate(preserve_selection=False, update_page=False)
-        self.page.update()
+
+        # Avoid a page-wide diff: it would walk all five 134-entry searchable
+        # dropdowns although only role buttons and recommendation panes changed.
+        for box in self.role_buttons.values():
+            try:
+                box.update()
+            except Exception:
+                pass
+        try:
+            self.pick_column.update()
+            self.build_column.update()
+        except Exception:
+            self.page.update()
 
     def on_enemy_select(self, index: int, e) -> None:
         cid = str(e.control.value or "") or None
@@ -770,22 +799,39 @@ class MobileAssistant:
             return
 
         previous = self.selected_pick_id if preserve_selection else ""
-        self.pick_results = engine.recommend_picks(self.role, enemies, 10, snapshot=self.snapshot)
+        cache_key = self._recommendation_key()
+        cached = self._recommendation_cache.get(cache_key)
+        if cached is not None:
+            self.pick_results, self.pick_builds = cached
+        else:
+            self.pick_results = engine.recommend_picks(
+                self.role, enemies, 10, snapshot=self.snapshot
+            )
+            self.pick_builds = {}
+            for result in self.pick_results:
+                champ = result.get("champion") or {}
+                cid = str(champ.get("id") or "")
+                try:
+                    self.pick_builds[cid] = engine.recommend_build(
+                        champ.get("name") or champ.get("id"),
+                        enemies,
+                        role_ru=self.role,
+                        snapshot=self.snapshot,
+                    )
+                except Exception:
+                    self.pick_builds[cid] = {
+                        "champion": champ,
+                        "ordered": [],
+                        "base": [],
+                        "situational": [],
+                        "reasons": {},
+                    }
+            self._remember_recommendations(
+                cache_key, self.pick_results, self.pick_builds
+            )
+
         ids = [str(r.get("champion", {}).get("id") or "") for r in self.pick_results]
         self.selected_pick_id = previous if previous in ids else (ids[0] if ids else "")
-
-        # Desktop UI previews the adaptive items for every candidate in the rating.
-        self.pick_builds = {}
-        for result in self.pick_results:
-            champ = result.get("champion") or {}
-            cid = str(champ.get("id") or "")
-            try:
-                self.pick_builds[cid] = engine.recommend_build(
-                    champ.get("name") or champ.get("id"), enemies, role_ru=self.role, snapshot=self.snapshot
-                )
-            except Exception:
-                self.pick_builds[cid] = {"champion": champ, "ordered": [], "base": [], "situational": [], "reasons": {}}
-
         self.current_build = self.pick_builds.get(self.selected_pick_id)
         if self.current_build is None:
             self.refresh_build()
@@ -807,17 +853,53 @@ class MobileAssistant:
             return
         try:
             self.current_build = engine.recommend_build(
-                champ.get("name") or champ.get("id"), self.selected_enemies(), role_ru=self.role, snapshot=self.snapshot
+                champ.get("name") or champ.get("id"),
+                self.selected_enemies(),
+                role_ru=self.role,
+                snapshot=self.snapshot,
             )
             self.pick_builds[self.selected_pick_id] = self.current_build
         except Exception:
             self.current_build = None
 
     def select_pick(self, cid: str) -> None:
-        self.selected_pick_id = str(cid)
+        new_id = str(cid)
+        if new_id == self.selected_pick_id:
+            return
+        old_id = self.selected_pick_id
+        self.selected_pick_id = new_id
         self.refresh_build()
-        self.render_outputs()
-        self.page.update()
+
+        for pick_id in (old_id, new_id):
+            box = self.pick_card_boxes.get(pick_id)
+            indicator = self.pick_card_indicators.get(pick_id)
+            selected = pick_id == new_id
+            if box is not None:
+                box.border = ft.Border.all(
+                    2 if selected else 1,
+                    P["gold_bright"] if selected else P["border"],
+                )
+            if indicator is not None:
+                indicator.icon = ft.Icons.CHECK_CIRCLE if selected else ft.Icons.CHEVRON_RIGHT
+                indicator.color = P["gold_bright"] if selected else P["muted"]
+
+        self.render_current_build()
+        updated_any = False
+        for pick_id in (old_id, new_id):
+            box = self.pick_card_boxes.get(pick_id)
+            if box is not None:
+                try:
+                    box.update()
+                    updated_any = True
+                except Exception:
+                    pass
+        try:
+            self.build_column.update()
+            updated_any = True
+        except Exception:
+            pass
+        if not updated_any:
+            self.page.update()
 
     def localized_enemy_records(self, names: list[str]) -> list[dict]:
         out = []
