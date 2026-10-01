@@ -1,0 +1,53 @@
+WLCA 3.9.0 — GitHub package updater
+====================================
+
+The Android APK no longer scrapes game-data websites.
+
+Stable endpoint
+---------------
+The app reads:
+https://raw.githubusercontent.com/thepurelydudes-max/Android-APK/main/wlca_data/latest.json
+
+latest.json points to one immutable GitHub Release ZIP. Protocol version 1 is
+stable so future database/resource packages can be published without reinstalling
+the APK.
+
+Client update flow
+------------------
+1. Fetch latest.json from GitHub with cache disabled.
+2. If the installed package version and local integrity checks already match,
+   stop without downloading anything.
+3. Download one release ZIP. Interrupted downloads remain as .part files and
+   resume with HTTP Range. A sidecar binds the partial file to the exact release
+   SHA/version/size so bytes from two releases can never be mixed.
+4. Verify release ZIP SHA-256.
+5. Verify every ZIP member CRC and reject path traversal/symlinks/unexpected
+   files.
+6. Verify the internal manifest SHA-256 and agreement with latest.json.
+7. Verify wildrift.db SHA-256, PRAGMA quick_check, required tables, exact row
+   counts, complete WRC build cache, complete WRC matchup cache, role-build
+   champion coverage and media counts.
+8. Only after every check succeeds, atomically swap database/cache into the
+   writable runtime.
+9. Keep a rollback marker and previous working set during promotion. If Android
+   kills the process mid-swap, the next launch restores the old working set.
+
+APK contents
+------------
+The lean Android runtime includes package_updater.py but excludes the old
+sources.py/updater.py web-scraping pipeline. Normal use remains offline after a
+package is installed.
+
+GitHub package builder
+----------------------
+Workflow: .github/workflows/build-wlca-data-package.yml
+Builder: wlca_data/build_package.py
+Protocol docs: wlca_data/README.md
+Current pointer: wlca_data/latest.json
+
+The workflow validates a complete data/cache source, creates a versioned GitHub
+Release, and only after the release exists updates latest.json. If package
+validation fails, users remain on the previous known-good release.
+
+Initial protocol-v1 package was verified end-to-end through the same client code
+used by the APK.
