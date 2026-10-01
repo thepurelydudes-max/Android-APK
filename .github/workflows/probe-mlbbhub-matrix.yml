@@ -18,6 +18,7 @@ jobs:
           from bs4 import BeautifulSoup
           r=requests.get("https://mlbbhub.com/matchups",timeout=30,headers={"User-Agent":"Mozilla/5.0"})
           print("STATUS",r.status_code,"LEN",len(r.text))
+          open("/tmp/mlbbhub-matchups.html","w",encoding="utf-8").write(r.text)
           text=r.text
           for needle in ("1,988","1988","Paquito","Karina","matchup","edge","__next_f.push"):
               poss=[m.start() for m in re.finditer(re.escape(needle),text,re.I)]
@@ -31,3 +32,10 @@ jobs:
               if "Paquito" in t and "Karina" in t:
                   print("SCRIPT_WITH_HEROES",i,"LEN",len(t),t[:5000])
           PY
+
+      - name: Upload matrix HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlbbhub-matchups-html
+          path: /tmp/mlbbhub-matchups.html
+          retention-days: 1
