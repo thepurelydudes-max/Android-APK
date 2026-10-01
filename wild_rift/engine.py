@@ -414,43 +414,53 @@ def _has_usable_role_build(
     )
 
 
-def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
-    """Rank legal role candidates against the complete entered enemy draft.
+_PICK_GRID_CACHE: dict[tuple, dict[str, list[dict]]] = {}
 
-    DraftMatrixEngine is the single scoring authority:
-      60% role-correct net matchup strength
-      20% positive matchup strength across the entered draft
-      15% current role tier
-       5% current role win-rate percentile
 
-    The likely lane opponent receives extra weight, but every enemy remains in
-    the matrix. The final visible score is the ranking authority; secondary
-    fields below are deterministic tie-breakers only.
+def _role_draft_rank_key(row: dict) -> tuple:
+    """Local role ranking for one exact champion+role pair.
+
+    The draft matrix sum is the primary authority. Coverage only breaks equal
+    sums, so +1 +1 ranks above +2 +0 while +3 +0 still beats +1 +1.
+    Existing 60/20/15/5 score, tier and win-rate are retained as later
+    deterministic tie-breakers instead of overriding stronger matchup totals.
     """
-    raw_enemy_objs: list[tuple[dict, str]] = []
-    for name, enemy_role in enemies:
-        champ = _find_champ(name, snapshot)
-        if champ:
-            raw_enemy_objs.append((champ, enemy_role))
-    if not raw_enemy_objs:
-        return []
+    return (
+        float(row.get("matchup_sum") or 0.0),
+        int(row.get("coverage_count") or 0),
+        float(row.get("raw_positive_strength") or 0.0),
+        -int(row.get("negative_count") or 0),
+        -float(row.get("raw_negative_strength") or 0.0),
+        float(row.get("score") or 0.0),
+        float(row.get("matchup_score") or 0.0),
+        TIER_ORDER.get(str(row.get("tier") or ""), 0),
+        float(row.get("winrate_score") or 0.0),
+        not bool(row.get("lane_hard_loss", False)),
+    )
 
-    enemy_objs = _infer_enemy_roles(raw_enemy_objs, snapshot)
-    enemy_ids = {enemy["id"] for enemy, _enemy_role in enemy_objs if enemy.get("id")}
+
+def _rank_role_candidates(
+    role_ru: str,
+    enemy_objs: list[tuple[dict, str]],
+    enemy_ids: set[str],
+    snapshot: dict | None = None,
+) -> list[dict]:
+    """Build the complete role-specific candidate ranking before global allocation."""
     stat_lane = ROLE_TO_STAT.get(role_ru, "")
 
     candidate_rows: list[tuple[dict, str, dict | None]] = []
     for cand in (snapshot.get("champions", []) if snapshot is not None else db.champions()):
         if cand.get("id") in enemy_ids:
             continue
+        # Flex champions may legitimately participate in several *candidate*
+        # branches. Global allocation below decides the one branch where the
+        # champion will finally be shown.
+        if not lane_ok(cand, role_ru):
+            continue
+        if not _has_usable_role_build(cand, role_ru, snapshot):
+            continue
         tier = _tier(cand.get("id", ""), role_ru, snapshot)
         st = _stat(cand.get("id", ""), stat_lane, "all", snapshot) if stat_lane else None
-        # Every champion belongs to exactly one recommendation branch.
-        # Flex/off-meta role metadata remains available to the rest of the
-        # engine, but it must not duplicate thin ADC/mage/etc. picks into Baron,
-        # Jungle, Mid or Support recommendation lists.
-        if _primary_recommendation_role(cand, snapshot) != role_ru:
-            continue
         candidate_rows.append((cand, tier, st))
 
     role_win_rates: list[float] = []
@@ -461,14 +471,16 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             except (TypeError, ValueError):
                 pass
 
-    out = []
+    out: list[dict] = []
     for cand, tier, st in candidate_rows:
         matrix_edges: list[DraftEdge] = []
         mirror_edge: float | None = None
+        raw_edges: list[float] = []
 
         for enemy, inferred_role in enemy_objs:
             edge = float(_matchup_score(cand["id"], enemy["id"], role_ru, snapshot))
             edge = DRAFT_MATRIX.clamp_edge(edge)
+            raw_edges.append(edge)
             weight = DRAFT_MATRIX.lane_weight(role_ru, inferred_role)
             if inferred_role == role_ru:
                 mirror_edge = edge
@@ -503,14 +515,23 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
         direct_lane_edges = matrix["direct_lane_edges"]
         lane_hard_loss = any(edge <= -2.0 for edge in direct_lane_edges)
 
+        raw_positive_strength = sum(edge for edge in raw_edges if edge > 0)
+        raw_negative_strength = sum(abs(edge) for edge in raw_edges if edge < 0)
+        negative_count = sum(1 for edge in raw_edges if edge < 0)
+
         out.append({
             "champion": cand,
+            "role": role_ru,
             "score": final["score"],
             "positive": matrix["positive"],
             "negative": matrix["negative"],
             "neutral": matrix["neutral"],
             "positive_strength": matrix["positive_strength"],
             "negative_strength": matrix["negative_strength"],
+            "raw_positive_strength": raw_positive_strength,
+            "raw_negative_strength": raw_negative_strength,
+            "negative_count": negative_count,
+            "matchup_sum": sum(raw_edges),
             "hard_counters": matrix["hard_counters"],
             "coverage_count": matrix["coverage_count"],
             "coverage_total": matrix["coverage_total"],
@@ -533,20 +554,199 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             "matrix_row": matrix["matrix_row"],
         })
 
-    out.sort(
-        key=lambda x: (
-            x["score"],
-            x["matchup_score"],
-            x["coverage_score"],
-            TIER_ORDER.get(x.get("tier", ""), 0),
-            x["winrate_score"],
-            not x.get("lane_hard_loss", False),
-            x["positive_strength"],
-            -x["negative_strength"],
-        ),
-        reverse=True,
+    out.sort(key=_role_draft_rank_key, reverse=True)
+    for index, row in enumerate(out, start=1):
+        row["local_rank"] = index
+    return out
+
+
+def _next_available_row(
+    rows: list[dict],
+    assigned: set[str],
+) -> dict | None:
+    for row in rows:
+        cid = str((row.get("champion") or {}).get("id") or "")
+        if cid and cid not in assigned:
+            return row
+    return None
+
+
+def _marginal_role_gap(
+    role: str,
+    candidate: dict,
+    ranked: dict[str, list[dict]],
+    assigned: set[str],
+) -> tuple:
+    """How much this role deteriorates if *candidate* is taken elsewhere."""
+    cid = str((candidate.get("champion") or {}).get("id") or "")
+    next_row = None
+    seen_candidate = False
+    for row in ranked.get(role, []):
+        row_cid = str((row.get("champion") or {}).get("id") or "")
+        if not row_cid or row_cid in assigned:
+            continue
+        if row_cid == cid and not seen_candidate:
+            seen_candidate = True
+            continue
+        next_row = row
+        break
+
+    if next_row is None:
+        return (float("inf"), float("inf"), float("inf"), float("inf"))
+
+    return (
+        float(candidate.get("matchup_sum") or 0.0) - float(next_row.get("matchup_sum") or 0.0),
+        int(candidate.get("coverage_count") or 0) - int(next_row.get("coverage_count") or 0),
+        float(candidate.get("raw_positive_strength") or 0.0) - float(next_row.get("raw_positive_strength") or 0.0),
+        float(candidate.get("score") or 0.0) - float(next_row.get("score") or 0.0),
     )
-    return out[:limit]
+
+
+def _conflict_role_key(
+    role: str,
+    candidate: dict,
+    ranked: dict[str, list[dict]],
+    assigned: set[str],
+    snapshot: dict | None,
+) -> tuple:
+    """Resolve one flex champion proposed by several branches.
+
+    Prefer the branch where the champion is locally higher. If the local place
+    is tied, prefer the stronger role-specific matchup sum. If that is tied too,
+    keep the champion where removing it would hurt the branch most. Remaining
+    ties use coverage, current score and finally the champion's statistical
+    primary role only as deterministic fallbacks.
+    """
+    champ = candidate.get("champion") or {}
+    primary_role = _primary_recommendation_role(champ, snapshot)
+    return (
+        -int(candidate.get("local_rank") or 10_000),
+        float(candidate.get("matchup_sum") or 0.0),
+        _marginal_role_gap(role, candidate, ranked, assigned),
+        int(candidate.get("coverage_count") or 0),
+        float(candidate.get("raw_positive_strength") or 0.0),
+        -float(candidate.get("raw_negative_strength") or 0.0),
+        float(candidate.get("score") or 0.0),
+        1 if primary_role == role else 0,
+        -CANONICAL_ROLES.index(role),
+    )
+
+
+def _allocate_unique_role_grid(
+    ranked: dict[str, list[dict]],
+    limit: int,
+    snapshot: dict | None = None,
+) -> dict[str, list[dict]]:
+    """Distribute flex champions across role lists without duplicates.
+
+    Allocation happens one visible rank at a time. A champion can compete in
+    every exact WRC role it genuinely supports, but once assigned to one branch
+    it is removed globally from all other branches.
+    """
+    result = {role: [] for role in CANONICAL_ROLES}
+    assigned: set[str] = set()
+    wanted = max(0, int(limit))
+
+    for _slot in range(wanted):
+        unresolved = {
+            role for role in CANONICAL_ROLES
+            if len(result[role]) < wanted
+            and _next_available_row(ranked.get(role, []), assigned) is not None
+        }
+        if not unresolved:
+            break
+
+        while unresolved:
+            proposals: dict[str, dict] = {}
+            for role in tuple(unresolved):
+                row = _next_available_row(ranked.get(role, []), assigned)
+                if row is None:
+                    unresolved.discard(role)
+                else:
+                    proposals[role] = row
+
+            if not proposals:
+                break
+
+            by_champion: dict[str, list[str]] = {}
+            for role, row in proposals.items():
+                cid = str((row.get("champion") or {}).get("id") or "")
+                if cid:
+                    by_champion.setdefault(cid, []).append(role)
+
+            progress = False
+            for cid, roles in by_champion.items():
+                if len(roles) == 1:
+                    winner = roles[0]
+                else:
+                    winner = max(
+                        roles,
+                        key=lambda role: _conflict_role_key(
+                            role, proposals[role], ranked, assigned, snapshot
+                        ),
+                    )
+
+                chosen = proposals[winner]
+                result[winner].append(chosen)
+                assigned.add(cid)
+                unresolved.discard(winner)
+                progress = True
+                # Losing roles stay unresolved and will immediately propose
+                # their next available champion now that this cid is globally
+                # unavailable.
+
+            if not progress:
+                break
+
+    return result
+
+
+def recommend_pick_grid(
+    enemies: list[tuple[str, str]],
+    limit: int = 8,
+    snapshot: dict | None = None,
+) -> dict[str, list[dict]]:
+    """Return all five role lists from one globally unique draft allocation."""
+    raw_enemy_objs: list[tuple[dict, str]] = []
+    for name, enemy_role in enemies:
+        champ = _find_champ(name, snapshot)
+        if champ:
+            raw_enemy_objs.append((champ, enemy_role))
+    if not raw_enemy_objs:
+        return {role: [] for role in CANONICAL_ROLES}
+
+    cache_key = None
+    if snapshot is not None:
+        cache_key = (
+            id(snapshot),
+            tuple((str(champ.get("id") or ""), str(role or "")) for champ, role in raw_enemy_objs),
+            int(limit),
+        )
+        cached = _PICK_GRID_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    enemy_objs = _infer_enemy_roles(raw_enemy_objs, snapshot)
+    enemy_ids = {enemy["id"] for enemy, _enemy_role in enemy_objs if enemy.get("id")}
+
+    ranked = {
+        role: _rank_role_candidates(role, enemy_objs, enemy_ids, snapshot)
+        for role in CANONICAL_ROLES
+    }
+    grid = _allocate_unique_role_grid(ranked, limit, snapshot)
+
+    if cache_key is not None:
+        if len(_PICK_GRID_CACHE) >= 64:
+            _PICK_GRID_CACHE.clear()
+        _PICK_GRID_CACHE[cache_key] = grid
+    return grid
+
+
+def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
+    """Return one branch from the globally unique five-role recommendation grid."""
+    if role_ru not in CANONICAL_ROLES:
+        return []
+    return list(recommend_pick_grid(enemies, limit=limit, snapshot=snapshot).get(role_ru, []))
 
 BUILD_NEED_TAGS = {
     "anti_heal", "anti_shield", "anti_crit", "anti_attack_speed",
