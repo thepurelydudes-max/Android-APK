@@ -38,6 +38,7 @@ jobs:
           PY
 
       - name: Probe live counter endpoint direction and coverage
+        continue-on-error: true
         working-directory: mlbb
         run: |
           python - <<'PY'
