@@ -129,7 +129,10 @@ def ensure_initial_data() -> Path:
         same_cache = seed_cache.resolve() == runtime_cache.resolve()
     except Exception:
         same_cache = False
-    if not same_cache:
+    if not same_cache and not runtime_cache.exists():
+        # Seed immutable APK media only once. GitHub data packages own the
+        # writable cache after that; re-merging bundled files on every launch
+        # would resurrect resources intentionally removed by a newer package.
         _copy_tree_once(seed_cache, runtime_cache)
 
     (RUNTIME_DIR / "logs").mkdir(parents=True, exist_ok=True)
