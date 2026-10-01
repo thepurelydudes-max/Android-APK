@@ -69,6 +69,7 @@ jobs:
           PY
 
       - name: Probe direct Moonton GMS and Academy fallback
+        if: always()
         working-directory: mlbb
         run: |
           python - <<'PY'
