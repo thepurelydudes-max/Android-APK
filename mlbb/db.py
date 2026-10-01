@@ -1349,12 +1349,12 @@ def load_runtime_snapshot() -> dict:
     # current DraftMatrixEngine still consumes the historical -1.5..+1.5
     # internal scale, so convert only at this compatibility boundary.  Once the
     # engine migrates, raw evidence and normalization remain untouched.
-    if matchup_contract_version == "1" and matchup_evidence_rows:
+    if matchup_contract_version in {"1", "2"} and matchup_evidence_rows:
         preferred = {}
         for row in matchup_evidence_rows:
             key = (str(row["champion_id"]), str(row["enemy_id"]), str(row["role"] or ""))
             rank_bonus = 2 if str(row["rank_segment"] or "") == "all" else 1
-            measured_bonus = 2 if str(row["evidence_type"] or "") == "measured" else 1
+            measured_bonus = 2 if str(row["evidence_type"] or "").startswith("measured") else 1
             priority = (rank_bonus, measured_bonus, float(row["confidence"] or 0.0))
             current = preferred.get(key)
             if current is None or priority > current[0]:
