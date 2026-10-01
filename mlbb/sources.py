@@ -240,6 +240,7 @@ MLBBDEX_HEROES = f"{MLBBDEX_BASE}/heroes"
 MLBBDEX_ITEMS = f"{MLBBDEX_BASE}/items"
 MLBBDEX_PATCHES = f"{MLBBDEX_BASE}/patches"
 MLBBDEX_RANKINGS = f"{MLBBDEX_BASE}/rankings"
+MLBBHUB_PATCH_NOTES = "https://mlbbhub.com/patch-notes"
 RONE_EQUIPMENT_EXPANDED = f"{RONE_BASE}/academy/equipment/expanded"
 RONE_VERSION = f"{RONE_BASE}/academy/meta/version"
 RONE_ACADEMY_HEROES = f"{RONE_BASE}/academy/heroes"
@@ -438,13 +439,16 @@ def parse_rone_academy_lane_filter(payload: dict, lane: str) -> list[str]:
 def parse_rone_academy_counter_raw(
     payload: dict, target_id: str,
 ) -> list[dict]:
-    """Preserve Academy counter deltas before any MLCA scoring conversion.
+    """Preserve Rone counter deltas in MLCA candidate -> enemy direction.
 
-    increase_win_rate is already signed by Rone. A positive value means the
-    candidate performs better into the target; a negative value means worse.
-    Do not infer the sign from the container name and do not synthesize a
-    reverse matchup: every target hero is fetched separately, so the reverse
-    direction has its own source measurement.
+    Rone counter pages are centred on main_heroid. increase_win_rate is the
+    win-rate swing of that main hero against the listed sub hero. MLCA therefore
+    stores main_heroid -> sub_hero.heroid. Older builds accidentally stored the
+    opposite direction, which inverted counter picks.
+
+    The signed upstream value is kept when present. Some feeds encode
+    sub_hero_last as a positive magnitude despite that group being unfavorable,
+    so that compatibility case is forced negative.
     """
     data = _json_data(payload) or {}
     records = data.get("records", []) if isinstance(data, dict) else []
@@ -452,65 +456,69 @@ def parse_rone_academy_counter_raw(
     fallback_target = str(target_id or "").strip()
     for record in records:
         row = (record or {}).get("data") or {}
-        target = str(row.get("main_heroid") or row.get("heroid") or fallback_target).strip()
-        if not target:
+        main_id = str(row.get("main_heroid") or row.get("heroid") or fallback_target).strip()
+        if not main_id:
             continue
         for key in ("sub_hero", "sub_hero_last"):
             for sub in row.get(key) or []:
                 if not isinstance(sub, dict):
                     continue
-                candidate = str(sub.get("heroid") or "").strip()
-                if not candidate or candidate == target:
+                enemy_id = str(sub.get("heroid") or "").strip()
+                if not enemy_id or enemy_id == main_id:
                     continue
                 try:
                     edge = float(sub.get("increase_win_rate") or 0.0)
                 except (TypeError, ValueError):
                     continue
-                if edge == 0:
+                if key == "sub_hero_last" and edge > 0.0:
+                    edge = -edge
+                if edge == 0.0:
                     continue
                 base = {
-                    "champion_id": candidate,
-                    "enemy_id": target,
+                    "champion_id": main_id,
+                    "enemy_id": enemy_id,
                     "role": "",
                     "raw_edge": edge,
                     "raw_unit": "fraction",
                     "evidence_type": f"measured:{key}",
                     "rank_segment": "all",
-                    "sample_window": "academy-current",
+                    "sample_window": "7d",
                     "confidence": 1.0,
                 }
-                old = edges.get((candidate, target))
+                old = edges.get((main_id, enemy_id))
                 if old is None or abs(edge) > abs(float(old.get("raw_edge") or 0.0)):
-                    edges[(candidate, target)] = base
+                    edges[(main_id, enemy_id)] = base
     return list(edges.values())
 
-def parse_rone_counter_payload(payload: dict) -> list[tuple[str, str, str, float]]:
-    """Return matchup edges oriented as candidate -> target.
 
-    Rone's counter response groups stronger counters under ``sub_hero`` and the
-    opposite side under ``sub_hero_last``.  The application expects a positive
-    score when the first hero is a good answer into the second hero.
-    """
+def parse_rone_counter_payload(payload: dict) -> list[tuple[str, str, str, float]]:
+    """Return legacy matchup edges oriented as main hero -> listed opponent."""
     data = _json_data(payload) or {}
     records = data.get("records", []) if isinstance(data, dict) else []
     edges: dict[tuple[str, str, str], float] = {}
     for record in records:
         row = (record or {}).get("data") or {}
-        target = row.get("main_heroid") or row.get("heroid")
-        if target is None:
+        main_id = row.get("main_heroid") or row.get("heroid")
+        if main_id is None:
             continue
-        target = str(target)
-        for key, sign in (("sub_hero", 1.0), ("sub_hero_last", -1.0)):
+        main_id = str(main_id)
+        for key in ("sub_hero", "sub_hero_last"):
             for sub in row.get(key) or []:
-                cid = sub.get("heroid") if isinstance(sub, dict) else None
-                if cid is None or str(cid) == target:
+                enemy_id = sub.get("heroid") if isinstance(sub, dict) else None
+                if enemy_id is None or str(enemy_id) == main_id:
                     continue
-                delta = abs(float(sub.get("increase_win_rate") or 0.0)) if isinstance(sub, dict) else 0.0
-                magnitude = max(0.20, min(1.50, delta * 10.0))
-                edges[(str(cid), target, "")] = sign * magnitude
-                edges[(target, str(cid), "")] = -sign * magnitude
+                try:
+                    raw = float(sub.get("increase_win_rate") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if key == "sub_hero_last" and raw > 0.0:
+                    raw = -raw
+                if raw == 0.0:
+                    continue
+                magnitude = max(0.20, min(1.50, abs(raw) * 10.0))
+                score = magnitude if raw > 0.0 else -magnitude
+                edges[(main_id, str(enemy_id), "")] = score
     return [(a, b, role, score) for (a, b, role), score in edges.items()]
-
 
 def parse_rone_equipment(payload: dict) -> tuple[list[dict], dict[int, str]]:
     data = _json_data(payload) or {}
@@ -595,6 +603,32 @@ def fetch_mlbbdex_rankings(net: Net) -> list[dict]:
 
 
 def fetch_mlbb_patch_info(net: Net) -> tuple[str, str]:
+    """Return the live Original Server patch, with graceful source fallbacks."""
+    try:
+        response = net.get(MLBBHUB_PATCH_NOTES, headers=None)
+        page = response.text or ""
+        match = re.search(
+            r"latest\\s+MLBB\\s+patch\\s+is\\s+Patch\\s+([0-9]+(?:\\.[0-9A-Za-z]+)+)",
+            page,
+            flags=re.I,
+        )
+        if not match:
+            match = re.search(
+                r"Original\\s+Server.{0,2500}?\\b([0-9]+\\.[0-9]+\\.[0-9]+[A-Za-z]?)\\b",
+                page,
+                flags=re.I | re.S,
+            )
+        if match:
+            version = clean(match.group(1))
+            date_match = re.search(
+                rf"{re.escape(version)}.{{0,500}}?([A-Z][a-z]+\\s+\\d{{1,2}},\\s+\\d{{4}})",
+                page,
+                flags=re.S,
+            )
+            return version, clean(date_match.group(1)) if date_match else ""
+    except Exception:
+        pass
+
     try:
         root = net.get(MLBBDEX_PATCHES).json()
         rows = _json_data(root) or []
@@ -606,6 +640,7 @@ def fetch_mlbb_patch_info(net: Net) -> tuple[str, str]:
                 return version, date
     except Exception:
         pass
+
     root = net.get(RONE_VERSION, headers=None).json()
     data = _json_data(root) or {}
     records = data.get("records", []) if isinstance(data, dict) else []
