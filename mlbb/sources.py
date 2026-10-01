@@ -608,20 +608,20 @@ def fetch_mlbb_patch_info(net: Net) -> tuple[str, str]:
         response = net.get(MLBBHUB_PATCH_NOTES, headers=None)
         page = response.text or ""
         match = re.search(
-            r"latest\\s+MLBB\\s+patch\\s+is\\s+Patch\\s+([0-9]+(?:\\.[0-9A-Za-z]+)+)",
+            r"latest\s+MLBB\s+patch\s+is\s+Patch\s+([0-9]+(?:\.[0-9A-Za-z]+)+)",
             page,
             flags=re.I,
         )
         if not match:
             match = re.search(
-                r"Original\\s+Server.{0,2500}?\\b([0-9]+\\.[0-9]+\\.[0-9]+[A-Za-z]?)\\b",
+                r"Original\s+Server.{0,2500}?\b([0-9]+\.[0-9]+\.[0-9]+[A-Za-z]?)\b",
                 page,
                 flags=re.I | re.S,
             )
         if match:
             version = clean(match.group(1))
             date_match = re.search(
-                rf"{re.escape(version)}.{{0,500}}?([A-Z][a-z]+\\s+\\d{{1,2}},\\s+\\d{{4}})",
+                rf"{re.escape(version)}.{{0,500}}?([A-Z][a-z]+\s+\d{{1,2}},\s+\d{{4}})",
                 page,
                 flags=re.S,
             )
