@@ -6,7 +6,7 @@ on:
       - mlca-pc-builder-2.1.3
     paths:
       - "tools/make_mlca_pc_builder_213.py"
-      - ".github/workflows/build-mlca-pc-builder-212.yml"
+      - ".github/workflows/build-mlca-pc-builder-213.yml"
   workflow_dispatch:
 
 jobs:
