@@ -80,7 +80,7 @@ TEXT = {
         "last_update": "База",
         "lang": "EN",
         "selected": "Мой чемпион",
-        "score": "Мета",
+        "score": "Оценка",
         "matchup_rank": "Матчап",
         "coverage_short": "Охват",
         "tier": "Тир",
@@ -120,7 +120,7 @@ TEXT = {
         "last_update": "Database",
         "lang": "RU",
         "selected": "My champion",
-        "score": "Meta",
+        "score": "Score",
         "matchup_rank": "Matchup",
         "coverage_short": "Coverage",
         "tier": "Tier",
@@ -1018,9 +1018,7 @@ class MobileAssistant:
                             color=P["gold_bright"],
                         ),
                         ft.Text(
-                            f"{self.t('tier')} {tier} · "
-                            f"{self.t('matchup_rank')} {float(result.get('matchup_sum') or 0):+.1f} · "
-                            f"{self.t('coverage_short')} {int(result.get('coverage_count') or 0)}/{int(result.get('coverage_total') or 0)} · "
+                            f"{self.t('tier')} {tier} · {self.t('score')} {float(result.get('score') or 0):.2f} · "
                             f"{self.t('winrate')} {wr_text}",
                             size=9,
                             color=P["muted"],
