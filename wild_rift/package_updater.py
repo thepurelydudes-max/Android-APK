@@ -1,4 +1,4 @@
-"""GitHub package updater for WLCA.
+"""GitHub package updater for WRCA.
 
 The Android app never scrapes Wild Rift data sources directly. A complete,
 validated data package is assembled in GitHub and published as a release asset.
@@ -25,14 +25,14 @@ from paths import RUNTIME_DIR
 PROTOCOL_VERSION = 1
 LATEST_MANIFEST_URL = (
     "https://raw.githubusercontent.com/"
-    "thepurelydudes-max/Android-APK/main/wlca_data/latest.json"
+    "thepurelydudes-max/Android-APK/main/wrca_data/latest.json"
 )
 TRUSTED_RELEASE_PREFIX = (
     "https://github.com/thepurelydudes-max/Android-APK/releases/download/"
 )
 UPDATE_DIR = RUNTIME_DIR / "github-update"
-PART_PATH = UPDATE_DIR / "WLCA-data.zip.part"
-PART_META_PATH = UPDATE_DIR / "WLCA-data.part.json"
+PART_PATH = UPDATE_DIR / "WRCA-data.zip.part"
+PART_META_PATH = UPDATE_DIR / "WRCA-data.part.json"
 STAGE_DIR = UPDATE_DIR / "stage"
 BACKUP_DIR = UPDATE_DIR / "rollback"
 RECOVERY_MARKER = UPDATE_DIR / "promotion.json"
@@ -135,7 +135,7 @@ def _fetch_latest(session: requests.Session) -> dict:
         raise PackageUpdateError(f"Некорректный размер пакета: {size_bytes}.")
     if min_app and _version_tuple(_app_version()) < _version_tuple(min_app):
         raise PackageUpdateError(
-            f"Пакет требует WLCA {min_app} или новее; установлено {_app_version()}."
+            f"Пакет требует WRCA {min_app} или новее; установлено {_app_version()}."
         )
     return manifest
 
@@ -527,7 +527,7 @@ def update_all(
 
     session = requests.Session()
     session.headers.update({
-        "User-Agent": f"WLCA/{_app_version()} GitHubPackageUpdater",
+        "User-Agent": f"WRCA/{_app_version()} GitHubPackageUpdater",
         "Accept": "application/json, application/octet-stream;q=0.9, */*;q=0.8",
     })
 
