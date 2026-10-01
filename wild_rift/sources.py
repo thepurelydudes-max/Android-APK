@@ -570,20 +570,37 @@ def _wildriftcore_profile_links(
     resolve: Callable[[str], str | None],
     progress: Callable[[str], None] | None = None,
 ) -> list[tuple[str, str]]:
-    """Discover every champion build URL exposed by WildRiftCore.
+    """Discover and validate the complete WildRiftCore champion profile roster.
 
-    Prefer the normal champion index. If Cloudflare blocks it, the public
-    /en/builds/ page is read through Jina and its canonical WildRiftCore links
-    are extracted. This avoids guessing special slugs such as Nunu & Willump.
+    WildRiftCore's normal /champions/ HTML can expose only the first rendered
+    batch of cards (for example 20) while the site itself contains the full
+    roster. Never accept "some links" as a complete roster. Merge canonical
+    links from both /champions/ and /builds/, then compare resolved IDs against
+    the roster supplied by the updater.
     """
     found: dict[str, str] = {}
+    discovery_errors: list[str] = []
 
+    def add_slug(slug: str) -> None:
+        clean_slug = str(slug or "").strip().strip("/")
+        if not clean_slug:
+            return
+        cid = resolve(clean_slug) or resolve(clean_slug.replace("-", " "))
+        if cid:
+            found[cid] = (
+                f"https://wildriftcore.com/en/champions/{clean_slug}".rstrip("/")
+            )
+
+    # Source 1: canonical champion index. It is useful, but may be only the first
+    # rendered/paginated batch, so it is never sufficient by itself.
     try:
-        html = _wildriftcore_get(net, WR_CORE_CHAMPS, progress, WR_CORE_HTML_HEADERS).text
+        html = _wildriftcore_get(
+            net, WR_CORE_CHAMPS, progress, WR_CORE_HTML_HEADERS
+        ).text
         soup = BeautifulSoup(html, "html.parser")
         for a in soup.find_all("a", href=True):
             href = str(a.get("href") or "")
-            m = re.search(r"/en/champions/([^/?#]+)/?$", href)
+            m = re.search(r"/en/champions/([^/?#]+)/?(?:[?#].*)?$", href)
             if not m:
                 continue
             slug = m.group(1)
@@ -592,26 +609,58 @@ def _wildriftcore_profile_links(
                 cid = resolve(clean(a.get_text(" ", strip=True)))
             if cid:
                 found[cid] = urljoin(WR_CORE_CHAMPS, href).rstrip("/")
-    except Exception:
-        found = {}
+    except Exception as exc:
+        discovery_errors.append(f"champions index: {exc}")
 
-    if found:
-        return sorted(found.items(), key=lambda row: row[0].casefold())
+    # Source 2: /en/builds/ publishes build cards across all roles. Reader mode
+    # is intentionally merged even when source 1 returned links; this is what
+    # prevents a first-page-only 20-card response from becoming our universe.
+    try:
+        text, _transport = _wildriftcore_build_text(
+            net, WR_CORE_BUILDS, progress
+        )
+        patterns = (
+            r"https?://(?:www\.)?wildriftcore\.com/en/champions/([^/?#)\s]+)/builds/?",
+            r"/en/champions/([^/?#)\s]+)/builds/?",
+            r"https?://(?:www\.)?wildriftcore\.com/en/champions/([^/?#)\s]+)/?(?:[?#)\s])",
+        )
+        for pattern in patterns:
+            for slug in re.findall(pattern, text or "", flags=re.I):
+                add_slug(slug)
+    except Exception as exc:
+        discovery_errors.append(f"builds index: {exc}")
 
-    text, _transport = _wildriftcore_build_text(net, WR_CORE_BUILDS, progress)
-    # The reader output keeps the canonical destination URLs from the source.
-    slugs = re.findall(
-        r"https?://(?:www\.)?wildriftcore\.com/en/champions/([^/?#]+)/builds/?",
-        text,
-        flags=re.I,
-    )
-    for slug in dict.fromkeys(slugs):
-        cid = resolve(slug) or resolve(slug.replace("-", " "))
-        if cid:
-            found[cid] = f"https://wildriftcore.com/en/champions/{slug}".rstrip("/")
+    expected_ids = {
+        str(cid) for cid in (getattr(resolve, "known_ids", ()) or ()) if str(cid)
+    }
+    found_ids = set(found)
+
+    if expected_ids:
+        missing = sorted(expected_ids - found_ids)
+        if missing:
+            detail = "; ".join(discovery_errors[:2])
+            suffix = f" ({detail})" if detail else ""
+            raise RuntimeError(
+                "WildRiftCore roster incomplete: "
+                f"{len(found_ids)}/{len(expected_ids)} profiles discovered; "
+                "missing: " + ", ".join(missing[:16])
+                + ("…" if len(missing) > 16 else "")
+                + ". Current database will not be replaced."
+                + suffix
+            )
 
     if not found:
-        raise RuntimeError("Не найдены страницы чемпионов на WildRiftCore")
+        detail = "; ".join(discovery_errors[:2])
+        raise RuntimeError(
+            "Не найдены страницы чемпионов на WildRiftCore"
+            + (f" ({detail})" if detail else "")
+        )
+
+    if progress:
+        progress(
+            f"WildRiftCore roster: {len(found)}/"
+            f"{len(expected_ids) if expected_ids else len(found)} профилей подтверждено."
+        )
     return sorted(found.items(), key=lambda row: row[0].casefold())
 
 
