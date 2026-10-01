@@ -767,21 +767,28 @@ def update_all(
         if tier_dates:
             db.set_meta("tier_date", max(tier_dates))
 
-    # 3) Matchups: MLBBHub publishes a current-patch ranked matrix whose sign
-    # contract is explicit: row hero -> column hero. Positive pp means the row
-    # hero performs better in that matchup. This source is used atomically so a
-    # fresh matrix can never be mixed with the old inverted Rone Academy rows.
+    # 3) Matchups: MLBBHub publishes two current-patch evidence channels.
+    # GMS measured edges keep their literal percentage-point values. Moonton's
+    # in-game counter list contributes direction only for pairs with no measured
+    # edge; it is never converted into an invented numeric matchup value.
     emit(update_text("loading_matchups", lang))
     relation_rows = relation_matchups(champs)
     detailed_matchups: list[tuple[str, str, str, float]] = []
     matchup_source = "mlbbhub.matchups"
     matchup_patch = current_patch or "current"
     raw_matchup_rows: dict[tuple[str, str, str], dict] = {}
+    raw_direction_rows: dict[tuple[str, str], dict] = {}
     resolved_matrix_heroes: set[str] = set()
+    resolved_direction_heroes: set[str] = set()
     matrix_source_rows = 0
+    direction_source_rows = 0
+    direction_ambiguous_pairs = 0
     inverse_checked = 0
     inverse_ok = 0
     inverse_ratio = 0.0
+    direction_inverse_checked = 0
+    direction_inverse_ok = 0
+    direction_inverse_ratio = 0.0
     sentinel_edges: dict[str, float | None] = {}
 
     try:
@@ -795,6 +802,13 @@ def update_all(
         )
         parsed_matrix = parse_mlbbhub_matchup_matrix_html(response.text)
         matrix_source_rows = len(parsed_matrix.get("rows") or [])
+        direction_source_rows = int(
+            parsed_matrix.get("direction_source_rows")
+            or len(parsed_matrix.get("direction_rows") or [])
+        )
+        direction_ambiguous_pairs = int(
+            parsed_matrix.get("ambiguous_direction_pairs") or 0
+        )
         parsed_patch = str(parsed_matrix.get("patch") or "").strip()
         if parsed_patch:
             matchup_patch = parsed_patch
@@ -831,8 +845,39 @@ def update_all(
                     "confidence": 1.0,
                 }
 
-        # The published matrix is almost perfectly antisymmetric. Refuse to
-        # activate a payload if its direction/shape suddenly changes.
+        for row in parsed_matrix.get("direction_rows") or []:
+            cid = resolve(row.get("champion_slug") or row.get("champion_name"))
+            eid = resolve(row.get("enemy_slug") or row.get("enemy_name"))
+            if not cid:
+                cid = resolve(row.get("champion_name"))
+            if not eid:
+                eid = resolve(row.get("enemy_name"))
+            try:
+                direction = int(row.get("direction") or 0)
+            except (TypeError, ValueError):
+                continue
+            if (
+                not cid or not eid or cid == eid
+                or cid not in valid_ids or eid not in valid_ids
+                or direction not in {-1, 1}
+            ):
+                continue
+            # Measured GMS evidence has priority if a future payload happens to
+            # expose both channels for the same pair.
+            if (cid, eid, "") in raw_matchup_rows:
+                continue
+            resolved_direction_heroes.add(cid)
+            resolved_direction_heroes.add(eid)
+            raw_direction_rows[(cid, eid)] = {
+                "champion_id": cid,
+                "enemy_id": eid,
+                "direction": direction,
+                "evidence_type": "counter_list:moonton_ingame",
+                "confidence": 1.0,
+                "patch": matchup_patch,
+            }
+
+        # Measured edges are expected to be nearly perfectly antisymmetric.
         seen_pairs: set[tuple[str, str]] = set()
         for (a, b, _role), row in raw_matchup_rows.items():
             pair = tuple(sorted((a, b)))
@@ -848,6 +893,28 @@ def update_all(
             if abs(edge + reverse_edge) <= 0.05:
                 inverse_ok += 1
         inverse_ratio = (inverse_ok / inverse_checked) if inverse_checked else 0.0
+
+        # Direction-only counter facts should also mirror cleanly: if A is
+        # favored into B, B is unfavored into A. Ambiguous pairs were already
+        # removed by the parser and therefore remain UNKNOWN.
+        seen_direction_pairs: set[tuple[str, str]] = set()
+        for (a, b), row in raw_direction_rows.items():
+            pair = tuple(sorted((a, b)))
+            if pair in seen_direction_pairs:
+                continue
+            reverse = raw_direction_rows.get((b, a))
+            if reverse is None:
+                continue
+            seen_direction_pairs.add(pair)
+            direction_inverse_checked += 1
+            direction = int(row.get("direction") or 0)
+            reverse_direction = int(reverse.get("direction") or 0)
+            if direction == -reverse_direction:
+                direction_inverse_ok += 1
+        direction_inverse_ratio = (
+            direction_inverse_ok / direction_inverse_checked
+            if direction_inverse_checked else 0.0
+        )
 
         for champion_name, enemy_name in (
             ("Paquito", "Karina"),
@@ -876,6 +943,11 @@ def update_all(
         and len(resolved_matrix_heroes) >= 130
         and inverse_checked >= 900
         and inverse_ratio >= 0.97
+        and direction_source_rows >= 900
+        and len(raw_direction_rows) >= 900
+        and len(resolved_direction_heroes) >= 125
+        and direction_inverse_checked >= 450
+        and direction_inverse_ratio >= 0.99
         and not bad_sentinels
         and matchup_patch not in {"", "current"}
     )
@@ -898,8 +970,17 @@ def update_all(
             for row in raw_matchup_rows.values()
         ]
         normalized_evidence, matchup_scale_pp = normalize_matchup_evidence(evidence_objects)
-        db.replace_active_matchup_evidence(
-            matchup_source, [row.to_dict() for row in normalized_evidence]
+        direction_bundle_rows = [
+            {
+                **row,
+                "patch": matchup_patch,
+            }
+            for row in raw_direction_rows.values()
+        ]
+        db.replace_active_matchup_bundle(
+            matchup_source,
+            [row.to_dict() for row in normalized_evidence],
+            direction_bundle_rows,
         )
         detailed_matchups = [
             (
@@ -910,9 +991,12 @@ def update_all(
             )
             for row in normalized_evidence
         ]
-        db.set_meta("matchup_contract_version", "1")
+        db.set_meta("matchup_contract_version", "2")
         db.set_meta("matchup_edge_scale_pp_p95", f"{matchup_scale_pp:.6f}")
         db.set_meta("matchup_evidence_source", matchup_source)
+        db.set_meta("matchup_directional_source", matchup_source)
+        db.set_meta("matchup_directional_rows", str(len(raw_direction_rows)))
+        db.set_meta("matchup_directional_ambiguous_pairs", str(direction_ambiguous_pairs))
         db.set_meta("matchup_direction", "row_hero_to_column_hero")
         db.set_meta("matchup_sample_window", "ranked-current")
         db.set_meta("matchup_patch", matchup_patch)
@@ -920,21 +1004,31 @@ def update_all(
         summary["matchup_updated"] = True
     else:
         summary["errors"].append(
-            "MLBBHub matchup matrix failed activation checks: "
-            f"source_edges={matrix_source_rows}, resolved_edges={len(raw_matchup_rows)}, "
-            f"heroes={len(resolved_matrix_heroes)}, inverse={inverse_ok}/{inverse_checked} "
-            f"({inverse_ratio:.3f}), sentinels={bad_sentinels}, patch={matchup_patch}; "
-            "keeping previous runtime matrix"
+            "MLBBHub matchup bundle failed activation checks: "
+            f"measured_source={matrix_source_rows}, measured_resolved={len(raw_matchup_rows)}, "
+            f"measured_heroes={len(resolved_matrix_heroes)}, measured_inverse={inverse_ok}/{inverse_checked} "
+            f"({inverse_ratio:.3f}); direction_source={direction_source_rows}, "
+            f"direction_resolved={len(raw_direction_rows)}, direction_heroes={len(resolved_direction_heroes)}, "
+            f"direction_inverse={direction_inverse_ok}/{direction_inverse_checked} "
+            f"({direction_inverse_ratio:.3f}), ambiguous={direction_ambiguous_pairs}, "
+            f"sentinels={bad_sentinels}, patch={matchup_patch}; keeping previous runtime bundle"
         )
 
     summary["counter_pages"] = len(resolved_matrix_heroes)
     summary["matchup_evidence"] = len(normalized_evidence)
+    summary["matchup_direction_rows"] = (
+        len(raw_direction_rows)
+        if summary["matchup_updated"]
+        else int(db.get_meta("matchup_directional_rows", "0") or 0)
+    )
+    summary["matchup_direction_ambiguous_pairs"] = direction_ambiguous_pairs
     summary["matchup_edge_scale_pp_p95"] = matchup_scale_pp
     summary["matchup_source"] = matchup_source if summary["matchup_updated"] else db.get_meta("matchup_evidence_source", "")
     summary["matchup_direction"] = db.get_meta("matchup_direction", "")
     summary["matchup_sample_window"] = db.get_meta("matchup_sample_window", "")
     summary["matchup_patch"] = db.get_meta("matchup_patch", "")
     summary["matchup_inverse_ratio"] = inverse_ratio
+    summary["matchup_counterlist_inverse_ratio"] = direction_inverse_ratio
     summary["matchup_direction_sentinels"] = sentinel_edges
 
     # 4) Items and builds. MLBBDex defines the final shop catalog; Rone adds
@@ -1268,8 +1362,9 @@ def update_all(
     db.set_meta("last_update_iso", now_iso)
     db.set_meta(
         "source_note",
-        "Mobile Legends data: Rone Arena API (unofficial) + MLBBDex. "
-        "Internet is used only during Update; runtime recommendations use the local SQLite database and cache.",
+        "Mobile Legends data: MLBBHub current-patch GMS matchup edges + Moonton in-game "
+        "counter-list directions, with MLBBDex/Rone metadata and builds. Internet is used "
+        "only during Update; runtime recommendations use the local SQLite database and cache.",
     )
     raw_progress(update_text("done", lang))
     return summary
