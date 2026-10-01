@@ -76,10 +76,11 @@ TEXT = {
         "lang": "EN",
         "selected": "Мой герой",
         "draft_matchup": "Матчап",
+        "evidence": "Данные",
         "recommended_items": "Рекомендуемые предметы",
         "build_description": "Описание сборки",
         "offline": "Основная работа офлайн; интернет нужен только для обновления базы.",
-        "attribution": "Данные: Rone Arena API / RoneAI и MLBBDex. MLBB © Moonton. Неофициальное приложение.",
+        "attribution": "Матчапы: Moonton GMS и внутриигровые контрпики через MLBBHub. Мета/сборки: MLBBDex и Rone. MLBB © Moonton. Неофициальное приложение.",
     },
     "en": {
         "title": "Mobile Legends Counter Assistant",
@@ -109,10 +110,11 @@ TEXT = {
         "lang": "RU",
         "selected": "My hero",
         "draft_matchup": "Matchup",
+        "evidence": "Evidence",
         "recommended_items": "Recommended items",
         "build_description": "Build description",
         "offline": "Normal use is offline; internet is required only for database updates.",
-        "attribution": "Data: Rone Arena API / RoneAI and MLBBDex. MLBB © Moonton. Unofficial app.",
+        "attribution": "Matchups: Moonton GMS and in-game counter lists via MLBBHub. Meta/builds: MLBBDex and Rone. MLBB © Moonton. Unofficial app.",
     },
 }
 
@@ -1009,6 +1011,11 @@ class MobileAssistant:
                                 else
                                 f"{self.t('draft_matchup')} "
                                 f"{float(result.get('draft_matchup_sum_pp') or 0):+.2f} п.п."
+                            )
+                            + (
+                                f" · {self.t('evidence')} "
+                                f"{int(result.get('known_matchup_count') or 0)}/"
+                                f"{int(result.get('coverage_total') or 0)}"
                             )
                             + f" · {tier_text} · {self.t('winrate')} {wr_text}",
                             size=9,
