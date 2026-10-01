@@ -1,0 +1,33 @@
+name: Probe MLBBHub Matrix
+on:
+  push:
+    paths:
+      - ".github/workflows/probe-mlbbhub-matrix.yml"
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests beautifulsoup4
+      - name: Inspect matrix payload
+        run: |
+          python - <<'PY'
+          import re, json, requests
+          from bs4 import BeautifulSoup
+          r=requests.get("https://mlbbhub.com/matchups",timeout=30,headers={"User-Agent":"Mozilla/5.0"})
+          print("STATUS",r.status_code,"LEN",len(r.text))
+          text=r.text
+          for needle in ("1,988","1988","Paquito","Karina","matchup","edge","__next_f.push"):
+              poss=[m.start() for m in re.finditer(re.escape(needle),text,re.I)]
+              print("NEEDLE",needle,"COUNT",len(poss),"FIRST",poss[:10])
+              for p in poss[:2]:
+                  print(text[max(0,p-500):p+1500])
+          scripts=BeautifulSoup(text,"html.parser").find_all("script")
+          print("SCRIPTS",len(scripts))
+          for i,s in enumerate(scripts):
+              t=s.string or s.get_text() or ""
+              if "Paquito" in t and "Karina" in t:
+                  print("SCRIPT_WITH_HEROES",i,"LEN",len(t),t[:5000])
+          PY
