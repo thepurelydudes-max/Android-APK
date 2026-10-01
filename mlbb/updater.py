@@ -565,11 +565,47 @@ def update_all(
     except Exception as exc:
         summary["errors"].append(f"MLBBDex heroes: {exc}")
     champs = merge_mlbb_hero_sources(rone_heroes, dex_heroes, rone_heroes_ru)
+
+    # Stable hero IDs are part of every matchup/build foreign key. If Rone is
+    # temporarily unavailable, MLBBDex uses slug IDs; inserting those beside an
+    # existing numeric Rone catalog would duplicate the entire roster and break
+    # matchup lookups. Preserve the installed canonical IDs and merge fresh
+    # MLBBDex metadata onto them by normalized hero name instead.
+    existing_champs = db.champions()
+    if not rone_heroes and existing_champs:
+        dex_by_name = {
+            slugish(row.get("name", "")): row
+            for row in dex_heroes if row.get("name")
+        }
+        stable = []
+        for old_champ in existing_champs:
+            row = dict(old_champ)
+            dex = dex_by_name.get(slugish(row.get("name", "")), {})
+            if dex:
+                row["roles"] = list(dex.get("roles") or row.get("roles") or [])
+                row["lanes"] = [
+                    str(x).casefold()
+                    for x in (dex.get("lanes") or row.get("lanes") or [])
+                ]
+                row["specialties"] = list(
+                    dex.get("specialties") or row.get("specialties") or []
+                )
+                row["damage_type"] = _infer_damage_type(
+                    row["roles"], str(dex.get("damage_type") or row.get("damage_type") or "")
+                )
+                row["icon_url"] = str(dex.get("icon_url") or row.get("icon_url") or "")
+            row.setdefault("lane_id_map", {})
+            row.setdefault("strong", [])
+            row.setdefault("weak", [])
+            row.setdefault("assist", [])
+            stable.append(row)
+        champs = stable
+
     apply_ru_localization(champs, [], ru_localization)
     if not champs:
         # Never destroy a previously working offline database when all hero
         # providers are temporarily unavailable.
-        champs = db.champions()
+        champs = existing_champs
         if not champs:
             raise RuntimeError("Не удалось получить список героев Mobile Legends из Rone Arena или MLBBDex")
 
