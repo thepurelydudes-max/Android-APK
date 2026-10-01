@@ -44,7 +44,8 @@ jobs:
               (paths.RUNTIME_DIR / "data" / "package_manifest.json").read_text(encoding="utf-8")
           )
           assert manifest["protocol_version"] == 1
-          assert manifest["package_version"] == "2026.10.01.1"
+          remote = package_updater._fetch_latest(__import__("requests").Session())
+          assert manifest["package_version"] == remote["package_version"]
           counts = package_updater._database_counts(paths.RUNTIME_DIR / "data" / "wildrift.db")
           assert counts["champions"] == 142
           assert counts["build_cache_champions"] == 142
