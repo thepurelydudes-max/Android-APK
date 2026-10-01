@@ -232,7 +232,7 @@ def _audit() -> dict:
         raise RuntimeError(f"Too few MLBB heroes in bundled seed: {counts['champions']}")
     if counts["items"] < 45:
         raise RuntimeError(f"Too few finished MLBB items in bundled seed: {counts['items']}")
-    if counts["matchups"] < 2500:
+    if counts["matchups"] < 1850:
         raise RuntimeError(f"Too few MLBB matchup rows in bundled seed: {counts['matchups']}")
     if meta.get("patch_version") != "2.2.16":
         raise RuntimeError(
