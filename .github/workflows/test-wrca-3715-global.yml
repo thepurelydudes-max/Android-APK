@@ -1,0 +1,106 @@
+name: Test WRCA 3.7.15 global allocation
+
+on:
+  push:
+    branches:
+      - wrca-3.7.15-global-unique-draft
+    paths:
+      - "wild_rift/engine.py"
+      - "wild_rift/test_regressions.py"
+      - "wild_rift/VERSION.txt"
+      - ".github/workflows/test-wrca-3715-global.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "requests>=2.32.0" "Pillow>=10.4.0" "beautifulsoup4>=4.12.0"
+      - name: Download canonical 3.7.14 seed
+        uses: actions/download-artifact@v4
+        with:
+          name: FARLINER-Wild-Rift-APK
+          path: ${{ runner.temp }}/base_apk
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 36836406130
+      - name: Restore exact bundled DB/cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "${{ runner.temp }}/base_apk" -type f -name '*.apk' -print -quit)"
+          unzip -p "$APK" assets/app.zip > "${{ runner.temp }}/app.zip"
+          rm -rf wild_rift/assets/cache wild_rift/assets/data "${{ runner.temp }}/app"
+          mkdir -p "${{ runner.temp }}/app"
+          unzip -q "${{ runner.temp }}/app.zip" 'assets/cache/*' 'assets/data/*' -d "${{ runner.temp }}/app"
+          cp -a "${{ runner.temp }}/app/assets/cache" wild_rift/assets/
+          cp -a "${{ runner.temp }}/app/assets/data" wild_rift/assets/
+      - name: Regression suite
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/runtime
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+        run: |
+          set -euo pipefail
+          cd wild_rift
+          python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py main.py
+          python -m unittest -v test_regressions.py
+      - name: Real DB allocation audit
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/audit_runtime
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+        run: |
+          set -euo pipefail
+          cd wild_rift
+          python - <<'PY'
+          import db, engine
+          from paths import ensure_initial_data
+
+          ensure_initial_data(); db.init_db()
+          s=db.load_runtime_snapshot()
+
+          def show(label, enemies):
+              grid=engine.recommend_pick_grid(enemies, limit=10, snapshot=s)
+              ids=[]
+              print("CASE", label)
+              for role in engine.CANONICAL_ROLES:
+                  rows=grid[role]
+                  ids.extend(r["champion"]["id"] for r in rows)
+                  print(role, [
+                      (
+                          r["champion"]["id"],
+                          r["matchup_sum"],
+                          r["coverage_count"],
+                          r["local_rank"],
+                      )
+                      for r in rows[:10]
+                  ])
+                  for r in rows:
+                      c=r["champion"]
+                      assert engine.lane_ok(c, role), (c["id"], role, c.get("lanes"))
+                      assert engine._has_usable_role_build(c, role, s), (c["id"], role)
+              assert len(ids)==len(set(ids)), "duplicate champion across recommendation branches"
+              return grid
+
+          pair=show("WARWICK_MORDE", [("Warwick",""),("Mordekaiser","")])
+          print("PAIR_VAYNE", [(role, next(((r["matchup_sum"], i+1) for i,r in enumerate(pair[role]) if r["champion"]["id"]=="Vayne"), None)) for role in engine.CANONICAL_ROLES])
+          print("PAIR_OLAF", [(role, next(((r["matchup_sum"], i+1) for i,r in enumerate(pair[role]) if r["champion"]["id"]=="Olaf"), None)) for role in engine.CANONICAL_ROLES])
+
+          full=show("FULL_USER_DRAFT", [
+              ("Irelia",""),("Warwick",""),("Ambessa",""),("Soraka",""),("Kaisa","")
+          ])
+          print("FULL_JUNGLE_TOP", [
+              (r["champion"]["id"], r["matchup_sum"], r["positive"], r["negative"])
+              for r in full["Лес"][:10]
+          ])
+          print("GLOBAL_UNIQUE_ALLOCATION_OK")
+          PY
