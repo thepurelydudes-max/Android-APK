@@ -429,7 +429,7 @@ def parse_mlbbhub_matchup_matrix_html(page: str) -> dict:
 
     matrix = None
     for raw in re.findall(
-        r'<script>self\\.__next_f\\.push\\(\\[1,"(.*?)"\\]\\)</script>',
+        r'<script>self\.__next_f\.push\(\[1,"(.*?)"\]\)</script>',
         text,
         flags=re.S,
     ):
@@ -467,7 +467,7 @@ def parse_mlbbhub_matchup_matrix_html(page: str) -> dict:
         raise ValueError("MLBBHub counter-list direction matrix is not square")
 
     patch_match = re.search(
-        r"Patch\\s+([0-9]+\\.[0-9]+\\.[0-9]+[A-Za-z]?)\\s+ranked\\s+data",
+        r"Patch\s+([0-9]+\.[0-9]+\.[0-9]+[A-Za-z]?)\s+ranked\s+data",
         text,
         flags=re.I,
     )
