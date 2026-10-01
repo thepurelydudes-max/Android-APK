@@ -1,0 +1,6 @@
+{
+  "protocol_version": 1,
+  "min_app_version": "3.9.0",
+  "latest_manifest": "https://raw.githubusercontent.com/thepurelydudes-max/Android-APK/main/wlca_data/latest.json",
+  "release_repository": "thepurelydudes-max/Android-APK"
+}
