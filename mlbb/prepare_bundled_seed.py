@@ -41,6 +41,7 @@ def _audit() -> dict:
             "items": int(con.execute("SELECT COUNT(*) FROM items WHERE lower(tier)='upgraded'").fetchone()[0]),
             "stats": int(con.execute("SELECT COUNT(*) FROM stats").fetchone()[0]),
             "matchups": int(con.execute("SELECT COUNT(*) FROM matchups").fetchone()[0]),
+            "matchup_directions": int(con.execute("SELECT COUNT(*) FROM matchup_directions").fetchone()[0]),
             "item_pools": int(con.execute("SELECT COUNT(*) FROM item_pools").fetchone()[0]),
             "counter_items": int(con.execute("SELECT COUNT(*) FROM counter_items").fetchone()[0]),
             "role_builds": int(con.execute("SELECT COUNT(*) FROM role_builds").fetchone()[0]),
@@ -63,11 +64,24 @@ def _audit() -> dict:
                 "SELECT DISTINCT source FROM matchup_evidence ORDER BY source"
             ).fetchall()
         ]
+        direction_rows = [
+            (str(row[0]), str(row[1]), int(row[2]))
+            for row in con.execute(
+                "SELECT champion_id,enemy_id,direction FROM matchup_directions"
+            ).fetchall()
+        ]
+        direction_sources = [
+            str(row[0]) for row in con.execute(
+                "SELECT DISTINCT source FROM matchup_directions ORDER BY source"
+            ).fetchall()
+        ]
         meta = {
             str(row[0]): str(row[1])
             for row in con.execute(
                 "SELECT key,value FROM meta WHERE key IN ("
-                "'patch_version','matchup_evidence_source','matchup_direction',"
+                "'patch_version','matchup_contract_version','matchup_evidence_source',"
+                "'matchup_directional_source','matchup_directional_rows',"
+                "'matchup_directional_ambiguous_pairs','matchup_direction',"
                 "'matchup_sample_window','matchup_patch','matchup_updated_at')"
             ).fetchall()
         }
@@ -114,6 +128,26 @@ def _audit() -> dict:
     )
     mirror_mean_residual = (
         magnitude_residual_sum / mirror_checked if mirror_checked else 0.0
+    )
+
+    direction_by_pair = {(a, b): direction for a, b, direction in direction_rows}
+    direction_mirror_checked = 0
+    direction_inverse_ok = 0
+    seen_direction_pairs = set()
+    for (a, b), direction in direction_by_pair.items():
+        pair = tuple(sorted((a, b)))
+        if pair in seen_direction_pairs:
+            continue
+        reverse = direction_by_pair.get((b, a))
+        if reverse is None:
+            continue
+        seen_direction_pairs.add(pair)
+        direction_mirror_checked += 1
+        if direction == -reverse:
+            direction_inverse_ok += 1
+    direction_inverse_ratio = (
+        direction_inverse_ok / direction_mirror_checked
+        if direction_mirror_checked else 0.0
     )
 
     sign_counts = {}
@@ -220,6 +254,10 @@ def _audit() -> dict:
         "matchup_id_positive_correlation": id_positive_correlation,
         "matchup_positive_share_top": positive_share_top,
         "matchup_sources": matchup_sources,
+        "matchup_direction_sources": direction_sources,
+        "matchup_direction_rows": len(direction_rows),
+        "matchup_direction_bidirectional_pairs": direction_mirror_checked,
+        "matchup_direction_inverse_ratio": direction_inverse_ratio,
         "matchup_meta": meta,
         "matchup_direction_sentinels": direction_sentinels,
     }
@@ -238,6 +276,11 @@ def _audit() -> dict:
         raise RuntimeError(
             "Bundled MLBB patch is not the required live Original Server patch 2.2.16: "
             f"{meta.get('patch_version') or 'missing'}"
+        )
+    if meta.get("matchup_contract_version") != "2":
+        raise RuntimeError(
+            "Bundled matchup evidence contract is not v2 measured+directional: "
+            f"{meta.get('matchup_contract_version') or 'missing'}"
         )
     if meta.get("matchup_evidence_source") != "mlbbhub.matchups":
         raise RuntimeError(
@@ -258,6 +301,34 @@ def _audit() -> dict:
         raise RuntimeError(
             "Stale matchup evidence sources leaked into the bundled seed: "
             + json.dumps(matchup_sources, ensure_ascii=False)
+        )
+    if meta.get("matchup_directional_source") != "mlbbhub.matchups":
+        raise RuntimeError(
+            "Bundled counter-list source is not the validated MLBBHub/Moonton feed: "
+            f"{meta.get('matchup_directional_source') or 'missing'}"
+        )
+    if direction_sources != ["mlbbhub.matchups"]:
+        raise RuntimeError(
+            "Stale direction-only matchup sources leaked into the bundled seed: "
+            + json.dumps(direction_sources, ensure_ascii=False)
+        )
+    if counts["matchup_directions"] < 900 or len(direction_rows) < 900:
+        raise RuntimeError(
+            f"Too few current-patch direction-only counter rows: {len(direction_rows)}"
+        )
+    try:
+        meta_direction_rows = int(meta.get("matchup_directional_rows") or 0)
+    except ValueError:
+        meta_direction_rows = 0
+    if meta_direction_rows != len(direction_rows):
+        raise RuntimeError(
+            "Directional matchup metadata/count mismatch: "
+            f"meta={meta_direction_rows}, rows={len(direction_rows)}"
+        )
+    if direction_mirror_checked < 450 or direction_inverse_ratio < 0.99:
+        raise RuntimeError(
+            "Current-patch counter-list direction matrix failed mirror sanity check: "
+            f"pairs={direction_mirror_checked}, inverse_ratio={direction_inverse_ratio:.6f}"
         )
     if len(evidence_rows) < 1850:
         raise RuntimeError(
@@ -373,7 +444,7 @@ def main() -> None:
 
     manifest = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "source": "MLBBHub current-patch matchup matrix + Rone Arena/MLBBDex metadata and builds; full offline MLCA seed",
+        "source": "MLBBHub current-patch measured GMS matrix + Moonton in-game counter-list directions + Rone Arena/MLBBDex metadata and builds; full offline MLCA seed",
         "patch": db.get_meta("patch_version", ""),
         "last_update": db.get_meta("last_update", ""),
         "database_sha256": hashlib.sha256(bundled_db.read_bytes()).hexdigest(),
