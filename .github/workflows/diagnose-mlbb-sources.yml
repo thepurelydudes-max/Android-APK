@@ -67,4 +67,39 @@ jobs:
                         "minus_sample",[(x.get("heroid"),x.get("increase_win_rate")) for x in b[:5]])
           PY
 
-# diagnostics-run-3-live-counter-direction
+      - name: Probe direct Moonton GMS and Academy fallback
+        working-directory: mlbb
+        run: |
+          python - <<'PY'
+          import requests
+          from moonton_gms import MOONTON_GMS_SOURCE_URL, parse_gms_source
+          from sources import RONE_ACADEMY_HERO_COUNTERS
+          try:
+              response=requests.get(MOONTON_GMS_SOURCE_URL, timeout=30)
+              print("GMS STATUS", response.status_code, "LEN", len(response.content))
+              response.raise_for_status()
+              parsed=parse_gms_source(response.json(), rank_segment="all")
+              print("GMS TOTAL", parsed.get("total"), "HEROES", len(parsed.get("heroes") or []), "MATCHUPS", len(parsed.get("matchups") or []))
+              by={(x.champion_id,x.enemy_id):x.raw_edge for x in parsed.get("matchups") or []}
+              for pair in [("103","8"),("20","97"),("130","97")]:
+                  print("GMS EDGE", pair, by.get(pair))
+          except Exception as exc:
+              print("GMS ERROR", repr(exc))
+          for hid in ("103","20","130"):
+              try:
+                  url=RONE_ACADEMY_HERO_COUNTERS.format(hero_id=hid)+"?rank=all&size=300&index=1&lang=en"
+                  response=requests.get(url, timeout=30)
+                  print("ACADEMY STATUS", hid, response.status_code, "LEN", len(response.content))
+                  response.raise_for_status()
+                  rows=((response.json().get("data") or {}).get("records") or [])
+                  print("ACADEMY RECORDS",hid,len(rows))
+                  for rec in rows[:1]:
+                      data=(rec or {}).get("data") or {}
+                      print("ACADEMY MAIN",data.get("main_heroid"),
+                            "SUB",[(x.get("heroid"),x.get("increase_win_rate")) for x in (data.get("sub_hero") or [])[:5]],
+                            "LAST",[(x.get("heroid"),x.get("increase_win_rate")) for x in (data.get("sub_hero_last") or [])[:5]])
+              except Exception as exc:
+                  print("ACADEMY ERROR", hid, repr(exc))
+          PY
+
+# diagnostics-run-4-gms-academy
