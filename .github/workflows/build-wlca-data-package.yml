@@ -1,0 +1,147 @@
+name: Build WLCA Data Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: "Optional data package version (blank = UTC date + run number)"
+        required: false
+        default: ""
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - ".wlca-data-package-trigger"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download canonical WRCA data seed
+        uses: actions/download-artifact@v4
+        with:
+          name: FARLINER-Wild-Rift-APK
+          path: ${{ runner.temp }}/wrca_base_apk
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 36425019210
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore known-good complete WLCA data
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "${{ runner.temp }}/wrca_base_apk" -type f -name '*.apk' -print -quit)"
+          test -n "$APK" && test -f "$APK" || { echo "::error::Canonical WRCA APK artifact not found."; exit 1; }
+
+          cp "$GITHUB_WORKSPACE/wild_rift/assets/cache/items/Soul_Transfer.png" "${{ runner.temp }}/Soul_Transfer.png"
+          unzip -p "$APK" assets/app.zip > "${{ runner.temp }}/wrca_app.zip"
+          rm -rf "$GITHUB_WORKSPACE/wild_rift/assets/cache" "$GITHUB_WORKSPACE/wild_rift/assets/data"
+          rm -rf "${{ runner.temp }}/wrca_app"
+          mkdir -p "${{ runner.temp }}/wrca_app"
+          unzip -q "${{ runner.temp }}/wrca_app.zip" 'assets/cache/*' 'assets/data/*' -d "${{ runner.temp }}/wrca_app"
+          cp -a "${{ runner.temp }}/wrca_app/assets/cache" "$GITHUB_WORKSPACE/wild_rift/assets/"
+          cp -a "${{ runner.temp }}/wrca_app/assets/data" "$GITHUB_WORKSPACE/wild_rift/assets/"
+          cp "${{ runner.temp }}/Soul_Transfer.png" "$GITHUB_WORKSPACE/wild_rift/assets/cache/items/Soul_Transfer.png"
+
+          python - <<'PY'
+          from pathlib import Path
+          import base64, lzma, sqlite3
+
+          root = Path("wild_rift")
+          db_path = root / "assets" / "data" / "wildrift.db"
+          patch_path = root / "preseed" / "pc_updated_3_7_12.sql.xz.b64"
+          sql = lzma.decompress(base64.b64decode(
+              patch_path.read_text(encoding="ascii")
+          )).decode("utf-8")
+
+          con = sqlite3.connect(db_path)
+          con.executescript(sql)
+          con.commit()
+          assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+          assert con.execute("SELECT COUNT(*) FROM champions").fetchone()[0] == 142
+          assert con.execute("SELECT COUNT(*) FROM matchups").fetchone()[0] == 9606
+          assert con.execute("SELECT COUNT(*) FROM role_builds").fetchone()[0] == 226
+          assert con.execute("SELECT COUNT(*) FROM role_build_variants").fetchone()[0] == 678
+          assert con.execute("SELECT COUNT(DISTINCT champion_id) FROM build_page_cache").fetchone()[0] == 142
+          assert con.execute("SELECT COUNT(DISTINCT champion_id) FROM matchup_page_cache").fetchone()[0] == 142
+          con.close()
+          PY
+
+      - name: Choose package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUESTED="${{ inputs.package_version }}"
+          if [[ -n "$REQUESTED" ]]; then
+            VERSION="$REQUESTED"
+          else
+            VERSION="$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}"
+          fi
+          TAG="wlca-data-$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build and validate package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist/wlca-data
+          python wlca_data/build_package.py             --assets-root wild_rift/assets             --output dist/wlca-data             --package-version "${{ steps.version.outputs.version }}"             --release-tag "${{ steps.version.outputs.tag }}"             --min-app-version "3.9.0"
+          cat dist/wlca-data/latest.json
+
+      - name: Publish immutable GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ZIP="$(find dist/wlca-data -maxdepth 1 -name 'WLCA-data-*.zip' -print -quit)"
+          SHA="$ZIP.sha256"
+          gh release create "${{ steps.version.outputs.tag }}"             "$ZIP" "$SHA" dist/wlca-data/manifest.json dist/wlca-data/latest.json             --repo "${{ github.repository }}"             --title "WLCA Data ${{ steps.version.outputs.version }}"             --notes-file dist/wlca-data/release-notes.md
+
+      - name: Point APK updater to the new verified release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git rebase origin/main
+          cp dist/wlca-data/latest.json wlca_data/latest.json
+          git add wlca_data/latest.json
+          if git diff --cached --quiet; then
+            echo "latest.json already points to this package"
+          else
+            git commit -m "Publish WLCA data ${{ steps.version.outputs.version }}"
+            git push origin HEAD:main
+          fi
+
+      - name: Upload diagnostic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WLCA-data-${{ steps.version.outputs.version }}
+          path: |
+            dist/wlca-data/manifest.json
+            dist/wlca-data/latest.json
+            dist/wlca-data/*.sha256
+            dist/wlca-data/release-notes.md
+          if-no-files-found: error
+          retention-days: 30
