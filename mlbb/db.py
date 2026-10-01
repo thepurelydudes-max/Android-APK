@@ -463,6 +463,46 @@ def replace_source_matchup_evidence(source: str, rows: Iterable[dict]) -> None:
         )
 
 
+def replace_active_matchup_evidence(source: str, rows: Iterable[dict]) -> None:
+    """Atomically replace every measured matchup row with one authoritative source.
+
+    This prevents a newly fixed/live matrix from being mixed with stale rows
+    produced by older MLCA source adapters.
+    """
+    clean = []
+    for row in rows:
+        champion_id = str(row.get("champion_id") or "").strip()
+        enemy_id = str(row.get("enemy_id") or "").strip()
+        if not champion_id or not enemy_id or champion_id == enemy_id:
+            continue
+        clean.append((
+            champion_id,
+            enemy_id,
+            str(row.get("role") or "").strip().casefold(),
+            float(row.get("raw_edge") or 0.0),
+            str(row.get("raw_unit") or "percentage_points"),
+            max(-1.0, min(1.0, float(row.get("normalized_edge") or 0.0))),
+            str(row.get("evidence_type") or "measured"),
+            max(0.0, min(1.0, float(row.get("confidence", 1.0) or 0.0))),
+            str(row.get("rank_segment") or "all"),
+            str(row.get("sample_window") or ""),
+            str(row.get("patch") or ""),
+            source,
+        ))
+    if not clean:
+        raise ValueError("Refusing to replace matchup evidence with an empty matrix")
+    with connect() as con:
+        con.execute("DELETE FROM matchup_evidence")
+        con.executemany(
+            """INSERT OR REPLACE INTO matchup_evidence(
+                champion_id,enemy_id,role,raw_edge,raw_unit,normalized_edge,
+                evidence_type,confidence,rank_segment,sample_window,patch,source,
+                updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            clean,
+        )
+
+
 def replace_source_item_pools(source: str, rows: Iterable[tuple[str, str, str, int]]) -> None:
     with connect() as con:
         con.execute("DELETE FROM item_pools WHERE source=?", (source,))
@@ -1091,11 +1131,23 @@ def load_runtime_snapshot() -> dict:
         champion_rows = con.execute("SELECT * FROM champions ORDER BY name COLLATE NOCASE").fetchall()
         alias_rows = con.execute("SELECT champion_id,alias_norm FROM champion_aliases").fetchall()
         matchup_rows = con.execute("SELECT champion_id,enemy_id,role,score FROM matchups").fetchall()
-        matchup_evidence_rows = con.execute(
-            "SELECT champion_id,enemy_id,role,raw_edge,raw_unit,normalized_edge,"
-            "evidence_type,confidence,rank_segment,sample_window,patch,source "
-            "FROM matchup_evidence"
-        ).fetchall()
+        active_source_row = con.execute(
+            "SELECT value FROM meta WHERE key='matchup_evidence_source'"
+        ).fetchone()
+        active_matchup_source = str(active_source_row[0]) if active_source_row else ""
+        if active_matchup_source:
+            matchup_evidence_rows = con.execute(
+                "SELECT champion_id,enemy_id,role,raw_edge,raw_unit,normalized_edge,"
+                "evidence_type,confidence,rank_segment,sample_window,patch,source "
+                "FROM matchup_evidence WHERE source=?",
+                (active_matchup_source,),
+            ).fetchall()
+        else:
+            matchup_evidence_rows = con.execute(
+                "SELECT champion_id,enemy_id,role,raw_edge,raw_unit,normalized_edge,"
+                "evidence_type,confidence,rank_segment,sample_window,patch,source "
+                "FROM matchup_evidence"
+            ).fetchall()
         lane_evidence_rows = con.execute(
             "SELECT champion_id,lane,evidence_type,source,source_lane_id,rank_segment,"
             "usage_rate,confidence,patch FROM hero_lane_evidence"
@@ -1286,6 +1338,7 @@ def load_runtime_snapshot() -> dict:
         "matchup_raw_pp": matchup_raw_pp,
         "matchup_contract_version": matchup_contract_version,
         "matchup_edge_scale_pp_p95": matchup_edge_scale_pp_p95,
+        "matchup_evidence_source": active_matchup_source,
         "matchup_evidence": [dict(row) for row in matchup_evidence_rows],
         "lane_evidence": lane_evidence,
         "champion_traits": champion_traits,
