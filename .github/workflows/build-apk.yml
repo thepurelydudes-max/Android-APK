@@ -281,6 +281,14 @@ jobs:
           done
           cp -a "$GITHUB_WORKSPACE/mlbb/assets" "$RUNTIME_PROJECT/assets"
 
+          # Fresh Flet 1.0.1 runners currently resolve jni_flutter 1.0.4.
+          # Its generated bindings require package:jni >=1.1.0, so pin the
+          # compatible Dart dependency exactly as the WRCA runtime already does.
+          cat > "$RUNTIME_PROJECT/pyproject.toml" <<'TOML'
+          [tool.flet.flutter.pubspec.dependency_overrides]
+          jni = "^1.1.0"
+          TOML
+
           for dead in \
             test_regressions.py \
             test_data_contract.py \
