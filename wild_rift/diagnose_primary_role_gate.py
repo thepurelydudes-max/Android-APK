@@ -43,6 +43,10 @@ def main():
                 "primary":p,
                 "class":c.get("roles",[]),
             })
+    for cid in ["Vayne","Teemo","Malphite","Ambessa","Nilah","Poppy","Taliyah","Ashe","Tristana","Akali","Aurora","Corki"]:
+        c=next((x for x in s["champions"] if x.get("id")==cid),None)
+        if c:
+            print("LANES", cid, c.get("lanes"), c.get("roles"))
     print("PRIMARY_COUNTS",json.dumps(counts,ensure_ascii=False))
     print("MULTI_ROLE_COUNT",len(mult))
     print("MULTI_ROLE_SAMPLE")
