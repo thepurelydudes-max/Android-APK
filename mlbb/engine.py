@@ -253,6 +253,85 @@ def _matchup_pp(champion_id: str, enemy_id: str, preferred_role: str = "", snaps
     return max((score for _role, score in converted), key=abs)
 
 
+def _snapshot_measured_matchup_pp(
+    snapshot: dict,
+    champion_id: str,
+    enemy_id: str,
+    preferred_role: str = "",
+) -> float | None:
+    """Return a real measured pp edge, or None when GMS has no measurement."""
+    rows = snapshot.get("matchup_raw_pp", {}).get((champion_id, enemy_id), [])
+    if not rows:
+        return None
+    role_norm = preferred_role.casefold()
+    if role_norm:
+        exact = [float(score) for role, score in rows if str(role).casefold() == role_norm]
+        if exact:
+            return max(exact, key=abs)
+        general = [float(score) for role, score in rows if not str(role).strip()]
+        return max(general, key=abs) if general else None
+    return max((float(score) for _role, score in rows), key=abs)
+
+
+def _measured_matchup_pp(
+    champion_id: str,
+    enemy_id: str,
+    preferred_role: str = "",
+    snapshot: dict | None = None,
+) -> float | None:
+    if snapshot is not None:
+        return _snapshot_measured_matchup_pp(
+            snapshot, champion_id, enemy_id, preferred_role
+        )
+    active_source = db.get_meta("matchup_evidence_source", "")
+    with db.connect() as con:
+        if active_source:
+            rows = con.execute(
+                "SELECT role,raw_edge,raw_unit FROM matchup_evidence "
+                "WHERE champion_id=? AND enemy_id=? AND source=? "
+                "ORDER BY confidence DESC",
+                (champion_id, enemy_id, active_source),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT role,raw_edge,raw_unit FROM matchup_evidence "
+                "WHERE champion_id=? AND enemy_id=? ORDER BY confidence DESC",
+                (champion_id, enemy_id),
+            ).fetchall()
+    if not rows:
+        return None
+    converted = []
+    for row in rows:
+        raw = float(row["raw_edge"] or 0.0)
+        unit = str(row["raw_unit"] or "").strip().casefold()
+        pp = raw * 100.0 if unit in {"rate", "fraction", "probability"} else raw
+        converted.append((str(row["role"] or ""), pp))
+    role_norm = preferred_role.casefold()
+    if role_norm:
+        exact = [score for role, score in converted if role.casefold() == role_norm]
+        if exact:
+            return max(exact, key=abs)
+        general = [score for role, score in converted if not role.strip()]
+        return max(general, key=abs) if general else None
+    return max((score for _role, score in converted), key=abs)
+
+
+def _matchup_direction(
+    champion_id: str,
+    enemy_id: str,
+    snapshot: dict | None = None,
+) -> int:
+    """Return a direction-only Moonton counter-list fact, or 0 when unknown."""
+    if snapshot is not None:
+        value = snapshot.get("matchup_directions", {}).get((champion_id, enemy_id), 0)
+        try:
+            direction = int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+        return direction if direction in {-1, 1} else 0
+    return db.get_matchup_direction(champion_id, enemy_id)
+
+
 def _stat(champion_id: str, lane: str, rank_segment: str = "all", snapshot: dict | None = None):
     if snapshot is not None:
         return snapshot.get("stats", {}).get((champion_id, lane, rank_segment))
@@ -419,25 +498,65 @@ def _has_valid_role_build(champion_id: str, role_ru: str, snapshot: dict | None 
 _PICK_GRID_CACHE: dict[tuple, dict[str, list[dict]]] = {}
 
 
+def _evidence_dominates(a: dict, b: dict) -> bool:
+    """Pareto dominance over facts we actually know about the selected draft."""
+    a_metrics = (
+        int(a.get("confirmed_counter_count") or 0),
+        -int(a.get("confirmed_threat_count") or 0),
+        float(a.get("draft_matchup_sum_pp") or 0.0),
+        int(a.get("known_matchup_count") or 0),
+    )
+    b_metrics = (
+        int(b.get("confirmed_counter_count") or 0),
+        -int(b.get("confirmed_threat_count") or 0),
+        float(b.get("draft_matchup_sum_pp") or 0.0),
+        int(b.get("known_matchup_count") or 0),
+    )
+    no_worse = all(x >= y for x, y in zip(a_metrics, b_metrics))
+    strictly_better = any(x > y for x, y in zip(a_metrics, b_metrics))
+    return no_worse and strictly_better
+
+
+def _assign_evidence_fronts(rows: list[dict]) -> None:
+    """Assign non-dominated evidence fronts without inventing counter magnitudes."""
+    remaining = list(range(len(rows)))
+    front = 0
+    while remaining:
+        current: list[int] = []
+        for i in remaining:
+            if not any(
+                _evidence_dominates(rows[j], rows[i])
+                for j in remaining
+                if j != i
+            ):
+                current.append(i)
+        if not current:
+            current = [remaining[0]]
+        for i in current:
+            rows[i]["evidence_front"] = front
+        current_set = set(current)
+        remaining = [i for i in remaining if i not in current_set]
+        front += 1
+
+
 def _local_discovery_key(row: dict) -> tuple:
-    """Preserve MLCA 2.1.2 stage-1 candidate discovery exactly."""
+    """Deterministic evidence-first order for one exact role."""
     return (
+        -int(row.get("evidence_front") or 0),
+        int(row.get("confirmed_net") or 0),
+        int(row.get("confirmed_counter_count") or 0),
+        -int(row.get("confirmed_threat_count") or 0),
         float(row.get("draft_matchup_sum_pp") or 0.0),
-        float(row.get("draft_matchup_score") or 0.0),
-        float(row.get("positive_strength_pp") or 0.0),
+        int(row.get("measured_matchup_count") or 0),
+        int(row.get("known_matchup_count") or 0),
+        float(row.get("score") or 0.0),
+        TIER_ORDER.get(str(row.get("tier") or ""), 0),
+        float(row.get("winrate_score") or 0.0),
     )
 
 
 def _local_visible_key(row: dict) -> tuple:
-    """Preserve MLCA 2.1.2 visible ordering inside each role."""
-    return (
-        float(row.get("draft_matchup_sum_pp") or 0.0),
-        float(row.get("score") or 0.0),
-        float(row.get("coverage_score") or 0.0),
-        not bool(row.get("lane_hard_loss", False)),
-        TIER_ORDER.get(str(row.get("tier") or ""), 0),
-        float(row.get("winrate_score") or 0.0),
-    )
+    return _local_discovery_key(row)
 
 
 def _rank_role_candidates(
@@ -494,27 +613,57 @@ def _rank_role_candidates(
     for cand, tier, st in candidate_rows:
         matrix_edges: list[DraftEdge] = []
         raw_edges: list[DraftEdge] = []
+        evidence_cells: list[dict] = []
+        direct_lane_measured: list[float] = []
+
         for enemy, inferred_role in enemy_objs:
-            edge = float(_matchup_score(cand["id"], enemy["id"], role_ru, snapshot))
+            legacy_edge = float(_matchup_score(cand["id"], enemy["id"], role_ru, snapshot))
             matrix_edges.append(DraftEdge(
                 enemy_id=str(enemy["id"]),
                 enemy_name=str(enemy["name"]),
                 enemy_role=str(inferred_role or ""),
-                edge=edge,
+                edge=legacy_edge,
                 weight=DRAFT_MATRIX.lane_weight(role_ru, inferred_role),
             ))
+
+            measured_pp = _measured_matchup_pp(
+                cand["id"], enemy["id"], role_ru, snapshot
+            )
+            if measured_pp is not None and abs(float(measured_pp)) > 1e-12:
+                direction = 1 if measured_pp > 0 else -1
+                evidence_type = "measured"
+                edge_pp = float(measured_pp)
+            else:
+                direction = _matchup_direction(cand["id"], enemy["id"], snapshot)
+                evidence_type = "directional" if direction else "unknown"
+                edge_pp = 0.0
+
+            if inferred_role == role_ru and measured_pp is not None:
+                direct_lane_measured.append(float(measured_pp))
+
             raw_edges.append(DraftEdge(
                 enemy_id=str(enemy["id"]),
                 enemy_name=str(enemy["name"]),
                 enemy_role=str(inferred_role or ""),
-                edge=float(_matchup_pp(cand["id"], enemy["id"], role_ru, snapshot)),
+                edge=edge_pp,
                 weight=1.0,
             ))
+            evidence_cells.append({
+                "enemy_id": str(enemy["id"]),
+                "enemy_name": str(enemy["name"]),
+                "enemy_role": str(inferred_role or ""),
+                "edge_pp": float(measured_pp) if measured_pp is not None else None,
+                "direction": int(direction),
+                "evidence_type": evidence_type,
+            })
 
-        # Keep the MLCA 2.1.2 invariant: a visible recommendation must counter
-        # at least one selected opponent. Negative/neutral cells still remain
-        # in the complete draft sum.
-        if not any(float(row.edge) > 0.0 for row in raw_edges):
+        confirmed_positive = [
+            row for row in evidence_cells if int(row.get("direction") or 0) > 0
+        ]
+        confirmed_negative = [
+            row for row in evidence_cells if int(row.get("direction") or 0) < 0
+        ]
+        if not confirmed_positive:
             continue
 
         lane_analysis = DRAFT_MATRIX.analyze_row(matrix_edges)
@@ -522,13 +671,46 @@ def _rank_role_candidates(
             raw_edges, scale_pp=score_scale_pp
         )
 
-        counter_targets, counter_shares = _dominant_matchup_targets(raw_edges, positive=True)
-        threat_targets, threat_shares = _dominant_matchup_targets(raw_edges, positive=False)
-        dominant_names = set(counter_targets) | set(threat_targets)
+        counter_targets = [str(row["enemy_name"]) for row in confirmed_positive]
+        threat_targets = [str(row["enemy_name"]) for row in confirmed_negative]
         neutral_targets = [
-            str(row.enemy_name) for row in raw_edges
-            if str(row.enemy_name) not in dominant_names
+            str(row["enemy_name"]) for row in evidence_cells
+            if int(row.get("direction") or 0) == 0
         ]
+
+        measured_cells = [
+            row for row in evidence_cells if row.get("evidence_type") == "measured"
+        ]
+        directional_cells = [
+            row for row in evidence_cells if row.get("evidence_type") == "directional"
+        ]
+        measured_count = len(measured_cells)
+        directional_count = len(directional_cells)
+        known_count = measured_count + directional_count
+        unknown_count = len(evidence_cells) - known_count
+        confirmed_counter_count = len(confirmed_positive)
+        confirmed_threat_count = len(confirmed_negative)
+        confirmed_net = confirmed_counter_count - confirmed_threat_count
+
+        measured_positive_strength = sum(
+            max(float(row.get("edge_pp") or 0.0), 0.0) for row in measured_cells
+        )
+        measured_negative_strength = sum(
+            max(-float(row.get("edge_pp") or 0.0), 0.0) for row in measured_cells
+        )
+
+        measured_positive_edges = [
+            row for row in raw_edges if float(row.edge) > 0.0
+        ]
+        measured_negative_edges = [
+            row for row in raw_edges if float(row.edge) < 0.0
+        ]
+        _measured_counter_names, counter_shares = _dominant_matchup_targets(
+            measured_positive_edges, positive=True
+        )
+        _measured_threat_names, threat_shares = _dominant_matchup_targets(
+            measured_negative_edges, positive=False
+        )
 
         wr = None
         if st and st.get("win_rate") is not None:
@@ -546,8 +728,7 @@ def _rank_role_candidates(
             winrate_score=winrate_score,
         )
         lane_hard_loss = any(
-            edge <= -HARD_MATCHUP_THRESHOLD
-            for edge in lane_analysis["direct_lane_edges"]
+            edge <= -HARD_MATCHUP_THRESHOLD for edge in direct_lane_measured
         )
 
         out.append({
@@ -558,30 +739,28 @@ def _rank_role_candidates(
             "draft_matchup_sum": raw_analysis["sum_pp"],
             "draft_matchup_sum_pp": raw_analysis["sum_pp"],
             "draft_matchup_avg_pp": raw_analysis["avg_pp"],
-            "matchup_raw_row": [
-                {
-                    "enemy_id": row.enemy_id,
-                    "enemy_name": row.enemy_name,
-                    "enemy_role": row.enemy_role,
-                    "edge_pp": float(row.edge),
-                    "share_positive": float(counter_shares.get(row.enemy_name, 0.0)),
-                    "share_negative": float(threat_shares.get(row.enemy_name, 0.0)),
-                }
-                for row in raw_edges
-            ],
+            "matchup_raw_row": evidence_cells,
+            "matchup_evidence_row": evidence_cells,
             "draft_matchup_score": raw_analysis["matchup_score"],
             "positive": counter_targets,
             "negative": threat_targets,
             "neutral": neutral_targets,
             "counter_shares": counter_shares,
             "threat_shares": threat_shares,
-            "positive_strength": raw_analysis["positive_strength_pp"],
-            "positive_strength_pp": raw_analysis["positive_strength_pp"],
-            "negative_strength": raw_analysis["negative_strength_pp"],
-            "negative_strength_pp": raw_analysis["negative_strength_pp"],
+            "positive_strength": measured_positive_strength,
+            "positive_strength_pp": measured_positive_strength,
+            "negative_strength": measured_negative_strength,
+            "negative_strength_pp": measured_negative_strength,
             "hard_counters": lane_analysis["hard_counters"],
-            "coverage_count": len(counter_targets),
-            "coverage_total": len(raw_edges),
+            "coverage_count": confirmed_counter_count,
+            "coverage_total": len(evidence_cells),
+            "confirmed_counter_count": confirmed_counter_count,
+            "confirmed_threat_count": confirmed_threat_count,
+            "confirmed_net": confirmed_net,
+            "known_matchup_count": known_count,
+            "measured_matchup_count": measured_count,
+            "directional_matchup_count": directional_count,
+            "unknown_matchup_count": unknown_count,
             "effective_coverage": raw_analysis["effective_coverage"],
             "coverage_breadth_score": raw_analysis["coverage_breadth_score"],
             "coverage_strength_score": raw_analysis["coverage_strength_score"],
@@ -601,14 +780,8 @@ def _rank_role_candidates(
             "matrix_row": lane_analysis["matrix_row"],
         })
 
-    # Keep the exact old top-10 membership/order first.  Only the tail is new:
-    # it exists solely as a replacement pool for global duplicate removal.
-    discovery = sorted(out, key=_local_discovery_key, reverse=True)
-    old_top = discovery[:10]
-    tail = discovery[10:]
-    old_top.sort(key=_local_visible_key, reverse=True)
-    tail.sort(key=_local_visible_key, reverse=True)
-    ranked = old_top + tail
+    _assign_evidence_fronts(out)
+    ranked = sorted(out, key=_local_visible_key, reverse=True)
 
     for index, row in enumerate(ranked, start=1):
         row["local_rank"] = index
