@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 from collections import Counter
 
 # Keep regression tests away from a developer's real runtime database.
@@ -1385,11 +1386,8 @@ class SourceIntegrityRegressionTests(unittest.TestCase):
                 return Response(page)
 
         progress = []
-        rows = sources.fetch_wrpocket_item_pools(FakeNet(), resolver, progress.append)
-        self.assertEqual(
-            {row[0] for row in rows},
-            {"Zyra", *{f"Hero{i}" for i in range(19)}},
-        )
+        with self.assertRaisesRegex(RuntimeError, "20/21"):
+            sources.fetch_wrpocket_item_pools(FakeNet(), resolver, progress.append)
         self.assertIn("неизвестный профиль norra", "\n".join(progress))
 
     def test_wildriftcounter_retries_remote_disconnect(self):
