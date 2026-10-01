@@ -77,6 +77,69 @@ class DraftMatrixTests(unittest.TestCase):
 
 
 class EngineTests(unittest.TestCase):
+    @staticmethod
+    def _alloc_row(cid: str, rank: int, matchup: float, score: float = 50.0) -> dict:
+        return {
+            "champion": {"id": cid, "name": cid},
+            "local_rank": rank,
+            "draft_matchup_sum_pp": matchup,
+            "score": score,
+            "coverage_score": 50.0,
+            "negative_strength_pp": 0.0,
+            "tier": "A",
+            "winrate_score": 50.0,
+        }
+
+    def test_global_flex_allocation_preserves_better_original_local_rank(self):
+        r = self._alloc_row
+        ranked = {
+            "EXP": [
+                r("E1", 1, 9.0),
+                r("E2", 2, 8.0),
+                r("E3", 3, 7.0),
+                r("Flex", 4, 6.0),
+                r("E5", 5, 5.0),
+            ],
+            "Лес": [
+                r("J1", 1, 9.0),
+                r("J2", 2, 8.0),
+                r("Flex", 3, 6.0),
+                r("J4", 4, 5.0),
+                r("J5", 5, 4.0),
+            ],
+            "Мид": [r(f"M{i}", i, 10.0 - i) for i in range(1, 6)],
+            "Голд": [r(f"G{i}", i, 10.0 - i) for i in range(1, 6)],
+            "Роум": [r(f"R{i}", i, 10.0 - i) for i in range(1, 6)],
+        }
+        grid = engine._allocate_unique_role_grid(ranked, 4)
+        self.assertIn("Flex", [row["champion"]["id"] for row in grid["Лес"]])
+        self.assertNotIn("Flex", [row["champion"]["id"] for row in grid["EXP"]])
+        all_ids = [
+            row["champion"]["id"]
+            for role in engine.CANONICAL_ROLES
+            for row in grid[role]
+        ]
+        self.assertEqual(len(all_ids), len(set(all_ids)))
+
+    def test_same_rank_same_matchup_keeps_flex_where_replacement_gap_is_larger(self):
+        r = self._alloc_row
+        ranked = {
+            "EXP": [
+                r("Flex", 1, 5.0),
+                r("ExpAlt", 2, 1.0),
+            ],
+            "Лес": [
+                r("Flex", 1, 5.0),
+                r("JungleAlt", 2, 4.0),
+            ],
+            "Мид": [r("Mid", 1, 3.0)],
+            "Голд": [r("Gold", 1, 3.0)],
+            "Роум": [r("Roam", 1, 3.0)],
+        }
+        grid = engine._allocate_unique_role_grid(ranked, 1)
+        self.assertEqual(grid["EXP"][0]["champion"]["id"], "Flex")
+        self.assertEqual(grid["Лес"][0]["champion"]["id"], "JungleAlt")
+
     def test_relative_counter_group_finds_dominant_three(self):
         edges = [
             DraftEdge("e1", "E1", "", 0.30, 1.0),
