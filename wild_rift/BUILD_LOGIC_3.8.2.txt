@@ -1,0 +1,27 @@
+WLCA 3.8.2 — WildRiftCore full-roster discovery fix
+====================================================
+
+Root cause
+----------
+WildRiftCore /en/champions/ can return only the first rendered/paginated batch
+of champion cards. The old discovery function returned immediately as soon as
+it found any canonical links, so a 20-card response became "20 total profiles".
+
+That affected both WRC builds and the matchup matrix: the strict 3.8.1 updater
+could verify 20/20 even though the real current roster contains far more
+champions.
+
+Fix
+---
+- Never accept the first non-empty WRC profile list as complete.
+- Merge canonical profile links from /en/champions/ and the /en/builds/ Reader
+  representation.
+- Pass the updater's complete current champion ID set into source discovery.
+- Require every current champion ID to have a discovered WRC profile.
+- If discovery yields 20/142 (or any other incomplete count), abort the staged
+  update and keep the installed database/cache untouched.
+- Existing complete cached WRC pages are reused; newly discovered missing pages
+  are downloaded normally.
+
+This preserves the 3.8.1 all-or-nothing publishing guarantee while ensuring
+"all" means the actual current roster rather than a partial first page.
