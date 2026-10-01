@@ -540,6 +540,7 @@ def update_all(
         "champions": 0, "stats": 0, "matchups": 0, "item_pool": 0,
         "counter_items": 0, "champion_images": 0, "item_images": 0,
         "item_details_changed": 0, "patch": "", "errors": [],
+        "matchup_updated": False,
     }
 
     # 1) Heroes: current numeric identity/relations from Rone, metadata from MLBBDex.
@@ -728,14 +729,13 @@ def update_all(
         if tier_dates:
             db.set_meta("tier_date", max(tier_dates))
 
-    # 3) Matchups: Academy counter pages preserve the raw upstream
-    # increase_win_rate values.  Normalize once across the complete matrix, keep
-    # both representations in SQLite, and only convert to the legacy +/-1.5
-    # scale at the current DraftMatrixEngine compatibility boundary.
+    # 3) Matchups: use Rone's rolling 7-day public counter endpoint. The source
+    # value is stored in one invariant direction: candidate/main hero -> enemy.
+    # This fixes the old MLCA inversion where sub hero -> main hero was stored.
     emit(update_text("loading_matchups", lang))
     relation_rows = relation_matchups(champs)
     detailed_matchups: list[tuple[str, str, str, float]] = []
-    matchup_source = "mlbb.rone.academy.counters"
+    matchup_source = "mlbb.rone.public.counters.7d"
     matchup_patch = current_patch or "current"
     raw_matchup_rows: dict[tuple[str, str, str], dict] = {}
     counter_pages_ok = 0
@@ -746,8 +746,8 @@ def update_all(
         if not cid:
             continue
         url = (
-            RONE_ACADEMY_HERO_COUNTERS.format(hero_id=cid)
-            + "?rank=all&size=300&index=1&lang=en"
+            RONE_HERO_COUNTERS.format(hero_id=cid)
+            + "?days=7&rank=all&size=300&index=1&lang=en"
         )
         try:
             page_rows = parse_rone_academy_counter_raw(net.get(url).json(), cid)
@@ -768,7 +768,7 @@ def update_all(
                     if old is None or abs(float(row.get("raw_edge") or 0.0)) > abs(float(old.get("raw_edge") or 0.0)):
                         raw_matchup_rows[key] = row
         except Exception as exc:
-            summary["errors"].append(f"Rone Academy counters {cid}: {exc}")
+            summary["errors"].append(f"Rone public 7d counters {cid}: {exc}")
 
     normalized_evidence: list[MatchupEvidence] = []
     matchup_scale_pp = 0.0
@@ -788,14 +788,14 @@ def update_all(
                 evidence_type=str(row.get("evidence_type") or "measured"),
                 role=str(row.get("role") or ""),
                 rank_segment=str(row.get("rank_segment") or "all"),
-                sample_window=str(row.get("sample_window") or "academy-current"),
+                sample_window="7d",
                 confidence=float(row.get("confidence", 1.0) or 0.0),
                 patch=matchup_patch,
             )
             for row in raw_matchup_rows.values()
         ]
         normalized_evidence, matchup_scale_pp = normalize_matchup_evidence(evidence_objects)
-        db.replace_source_matchup_evidence(
+        db.replace_active_matchup_evidence(
             matchup_source, [row.to_dict() for row in normalized_evidence]
         )
         detailed_matchups = [
@@ -809,15 +809,23 @@ def update_all(
         ]
         db.set_meta("matchup_edge_scale_pp_p95", f"{matchup_scale_pp:.6f}")
         db.set_meta("matchup_evidence_source", matchup_source)
+        db.set_meta("matchup_direction", "main_hero_to_sub_hero")
+        db.set_meta("matchup_sample_window", "7d")
+        db.set_meta("matchup_patch", matchup_patch)
+        db.set_meta("matchup_updated_at", now_iso)
+        summary["matchup_updated"] = True
     else:
         summary["errors"].append(
-            f"Academy matchup matrix incomplete: pages={counter_pages_ok}/{len(valid_ids)}, "
+            f"Public 7d matchup matrix incomplete: pages={counter_pages_ok}/{len(valid_ids)}, "
             f"edges={len(raw_matchup_rows)}/{matrix_expected}; keeping previous runtime matrix"
         )
 
     summary["counter_pages"] = counter_pages_ok
     summary["matchup_evidence"] = len(normalized_evidence)
     summary["matchup_edge_scale_pp_p95"] = matchup_scale_pp
+    summary["matchup_source"] = matchup_source if summary["matchup_updated"] else db.get_meta("matchup_evidence_source", "")
+    summary["matchup_direction"] = db.get_meta("matchup_direction", "")
+    summary["matchup_sample_window"] = db.get_meta("matchup_sample_window", "")
 
     # 4) Items and builds. MLBBDex defines the final shop catalog; Rone adds
     # icons/details and lane-specific build variants.
