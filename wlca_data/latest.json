@@ -18,14 +18,14 @@
     "stats": 922,
     "tier_roles": 5
   },
-  "download_url": "https://github.com/thepurelydudes-max/Android-APK/releases/download/wlca-data-2026.10.01.2/WLCA-data-2026.10.01.2.zip",
-  "generated_at_utc": "2026-10-01T20:24:53.127657+00:00",
-  "manifest_sha256": "fb90d8d8ba327bd6efaeb8a083cef9b28754092d12128f1961d5acea3a299ace",
+  "download_url": "https://github.com/thepurelydudes-max/Android-APK/releases/download/wlca-data-2026.10.01.3/WLCA-data-2026.10.01.3.zip",
+  "generated_at_utc": "2026-10-01T20:26:27.536948+00:00",
+  "manifest_sha256": "2d2cbdc03169c7505056007ec96233f948e2a2afc01d4ae4a4e6d925ee8c1f0a",
   "min_app_version": "3.9.0",
-  "package_version": "2026.10.01.2",
+  "package_version": "2026.10.01.3",
   "patch": "7.3",
   "protocol_version": 1,
-  "release_tag": "wlca-data-2026.10.01.2",
-  "sha256": "6791a910fa0807a92563d18b572058da591214451d84a19ed596a43f404cceaf",
+  "release_tag": "wlca-data-2026.10.01.3",
+  "sha256": "ff7dd01e5e348bf755b9d43640d8b5d2bd606bcaeb832833fc736d832dc848b0",
   "size_bytes": 8728030
 }
