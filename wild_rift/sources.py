@@ -949,12 +949,13 @@ def parse_wildriftcore_matchups(
         except Exception as exc:
             errors.append(f"{owner_id}: {exc}")
 
-    min_success = min(total, max(10, int(total * 0.70)))
-    if not direct or successful_pages < min_success:
+    if not direct or successful_pages != total:
         detail = f" ({'; '.join(errors[:3])})" if errors else ""
         raise RuntimeError(
             f"WildRiftCore вернул неполную матрицу: {successful_pages}/{total} страниц. "
-            f"Уже скачанные страницы сохранены и повторно загружаться не будут" + detail
+            "Новая матрица не будет опубликована, пока не будут успешно проверены "
+            "все страницы; уже скачанные страницы останутся только в staging-кэше"
+            + detail
         )
 
     # Fill only genuinely missing reverse directions. Never overwrite an explicit
@@ -1359,12 +1360,14 @@ def parse_wildriftcore_tiers(
         dedup[(champion_id, role)] = (champion_id, role, tier)
     rows = list(dedup.values())
 
-    if errors and progress:
-        progress(
-            "WildRiftCore tiers: частичное обновление; сохранены роли "
-            + ", ".join(succeeded_roles)
-            + ". Не обновились: "
-            + "; ".join(errors)
+    if errors:
+        if progress:
+            progress(
+                "WildRiftCore tiers: обновление отклонено; не обновились: "
+                + "; ".join(errors)
+            )
+        raise RuntimeError(
+            "WildRiftCore tiers неполны: " + "; ".join(errors)
         )
     return rows
 
@@ -3315,11 +3318,10 @@ def fetch_wrpocket_item_pools(net: Net, resolve: Callable[[str], str | None], pr
     # keeps the previous known-good pool when this raises.
     unique_profiles = len(resolved_urls)
     expected_profiles = len({url for _text, url in filtered})
-    min_profiles = min(expected_profiles, max(20, int(expected_profiles * 0.70)))
-    if expected_profiles and unique_profiles < min_profiles:
+    if expected_profiles and unique_profiles != expected_profiles:
         raise RuntimeError(
             f"WR Pocket item pools: разрешено только {unique_profiles}/{expected_profiles} чемпионов; "
-            "старый пул сохранён"
+            "полное обновление отклонено"
         )
 
     # de-duplicate while preserving first position
