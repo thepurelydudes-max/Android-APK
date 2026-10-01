@@ -12,9 +12,12 @@ from paths import RUNTIME_DIR, ensure_initial_data, resolve_media_path
 # Android bundles are read-only. Seed the writable database/cache before db.py
 # captures its paths at import time.
 ensure_initial_data()
+import package_updater as updater
+# If Android killed the process during the final data-package swap, restore the
+# previous working set before the UI opens the database.
+updater.recover_interrupted_update()
 import db
 import engine
-import updater
 from adaptive_descriptions import contextual_item_explanation
 
 
@@ -72,8 +75,8 @@ TEXT = {
         "log_copied": "Лог обновления скопирован в буфер обмена.",
         "log_missing": "Лога предупреждений пока нет.",
         "log_copy_error": "Не удалось скопировать лог",
-        "updating": "Обновляю локальную базу из интернет-источников…",
-        "updated": "Данные обновлены.",
+        "updating": "Проверяю полный пакет данных WLCA на GitHub…",
+        "updated": "Пакет данных установлен.",
         "update_warnings": "предупреждений обновления",
         "update_error": "Ошибка обновления",
         "patch": "Патч",
@@ -86,7 +89,7 @@ TEXT = {
         "tier": "Тир",
         "recommended_items": "Рекомендуемые предметы",
         "build_description": "Описание сборки",
-        "offline": "Основная работа офлайн; интернет нужен только для обновления базы.",
+        "offline": "Основная работа офлайн; обновление скачивается одним проверенным пакетом с GitHub.",
     },
     "en": {
         "title": "Wild Rift Counter Assistant",
@@ -113,7 +116,7 @@ TEXT = {
         "log_missing": "There is no warning log yet.",
         "log_copy_error": "Could not copy log",
         "updating": "Updating the local database from internet sources…",
-        "updated": "Data updated.",
+        "updated": "Data package installed.",
         "update_warnings": "update warnings",
         "update_error": "Update error",
         "patch": "Patch",
@@ -654,9 +657,14 @@ class MobileAssistant:
     async def copy_update_log(self, _e=None) -> None:
         """Copy the last update warning log directly to the Android clipboard."""
         log_dir = RUNTIME_DIR / "logs"
+        error_path = log_dir / "android-update-error.log"
         audit_path = log_dir / "update-audit.log"
         warning_path = log_dir / "update-warnings.log"
-        log_path = audit_path if audit_path.is_file() else warning_path
+        log_path = (
+            error_path if error_path.is_file()
+            else audit_path if audit_path.is_file()
+            else warning_path
+        )
         try:
             if not log_path.is_file():
                 self.status_text.value = self.t("log_missing")
@@ -1285,33 +1293,38 @@ class MobileAssistant:
         self.status_text.value = message
         self.status_text.color = P["cyan_soft"]
 
-        # updater.py has 8 top-level stages in the current data pipeline.
-        total_stages = 8
-        stage_match = re.match(r"\s*([1-8])/8\b", message)
+        # GitHub package updater has four top-level stages:
+        # check manifest -> download -> verify -> atomic install.
+        total_stages = 4
+        stage_match = re.match(r"\s*([1-4])/4\b", message)
         if stage_match:
             self._update_stage = int(stage_match.group(1))
             if self.update_progress:
-                self.update_progress.value = max(
-                    0.0,
-                    min(1.0, (self._update_stage - 1) / float(total_stages)),
-                )
-            return
+                base = (self._update_stage - 1) / float(total_stages)
+                self.update_progress.value = max(0.0, min(1.0, base))
 
-        # Stage 8 emits detailed image-cache counters. Split the final 1/8
-        # between champion portraits and item icons so progress stays animated.
-        count_match = re.search(r"(\d+)\s*/\s*(\d+)", message)
-        if count_match and self._update_stage == total_stages and self.update_progress:
-            current = int(count_match.group(1))
-            total = max(1, int(count_match.group(2)))
+        # Download stage reports MiB progress in the status string.
+        size_match = re.search(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*МБ", message)
+        if size_match and self._update_stage == 2 and self.update_progress:
+            current = float(size_match.group(1))
+            total = max(0.001, float(size_match.group(2)))
             fraction = max(0.0, min(1.0, current / total))
-            is_items = ("предмет" in message.casefold()) or ("item" in message.casefold())
-            stage_fraction = (0.5 + 0.5 * fraction) if is_items else (0.5 * fraction)
             self.update_progress.value = max(
                 0.0,
-                min(1.0, (7.0 + stage_fraction) / float(total_stages)),
+                min(1.0, (1.0 + fraction) / float(total_stages)),
             )
 
     async def update_data(self, _e=None) -> None:
+        # Logs must describe this attempt only. Otherwise "Copy log" could copy
+        # an older successful/failed run and make updater diagnostics misleading.
+        try:
+            log_dir = RUNTIME_DIR / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("update-audit.log", "update-warnings.log", "android-update-error.log"):
+                (log_dir / name).unlink(missing_ok=True)
+        except Exception:
+            pass
+
         if self.update_button:
             self.update_button.disabled = True
         self._update_stage = 0
@@ -1388,17 +1401,15 @@ class MobileAssistant:
             if self.header_meta_text is not None:
                 self.header_meta_text.value = self.header_meta_value()
 
-            msg = self.t("updated")
+            if summary.get("already_current"):
+                msg = "База уже актуальна." if self.lang == "ru" else "Data is already up to date."
+            else:
+                msg = self.t("updated")
             if summary.get("patch"):
                 msg += f" {self.t('patch')}: {summary['patch']}."
-            wrc_total = int(summary.get("wrc_build_profiles_total") or 0)
-            wrc_success = int(summary.get("wrc_build_pages_success") or 0)
-            if wrc_total:
-                msg += (
-                    f" WRC {wrc_success}/{wrc_total}; "
-                    f"{int(summary.get('role_builds') or 0)} builds; "
-                    f"{int(summary.get('role_build_variants') or 0)} variants."
-                )
+            if summary.get("package_version"):
+                label = "Пакет" if self.lang == "ru" else "Package"
+                msg += f" {label}: {summary['package_version']}."
             if not errors:
                 # Do not leave a stale warning log from an older update: the
                 # copy button must always represent the most recent run.
@@ -1414,19 +1425,18 @@ class MobileAssistant:
                 log_dir = RUNTIME_DIR / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
                 audit_lines = [
+                    f"Source: {summary.get('source') or 'GitHub Releases'}",
+                    f"Package: {summary.get('package_version') or '-'}",
                     f"Patch: {summary.get('patch') or '-'}",
-                    (
-                        "WildRiftCore builds: "
-                        f"{int(summary.get('wrc_build_pages_success') or 0)}/"
-                        f"{int(summary.get('wrc_build_profiles_total') or 0)} pages; "
-                        f"{int(summary.get('role_builds') or 0)} role builds; "
-                        f"{int(summary.get('role_build_variants') or 0)} variants"
-                    ),
+                    f"Downloaded: {bool(summary.get('downloaded'))}",
+                    f"Already current: {bool(summary.get('already_current'))}",
                 ]
-                failed_profiles = list(summary.get("wrc_build_failed_profiles") or [])
-                if failed_profiles:
+                counts = dict(summary.get("counts") or {})
+                if counts:
                     audit_lines.append(
-                        "WildRiftCore missing profiles: " + ", ".join(failed_profiles)
+                        "Counts: " + ", ".join(
+                            f"{key}={value}" for key, value in sorted(counts.items())
+                        )
                     )
                 if errors:
                     audit_lines.append("")
