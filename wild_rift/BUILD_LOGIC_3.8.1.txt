@@ -1,0 +1,28 @@
+Wild Rift Counter Assistant / WLCA 3.8.1
+=========================================
+
+Atomic all-or-nothing updater
+-----------------------------
+3.8.1 never edits the installed database or media cache while downloading.
+
+Update flow:
+1. Copy the current working database and cache into a disposable staging runtime.
+2. Download and parse every source into staging only.
+3. Require the full WildRiftCore matchup matrix: every discovered champion page
+   must succeed. 70% partial matrices are no longer accepted.
+4. Require all five WildRiftCore tier-role pages; partial tier refreshes are
+   rejected.
+5. Require every discovered WR Pocket champion profile for item pools; the old
+   70% acceptance threshold is removed.
+6. Require full WRC build-page coverage and pass the existing build integrity
+   audit.
+7. Require statistics, item pools, counter items, champion portraits and item
+   icon integrity.
+8. Require zero update warnings/errors and PRAGMA quick_check=ok on the staged
+   SQLite database.
+9. Only after all checks pass, swap the staged database/cache into production.
+10. If any download, parser, icon, integrity check or promotion step fails, the
+    previous installed database/cache remains intact.
+
+A bad connection can therefore waste an update attempt, but it cannot publish a
+half-downloaded matrix or partially refreshed resource set.
