@@ -247,6 +247,10 @@ def _validate_payload(root: Path, remote: dict) -> dict:
             f"{actual.get('role_build_champions', 0)}/{champions}."
         )
 
+    cache_hash = str(internal.get("cache_sha256") or "").lower()
+    if not re_full_sha(cache_hash) or _tree_sha256(cache_path) != cache_hash:
+        raise PackageUpdateError("Контрольная сумма полного cache/ не совпадает.")
+
     champ_icons = _count_pngs(cache_path / "champions")
     item_icons = _count_pngs(cache_path / "items")
     if champ_icons != int(expected.get("champion_icons") or 0):
@@ -500,6 +504,9 @@ def _installed_is_current(remote: dict) -> bool:
         cache_path = RUNTIME_DIR / "cache"
         actual = _database_counts(db_path)
         if _sha256(db_path) != str(installed.get("database_sha256") or "").lower():
+            return False
+        expected_cache_hash = str(installed.get("cache_sha256") or "").lower()
+        if not re_full_sha(expected_cache_hash) or _tree_sha256(cache_path) != expected_cache_hash:
             return False
         expected = dict(installed.get("counts") or {})
         for key, value in expected.items():
