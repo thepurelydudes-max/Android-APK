@@ -239,24 +239,34 @@ def _audit() -> dict:
             "Bundled MLBB patch is not the required live Original Server patch 2.2.16: "
             f"{meta.get('patch_version') or 'missing'}"
         )
-    if meta.get("matchup_evidence_source") != "mlbb.rone.public.counters.7d":
+    if meta.get("matchup_evidence_source") != "mlbbhub.matchups":
         raise RuntimeError(
-            "Bundled matchup source is not the live 7-day Rone matrix: "
+            "Bundled matchup source is not the validated current-patch MLBBHub matrix: "
             f"{meta.get('matchup_evidence_source') or 'missing'}"
         )
-    if meta.get("matchup_direction") != "main_hero_to_sub_hero":
+    if meta.get("matchup_direction") != "row_hero_to_column_hero":
         raise RuntimeError(
             "Bundled matchup direction contract is missing or inverted: "
             f"{meta.get('matchup_direction') or 'missing'}"
         )
-    if meta.get("matchup_sample_window") != "7d":
+    if meta.get("matchup_sample_window") != "ranked-current":
         raise RuntimeError(
-            f"Bundled matchup sample window is not 7d: {meta.get('matchup_sample_window') or 'missing'}"
+            "Bundled matchup sample window is not ranked-current: "
+            f"{meta.get('matchup_sample_window') or 'missing'}"
         )
-    if matchup_sources != ["mlbb.rone.public.counters.7d"]:
+    if matchup_sources != ["mlbbhub.matchups"]:
         raise RuntimeError(
             "Stale matchup evidence sources leaked into the bundled seed: "
             + json.dumps(matchup_sources, ensure_ascii=False)
+        )
+    if len(evidence_rows) < 1850:
+        raise RuntimeError(
+            f"Too few current-patch matchup evidence rows: {len(evidence_rows)}"
+        )
+    if mirror_checked < 900 or mirror_inverse_ratio < 0.97:
+        raise RuntimeError(
+            "Current-patch matchup matrix failed antisymmetry sanity check: "
+            f"pairs={mirror_checked}, exact_inverse_ratio={mirror_inverse_ratio:.6f}"
         )
     bad_sentinels = {
         name: value for name, value in direction_sentinels.items()
@@ -363,7 +373,7 @@ def main() -> None:
 
     manifest = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "source": "Rone Arena 7-day counters + MLBBDex + MLBBHub patch metadata; full offline MLCA seed",
+        "source": "MLBBHub current-patch matchup matrix + Rone Arena/MLBBDex metadata and builds; full offline MLCA seed",
         "patch": db.get_meta("patch_version", ""),
         "last_update": db.get_meta("last_update", ""),
         "database_sha256": hashlib.sha256(bundled_db.read_bytes()).hexdigest(),
