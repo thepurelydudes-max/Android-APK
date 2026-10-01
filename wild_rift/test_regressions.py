@@ -1186,6 +1186,80 @@ S
         self.assertFalse(unresolved)
 
 
+class WildRiftCoreRosterDiscoveryRegressionTests(unittest.TestCase):
+    def test_partial_first_page_is_merged_with_full_build_index(self):
+        champions = [
+            {"id": "Aatrox", "name": "Aatrox", "name_ru": "", "roles": [], "lanes": [], "damage_type": ""},
+            {"id": "Ahri", "name": "Ahri", "name_ru": "", "roles": [], "lanes": [], "damage_type": ""},
+            {"id": "Akali", "name": "Akali", "name_ru": "", "roles": [], "lanes": [], "damage_type": ""},
+        ]
+        resolver = updater.build_resolver(champions)
+
+        class Response:
+            def __init__(self, text):
+                self.text = text
+                self.status_code = 200
+                self.headers = {}
+            def raise_for_status(self):
+                return None
+
+        class FakeNet:
+            _wildriftcore_reader_only = False
+            def get(self, url, *args, **kwargs):
+                if url.rstrip("/") == sources.WR_CORE_CHAMPS.rstrip("/"):
+                    # Simulates a paginated/partially-rendered first batch.
+                    return Response('<a href="/en/champions/aatrox/">Aatrox</a>')
+                raise RuntimeError("direct builds blocked")
+
+        original_build_text = sources._wildriftcore_build_text
+        try:
+            sources._wildriftcore_build_text = lambda *_args, **_kwargs: (
+                "\n".join([
+                    "https://wildriftcore.com/en/champions/aatrox/builds/",
+                    "https://wildriftcore.com/en/champions/ahri/builds/",
+                    "https://wildriftcore.com/en/champions/akali/builds/",
+                ]),
+                "reader",
+            )
+            rows = sources._wildriftcore_profile_links(FakeNet(), resolver)
+        finally:
+            sources._wildriftcore_build_text = original_build_text
+
+        self.assertEqual({cid for cid, _url in rows}, {"Aatrox", "Ahri", "Akali"})
+
+    def test_incomplete_wrc_roster_is_rejected_instead_of_accepting_20_style_subset(self):
+        champions = [
+            {"id": "Aatrox", "name": "Aatrox", "name_ru": "", "roles": [], "lanes": [], "damage_type": ""},
+            {"id": "Ahri", "name": "Ahri", "name_ru": "", "roles": [], "lanes": [], "damage_type": ""},
+            {"id": "Akali", "name": "Akali", "name_ru": "", "roles": [], "lanes": [], "damage_type": ""},
+        ]
+        resolver = updater.build_resolver(champions)
+
+        class Response:
+            def __init__(self, text):
+                self.text = text
+                self.status_code = 200
+                self.headers = {}
+            def raise_for_status(self):
+                return None
+
+        class FakeNet:
+            _wildriftcore_reader_only = False
+            def get(self, url, *args, **kwargs):
+                return Response('<a href="/en/champions/aatrox/">Aatrox</a>')
+
+        original_build_text = sources._wildriftcore_build_text
+        try:
+            sources._wildriftcore_build_text = lambda *_args, **_kwargs: (
+                "https://wildriftcore.com/en/champions/aatrox/builds/",
+                "reader",
+            )
+            with self.assertRaisesRegex(RuntimeError, "1/3"):
+                sources._wildriftcore_profile_links(FakeNet(), resolver)
+        finally:
+            sources._wildriftcore_build_text = original_build_text
+
+
 class SourceIntegrityRegressionTests(unittest.TestCase):
     def test_trusted_icon_urls_are_name_addressed_for_reported_bad_items(self):
         expected = {
