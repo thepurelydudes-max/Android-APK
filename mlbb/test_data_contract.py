@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from collect_mlbb_snapshot import parse_counter_evidence, parse_lane_filter_evidence
-from sources import parse_rone_academy_counter_raw
+from sources import parse_mlbbhub_matchup_matrix_html, parse_rone_academy_counter_raw
 from moonton_gms import parse_gms_source
 from data_contract import (
     LaneEvidence,
@@ -115,6 +116,41 @@ class DataContractTests(unittest.TestCase):
         self.assertAlmostEqual(edges[("17", "20")], 0.048121)
         self.assertNotIn(("39", "17"), edges)
         self.assertNotIn(("20", "17"), edges)
+
+
+    def test_mlbbhub_matrix_preserves_row_to_column_direction(self):
+        heroes = [
+            {"slug": f"hero-{i}", "name": f"Hero {i}"}
+            for i in range(100)
+        ]
+        edges = []
+        for i in range(100):
+            row = []
+            for j in range(100):
+                if i == j:
+                    row.append(0.0)
+                else:
+                    row.append(2.5 if i < j else -2.5)
+            edges.append(row)
+        matrix = {
+            "heroes": heroes,
+            "edges": edges,
+            "evidenceTotals": {"measured": 9900},
+        }
+        decoded = 'prefix "matrix":' + json.dumps(matrix, separators=(",", ":"))
+        raw = json.dumps(decoded, ensure_ascii=False)[1:-1]
+        page = (
+            '<script>self.__next_f.push([1,"' + raw + '"])</script>'
+            ' Patch 2.2.16 ranked data'
+        )
+        parsed = parse_mlbbhub_matchup_matrix_html(page)
+        self.assertEqual(parsed["patch"], "2.2.16")
+        by_pair = {
+            (row["champion_slug"], row["enemy_slug"]): row["raw_edge"]
+            for row in parsed["rows"]
+        }
+        self.assertAlmostEqual(by_pair[("hero-0", "hero-1")], 2.5)
+        self.assertAlmostEqual(by_pair[("hero-1", "hero-0")], -2.5)
 
 
 if __name__ == "__main__":
