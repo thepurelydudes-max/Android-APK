@@ -320,6 +320,15 @@ jobs:
           done
           cp -a "$GITHUB_WORKSPACE/wild_rift/assets" "$RUNTIME_PROJECT/assets"
 
+          # Flet 1.0.0 currently resolves jni_flutter 1.0.4 together with jni
+          # 1.0.x on a fresh runner, while the generated bindings require
+          # package:jni >=1.1.0. Keep the build deterministic until upstream
+          # dependency metadata is corrected.
+          cat > "$RUNTIME_PROJECT/pyproject.toml" <<'TOML'
+          [tool.flet.flutter.pubspec.dependency_overrides]
+          jni = "^1.1.0"
+          TOML
+
           # Android 12+ renders native splash artwork inside a circular system
           # mask. The old splash_android.png had an opaque 2048x2048 background
           # and a wordmark spanning ~85% of the width, so the system crop could
