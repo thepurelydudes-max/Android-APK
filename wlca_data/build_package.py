@@ -20,6 +20,18 @@ def sha256(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+
+def tree_sha256(folder: Path) -> str:
+    h = hashlib.sha256()
+    for path in sorted(x for x in folder.rglob("*") if x.is_file()):
+        rel = path.relative_to(folder).as_posix().encode("utf-8")
+        h.update(len(rel).to_bytes(4, "big"))
+        h.update(rel)
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+    return h.hexdigest()
+
 def db_audit(path: Path) -> tuple[dict[str, int], dict[str, str]]:
     with sqlite3.connect(path) as con:
         quick = con.execute("PRAGMA quick_check").fetchone()
@@ -113,6 +125,7 @@ def main() -> int:
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "source_revision": os.environ.get("GITHUB_SHA", ""),
         "database_sha256": sha256(db_path),
+        "cache_sha256": tree_sha256(cache),
         "counts": counts,
     }
     internal_path = out / "manifest.json"
