@@ -77,9 +77,35 @@ jobs:
           from moonton_gms import MOONTON_GMS_SOURCE_URL, parse_gms_source
           from sources import RONE_ACADEMY_HERO_COUNTERS
           try:
-              response=requests.get(MOONTON_GMS_SOURCE_URL, timeout=30)
+              gms_body = {
+                  "pageSize": 500,
+                  "pageIndex": 1,
+                  "filters": [
+                      {"field": "bigrank", "operator": "eq", "value": "8"},
+                      {"field": "match_type", "operator": "eq", "value": 0},
+                  ],
+                  "sorts": [
+                      {"data": {"field": "main_hero_win_rate", "order": "desc"}, "type": "sequence"},
+                      {"data": {"field": "main_heroid", "order": "desc"}, "type": "sequence"},
+                  ],
+                  "fields": [
+                      "main_hero","main_hero_appearance_rate","main_hero_ban_rate",
+                      "main_hero_channel","main_hero_win_rate","main_heroid",
+                      "sub_hero","sub_hero_last",
+                  ],
+              }
+              gms_headers = {
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                  "Accept": "application/json",
+                  "Content-Type": "application/json;charset=UTF-8",
+                  "X-AppId": "2669606",
+                  "X-ActId": "2669607",
+                  "X-Lang": "en",
+              }
+              response=requests.post(MOONTON_GMS_SOURCE_URL, json=gms_body, headers=gms_headers, timeout=30)
               print("GMS STATUS", response.status_code, "LEN", len(response.content))
               response.raise_for_status()
+              print("GMS CODE", response.json().get("code"), response.json().get("message"))
               parsed=parse_gms_source(response.json(), rank_segment="all")
               print("GMS TOTAL", parsed.get("total"), "HEROES", len(parsed.get("heroes") or []), "MATCHUPS", len(parsed.get("matchups") or []))
               by={(x.champion_id,x.enemy_id):x.raw_edge for x in parsed.get("matchups") or []}
