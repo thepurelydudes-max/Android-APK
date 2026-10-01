@@ -139,13 +139,12 @@ def main() -> int:
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         zf.write(internal_path, "manifest.json")
         zf.write(db_path, "data/wildrift.db")
-        for folder_name in ("champions", "items", "brand"):
-            folder = cache / folder_name
-            if not folder.is_dir():
-                continue
-            for path in sorted(folder.rglob("*")):
-                if path.is_file():
-                    zf.write(path, path.relative_to(assets).as_posix())
+        # Package the complete cache tree, not only PNG folders. SQLite
+        # media metadata/auxiliary cache files must travel with the exact cache
+        # tree whose SHA-256 is recorded in manifest.json.
+        for path in sorted(cache.rglob("*")):
+            if path.is_file():
+                zf.write(path, path.relative_to(assets).as_posix())
 
     package_sha = sha256(zip_path)
     manifest_sha = sha256(internal_path)
