@@ -32,6 +32,7 @@ TRUSTED_RELEASE_PREFIX = (
 )
 UPDATE_DIR = RUNTIME_DIR / "github-update"
 PART_PATH = UPDATE_DIR / "WLCA-data.zip.part"
+PART_META_PATH = UPDATE_DIR / "WLCA-data.part.json"
 STAGE_DIR = UPDATE_DIR / "stage"
 BACKUP_DIR = UPDATE_DIR / "rollback"
 RECOVERY_MARKER = UPDATE_DIR / "promotion.json"
@@ -66,6 +67,21 @@ def _sha256(path: Path) -> str:
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
+    return h.hexdigest()
+
+
+def _tree_sha256(folder: Path) -> str:
+    """Hash cache contents by relative path + file bytes, independent of mtimes."""
+    h = hashlib.sha256()
+    if not folder.is_dir():
+        return ""
+    for path in sorted(x for x in folder.rglob("*") if x.is_file()):
+        rel = path.relative_to(folder).as_posix().encode("utf-8")
+        h.update(len(rel).to_bytes(4, "big"))
+        h.update(rel)
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
     return h.hexdigest()
 
 
@@ -197,6 +213,10 @@ def _validate_payload(root: Path, remote: dict) -> dict:
     if not re_full_sha(db_hash) or _sha256(data_path) != db_hash:
         raise PackageUpdateError("Контрольная сумма wildrift.db не совпадает.")
 
+    cache_hash = str(internal.get("cache_sha256") or "").lower()
+    if not re_full_sha(cache_hash) or _tree_sha256(cache_path) != cache_hash:
+        raise PackageUpdateError("Контрольная сумма cache/ не совпадает.")
+
     actual = _database_counts(data_path)
     expected = dict(internal.get("counts") or {})
     if not expected:
@@ -290,6 +310,29 @@ def _download_package(
     UPDATE_DIR.mkdir(parents=True, exist_ok=True)
     expected = int(remote["size_bytes"])
     url = str(remote["download_url"])
+
+    # A resumable fragment belongs to exactly one immutable release asset.
+    # Never append bytes from a newer package to an older .part file.
+    resume_identity = {
+        "package_version": str(remote.get("package_version") or ""),
+        "sha256": str(remote.get("sha256") or "").lower(),
+        "size_bytes": expected,
+        "download_url": url,
+    }
+    old_identity = {}
+    if PART_META_PATH.is_file():
+        try:
+            old_identity = json.loads(PART_META_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            old_identity = {}
+    if old_identity != resume_identity:
+        PART_PATH.unlink(missing_ok=True)
+        PART_META_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PART_META_PATH.write_text(
+            json.dumps(resume_identity, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     current = PART_PATH.stat().st_size if PART_PATH.is_file() else 0
     if current > expected:
         PART_PATH.unlink(missing_ok=True)
@@ -451,7 +494,12 @@ def _installed_is_current(remote: dict) -> bool:
         if str(installed.get("package_version") or "") != str(remote.get("package_version") or ""):
             return False
         db_path = RUNTIME_DIR / "data" / "wildrift.db"
+        cache_path = RUNTIME_DIR / "cache"
         actual = _database_counts(db_path)
+        if _sha256(db_path) != str(installed.get("database_sha256") or "").lower():
+            return False
+        if _tree_sha256(cache_path) != str(installed.get("cache_sha256") or "").lower():
+            return False
         expected = dict(installed.get("counts") or {})
         for key, value in expected.items():
             if key in actual and int(actual[key]) != int(value):
@@ -513,6 +561,7 @@ def update_all(
 
     # A successfully installed package no longer needs the resumable download.
     PART_PATH.unlink(missing_ok=True)
+    PART_META_PATH.unlink(missing_ok=True)
     shutil.rmtree(STAGE_DIR, ignore_errors=True)
 
     return {
