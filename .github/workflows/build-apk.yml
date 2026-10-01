@@ -64,11 +64,11 @@ jobs:
         if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
         uses: actions/download-artifact@v4
         with:
-          name: MLCA-2.1.1-APK
+          name: MLCA-2.1.2-APK
           path: ${{ runner.temp }}/mlca_base_apk
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          run-id: 36627935879
+          run-id: 36661885778
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
