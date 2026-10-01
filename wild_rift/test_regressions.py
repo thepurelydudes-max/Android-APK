@@ -548,6 +548,27 @@ Open this draft in the tool →
 
 
 class RecommendationRegressionTests(unittest.TestCase):
+    def test_visible_draft_score_follows_primary_ranking_keys(self):
+        matrix = DraftMatrixEngine()
+
+        # One full matchup-sum point must beat the maximum possible coverage
+        # swing, preserving the same priority as _role_draft_rank_key().
+        stronger_sum = matrix.draft_score(matchup_sum=3.0, coverage_count=0)
+        weaker_sum_max_coverage = matrix.draft_score(matchup_sum=2.0, coverage_count=5)
+        self.assertGreater(stronger_sum, weaker_sum_max_coverage)
+
+        # Coverage is visible only as the second-order discriminator when the
+        # raw matchup sum itself is equal.
+        wider = matrix.draft_score(matchup_sum=3.0, coverage_count=3)
+        narrower = matrix.draft_score(matchup_sum=3.0, coverage_count=2)
+        self.assertGreater(wider, narrower)
+        self.assertAlmostEqual(wider, 60.2)
+        self.assertAlmostEqual(narrower, 59.8)
+
+        # Keep the public number on a stable 0..100 scale.
+        self.assertEqual(matrix.draft_score(matchup_sum=99.0, coverage_count=5), 100.0)
+        self.assertEqual(matrix.draft_score(matchup_sum=-99.0, coverage_count=0), 0.0)
+
     def test_matchup_sum_is_primary_over_tier_weighted_score(self):
         champions = [
             {"id": "Malphite", "name": "Malphite", "name_ru": "Мальфит", "roles": ["Tank"], "lanes": ["top"], "damage_type": "Magic"},
@@ -604,9 +625,14 @@ class RecommendationRegressionTests(unittest.TestCase):
         self.assertEqual([row["champion"]["id"] for row in results], ["Jax", "Malphite"])
         self.assertGreater(results[0]["matchup_sum"], results[1]["matchup_sum"])
         self.assertGreater(
-            results[1]["score"],
             results[0]["score"],
-            "Tier/winrate weighted score must not override a stronger matchup sum",
+            results[1]["score"],
+            "Visible Draft Score must agree with the stronger matchup sum",
+        )
+        self.assertGreater(
+            results[1]["meta_score"],
+            results[0]["meta_score"],
+            "Legacy tier/winrate meta score remains available only as a late tie-breaker",
         )
 
     def test_flex_champion_is_allocated_to_only_one_best_branch(self):
