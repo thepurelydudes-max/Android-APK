@@ -608,7 +608,7 @@ class RecommendationRegressionTests(unittest.TestCase):
             sorted((row["score"] for row in results), reverse=True),
         )
 
-    def test_flex_champion_is_recommended_only_in_primary_branch(self):
+    def test_flex_champion_is_allocated_to_only_one_best_branch(self):
         champions = [
             {
                 "id": "Vayne", "name": "Vayne", "name_ru": "Вейн",
@@ -616,11 +616,19 @@ class RecommendationRegressionTests(unittest.TestCase):
                 "lanes": ["ad", "top"], "damage_type": "Physical",
             },
             {
+                "id": "BaronAlt", "name": "BaronAlt", "name_ru": "Барон",
+                "roles": ["Fighter"], "lanes": ["top"], "damage_type": "Physical",
+            },
+            {
+                "id": "AdcAlt", "name": "AdcAlt", "name_ru": "АДК",
+                "roles": ["Marksman"], "lanes": ["ad"], "damage_type": "Physical",
+            },
+            {
                 "id": "TankEnemy", "name": "TankEnemy", "name_ru": "Танк",
                 "roles": ["Tank"], "lanes": ["top"], "damage_type": "Physical",
             },
             {
-                "id": "AdcEnemy", "name": "AdcEnemy", "name_ru": "АДК",
+                "id": "AdcEnemy", "name": "AdcEnemy", "name_ru": "Вражеский АДК",
                 "roles": ["Marksman"], "lanes": ["ad"], "damage_type": "Physical",
             },
         ]
@@ -639,55 +647,107 @@ class RecommendationRegressionTests(unittest.TestCase):
             }
             for name in core + [boot]
         }
-        role_builds = {
-            ("Vayne", role): {
-                "champion_id": "Vayne",
-                "role": role,
-                "items": core,
-                "boot_name": boot,
-                "source": "wildriftcore.com",
-                "source_url": f"https://example.invalid/vayne/{role}",
-            }
-            for role in ("Барон", "ADC")
-        }
+        role_builds = {}
+        for cid, roles in {
+            "Vayne": ("Барон", "ADC"),
+            "BaronAlt": ("Барон",),
+            "AdcAlt": ("ADC",),
+        }.items():
+            for role in roles:
+                role_builds[(cid, role)] = {
+                    "champion_id": cid,
+                    "role": role,
+                    "items": core,
+                    "boot_name": boot,
+                    "source": "wildriftcore.com",
+                    "source_url": f"https://example.invalid/{cid}/{role}",
+                }
+
         snapshot = make_snapshot(
             champions,
             matchups={
-                ("Vayne", "TankEnemy"): [("Барон", 3.0), ("ADC", 2.0)],
-                ("Vayne", "AdcEnemy"): [("ADC", 1.0)],
-            },
-            tiers={
-                ("Vayne", "Барон"): "A",
-                ("Vayne", "ADC"): "A",
-            },
-            stats={
-                ("Vayne", "top", "all"): {"win_rate": 51.0, "pick_rate": 1.99},
-                ("Vayne", "ad", "all"): {"win_rate": 50.0, "pick_rate": 5.44},
+                # Vayne is #1 with the same +4 draft sum in both branches.
+                ("Vayne", "TankEnemy"): [("Барон", 2.0), ("ADC", 2.0)],
+                ("Vayne", "AdcEnemy"): [("Барон", 2.0), ("ADC", 2.0)],
+                # Losing Vayne hurts Baron much more: +4 -> +1.
+                ("BaronAlt", "TankEnemy"): [("Барон", 1.0)],
+                # ADC has an almost-as-good replacement: +4 -> +3.
+                ("AdcAlt", "TankEnemy"): [("ADC", 2.0)],
+                ("AdcAlt", "AdcEnemy"): [("ADC", 1.0)],
             },
             items=items,
             role_builds=role_builds,
         )
 
-        self.assertEqual(
-            engine._primary_recommendation_role(
-                snapshot["champions_by_id"]["Vayne"], snapshot
-            ),
-            "ADC",
+        enemies = [("TankEnemy", "Барон"), ("AdcEnemy", "ADC")]
+        grid = engine.recommend_pick_grid(enemies, limit=3, snapshot=snapshot)
+        baron_ids = [row["champion"]["id"] for row in grid["Барон"]]
+        adc_ids = [row["champion"]["id"] for row in grid["ADC"]]
+
+        self.assertEqual(baron_ids[0], "Vayne")
+        self.assertEqual(adc_ids[0], "AdcAlt")
+        all_ids = [
+            row["champion"]["id"]
+            for role in engine.CANONICAL_ROLES
+            for row in grid[role]
+        ]
+        self.assertEqual(len(all_ids), len(set(all_ids)))
+        self.assertNotIn("Vayne", adc_ids)
+
+    def test_equal_matchup_sum_prefers_more_positive_targets(self):
+        champions = [
+            {"id": "Wide", "name": "Wide", "name_ru": "Wide", "roles": ["Fighter"], "lanes": ["top"], "damage_type": "Physical"},
+            {"id": "Spike", "name": "Spike", "name_ru": "Spike", "roles": ["Fighter"], "lanes": ["top"], "damage_type": "Physical"},
+            {"id": "EnemyA", "name": "EnemyA", "name_ru": "EnemyA", "roles": ["Tank"], "lanes": ["top"], "damage_type": "Physical"},
+            {"id": "EnemyB", "name": "EnemyB", "name_ru": "EnemyB", "roles": ["Tank"], "lanes": ["top"], "damage_type": "Physical"},
+        ]
+        core = [
+            "Blade of the Ruined King", "Wit's End", "Terminus",
+            "Phantom Dancer", "Guardian Angel",
+        ]
+        boot = "Berserker's Greaves"
+        items = {
+            name: {
+                "name": name,
+                "category": "Boots" if name == boot else "Physical",
+                "tier": "Upgraded",
+                "stats_json": "[]",
+                "effect_en": "",
+            }
+            for name in core + [boot]
+        }
+        role_builds = {
+            (cid, "Барон"): {
+                "champion_id": cid,
+                "role": "Барон",
+                "items": core,
+                "boot_name": boot,
+                "source": "wildriftcore.com",
+                "source_url": f"https://example.invalid/{cid}",
+            }
+            for cid in ("Wide", "Spike")
+        }
+        snapshot = make_snapshot(
+            champions,
+            matchups={
+                ("Wide", "EnemyA"): [("Барон", 1.0)],
+                ("Wide", "EnemyB"): [("Барон", 1.0)],
+                ("Spike", "EnemyA"): [("Барон", 2.0)],
+                ("Spike", "EnemyB"): [("Барон", 0.0)],
+            },
+            items=items,
+            role_builds=role_builds,
         )
-        adc = engine.recommend_picks(
-            "ADC",
-            [("TankEnemy", "Барон"), ("AdcEnemy", "ADC")],
-            limit=8,
-            snapshot=snapshot,
-        )
-        top = engine.recommend_picks(
+
+        rows = engine.recommend_picks(
             "Барон",
-            [("TankEnemy", "Барон"), ("AdcEnemy", "ADC")],
-            limit=8,
+            [("EnemyA", "Барон"), ("EnemyB", "")],
+            limit=2,
             snapshot=snapshot,
         )
-        self.assertIn("Vayne", [row["champion"]["id"] for row in adc])
-        self.assertNotIn("Vayne", [row["champion"]["id"] for row in top])
+        self.assertEqual([row["champion"]["id"] for row in rows], ["Wide", "Spike"])
+        self.assertEqual(rows[0]["matchup_sum"], rows[1]["matchup_sum"])
+        self.assertGreater(rows[0]["coverage_count"], rows[1]["coverage_count"])
 
     def test_missing_role_build_is_rejected_instead_of_wrpocket_fallback(self):
         champions = [
@@ -1555,7 +1615,7 @@ class BundledDatabaseSmokeTests(unittest.TestCase):
             "Two different upgraded items collapsed to the same trusted icon URL",
         )
 
-    def test_real_database_pick_list_is_monotonic_by_visible_score(self):
+    def test_real_database_pick_grid_is_globally_unique_and_role_ordered(self):
         enemies = [
             ("Irelia", "Барон"),
             ("Hecarim", "Лес"),
@@ -1569,10 +1629,21 @@ class BundledDatabaseSmokeTests(unittest.TestCase):
             if db.resolve_snapshot_champion(self.snapshot, name)
         ]
         self.assertGreaterEqual(len(available), 4)
-        results = engine.recommend_picks("Барон", available, limit=8, snapshot=self.snapshot)
-        self.assertGreaterEqual(len(results), 3)
-        scores = [float(row.get("score") or 0.0) for row in results]
-        self.assertEqual(scores, sorted(scores, reverse=True))
+        grid = engine.recommend_pick_grid(available, limit=8, snapshot=self.snapshot)
+
+        all_ids = []
+        for role in engine.CANONICAL_ROLES:
+            rows = grid[role]
+            self.assertGreaterEqual(len(rows), 3)
+            all_ids.extend(row["champion"]["id"] for row in rows)
+            keys = [engine._role_draft_rank_key(row) for row in rows]
+            self.assertEqual(keys, sorted(keys, reverse=True))
+
+        self.assertEqual(
+            len(all_ids),
+            len(set(all_ids)),
+            "A champion appeared in more than one recommendation branch",
+        )
 
     def test_real_database_top_picks_do_not_render_six_empty_item_slots(self):
         enemies = [
