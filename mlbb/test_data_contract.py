@@ -83,25 +83,25 @@ class DataContractTests(unittest.TestCase):
         self.assertAlmostEqual(edges[("1", "2")], 0.024)
         self.assertAlmostEqual(edges[("1", "3")], -0.017)
 
-    def test_counter_parser_preserves_signed_candidate_to_target_edge(self):
+    def test_counter_parser_preserves_main_to_sub_direction(self):
         payload = {"data": {"records": [{"data": {
             "main_heroid": 17,
             "sub_hero": [
                 {"heroid": 1, "increase_win_rate": 0.025},
                 {"heroid": 2, "increase_win_rate": -0.011633},
             ],
-            "sub_hero_last": [{"heroid": 3, "increase_win_rate": -0.015}],
+            "sub_hero_last": [{"heroid": 3, "increase_win_rate": 0.015}],
         }}]}}
         rows = parse_counter_evidence(payload, "17", rank_segment="mythic")
         edges = {(row.champion_id, row.enemy_id): row.raw_edge for row in rows}
-        self.assertAlmostEqual(edges[("1", "17")], 0.025)
-        self.assertAlmostEqual(edges[("2", "17")], -0.011633)
-        self.assertAlmostEqual(edges[("3", "17")], -0.015)
-        self.assertNotIn(("17", "1"), edges)
-        self.assertNotIn(("17", "2"), edges)
-        self.assertNotIn(("17", "3"), edges)
+        self.assertAlmostEqual(edges[("17", "1")], 0.025)
+        self.assertAlmostEqual(edges[("17", "2")], -0.011633)
+        self.assertAlmostEqual(edges[("17", "3")], -0.015)
+        self.assertNotIn(("1", "17"), edges)
+        self.assertNotIn(("2", "17"), edges)
+        self.assertNotIn(("3", "17"), edges)
 
-    def test_runtime_academy_parser_does_not_abs_negative_subhero(self):
+    def test_runtime_rone_parser_keeps_main_hero_direction(self):
         payload = {"data": {"records": [{"data": {
             "main_heroid": 17,
             "sub_hero": [
@@ -111,10 +111,10 @@ class DataContractTests(unittest.TestCase):
         }}]}}
         rows = parse_rone_academy_counter_raw(payload, "17")
         edges = {(row["champion_id"], row["enemy_id"]): row["raw_edge"] for row in rows}
-        self.assertAlmostEqual(edges[("39", "17")], -0.011633)
-        self.assertAlmostEqual(edges[("20", "17")], 0.048121)
-        self.assertNotIn(("17", "39"), edges)
-        self.assertNotIn(("17", "20"), edges)
+        self.assertAlmostEqual(edges[("17", "39")], -0.011633)
+        self.assertAlmostEqual(edges[("17", "20")], 0.048121)
+        self.assertNotIn(("39", "17"), edges)
+        self.assertNotIn(("20", "17"), edges)
 
 
 if __name__ == "__main__":
