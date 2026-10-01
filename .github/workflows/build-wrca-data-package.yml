@@ -43,9 +43,14 @@ jobs:
           URL="$(python -c 'import json; print(json.load(open("wrca_data/latest.json", encoding="utf-8"))["download_url"])')"
           SHA="$(python -c 'import json; print(json.load(open("wrca_data/latest.json", encoding="utf-8"))["sha256"])')"
 
-          curl --fail --location --retry 3 --retry-all-errors "$URL" -o "$CURRENT_ZIP"
+          if ! curl --fail --location --retry 2 --retry-all-errors "$URL" -o "$CURRENT_ZIP"; then
+            echo "Initial WRCA release is not published yet; bootstrapping from the last verified legacy package."
+            URL="$(python -c 'import json; print(json.load(open("wlca_data/latest.json", encoding="utf-8"))["download_url"])')"
+            SHA="$(python -c 'import json; print(json.load(open("wlca_data/latest.json", encoding="utf-8"))["sha256"])')"
+            curl --fail --location --retry 3 --retry-all-errors "$URL" -o "$CURRENT_ZIP"
+          fi
           echo "$SHA  $CURRENT_ZIP" | sha256sum --check --status || {
-            echo "::error::Current WRCA release SHA-256 mismatch."
+            echo "::error::Current WRCA bootstrap package SHA-256 mismatch."
             exit 1
           }
 
