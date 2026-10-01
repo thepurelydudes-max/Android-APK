@@ -241,6 +241,7 @@ MLBBDEX_ITEMS = f"{MLBBDEX_BASE}/items"
 MLBBDEX_PATCHES = f"{MLBBDEX_BASE}/patches"
 MLBBDEX_RANKINGS = f"{MLBBDEX_BASE}/rankings"
 MLBBHUB_PATCH_NOTES = "https://mlbbhub.com/patch-notes"
+MLBBHUB_MATCHUPS = "https://mlbbhub.com/matchups"
 RONE_EQUIPMENT_EXPANDED = f"{RONE_BASE}/academy/equipment/expanded"
 RONE_VERSION = f"{RONE_BASE}/academy/meta/version"
 RONE_ACADEMY_HEROES = f"{RONE_BASE}/academy/heroes"
@@ -411,6 +412,105 @@ def parse_mlbbdex_rankings(payload: dict) -> list[dict]:
         })
     return out
 
+
+
+def parse_mlbbhub_matchup_matrix_html(page: str) -> dict:
+    """Parse the current MLBBHub ranked matchup matrix embedded in Next.js data.
+
+    Returns directed percentage-point edges. Positive means the row hero has the
+    advantage over the column hero; negative means the opposite. The matrix is
+    already directional, so MLCA must never swap champion/enemy IDs here.
+    """
+    text = str(page or "")
+    if not text.strip():
+        raise ValueError("MLBBHub matchup page is empty")
+
+    matrix = None
+    for raw in re.findall(
+        r'<script>self\.__next_f\.push\(\[1,"(.*?)"\]\)</script>',
+        text,
+        flags=re.S,
+    ):
+        try:
+            decoded = json.loads('"' + raw + '"')
+        except (TypeError, json.JSONDecodeError):
+            continue
+        marker = '"matrix":'
+        pos = decoded.find(marker)
+        if pos < 0:
+            continue
+        try:
+            matrix, _end = json.JSONDecoder().raw_decode(decoded[pos + len(marker):])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(matrix, dict):
+            break
+
+    if not isinstance(matrix, dict):
+        raise ValueError("MLBBHub matchup matrix payload was not found")
+
+    heroes = matrix.get("heroes") or []
+    edges = matrix.get("edges") or []
+    if not isinstance(heroes, list) or not isinstance(edges, list):
+        raise ValueError("MLBBHub matchup matrix has an invalid shape")
+    size = len(heroes)
+    if size < 100 or len(edges) != size:
+        raise ValueError(f"MLBBHub matchup matrix is incomplete: heroes={size}, rows={len(edges)}")
+    if any(not isinstance(row, list) or len(row) != size for row in edges):
+        raise ValueError("MLBBHub matchup matrix is not square")
+
+    patch_match = re.search(
+        r"Patch\s+([0-9]+\.[0-9]+\.[0-9]+[A-Za-z]?)\s+ranked\s+data",
+        text,
+        flags=re.I,
+    )
+    patch = patch_match.group(1) if patch_match else ""
+
+    rows: list[dict] = []
+    for i, champion in enumerate(heroes):
+        if not isinstance(champion, dict):
+            continue
+        champion_name = clean(str(champion.get("name") or ""))
+        champion_slug = clean(str(champion.get("slug") or ""))
+        if not (champion_name or champion_slug):
+            continue
+        for j, raw_edge in enumerate(edges[i]):
+            if i == j:
+                continue
+            try:
+                edge = float(raw_edge or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if abs(edge) < 1e-12:
+                continue
+            enemy = heroes[j] if j < size and isinstance(heroes[j], dict) else {}
+            enemy_name = clean(str(enemy.get("name") or ""))
+            enemy_slug = clean(str(enemy.get("slug") or ""))
+            if not (enemy_name or enemy_slug):
+                continue
+            rows.append({
+                "champion_name": champion_name,
+                "champion_slug": champion_slug,
+                "enemy_name": enemy_name,
+                "enemy_slug": enemy_slug,
+                "role": "",
+                "raw_edge": edge,
+                "raw_unit": "percentage_points",
+                "evidence_type": "measured:mlbbhub_matrix",
+                "rank_segment": "all",
+                "sample_window": "ranked-current",
+                "confidence": 1.0,
+            })
+
+    if len(rows) < 1500:
+        raise ValueError(f"MLBBHub matchup matrix has too few measured edges: {len(rows)}")
+
+    return {
+        "patch": patch,
+        "heroes": heroes,
+        "rows": rows,
+        "evidence_totals": matrix.get("evidenceTotals") or {},
+    }
 
 
 def parse_rone_academy_lane_filter(payload: dict, lane: str) -> list[str]:
