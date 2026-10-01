@@ -361,6 +361,143 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result[0]["directional_matchup_count"], 1)
         self.assertEqual(result[0]["measured_matchup_count"], 0)
 
+    def test_role_sensitive_exp_direct_counter_breaks_two_vs_one_tie(self):
+        direct = {
+            "role": "EXP",
+            "confirmed_counter_count": 1,
+            "confirmed_threat_count": 0,
+            "confirmed_net": 1,
+            "direct_role_direction": 1,
+            "role_adjusted_net": 2.0,
+            "draft_matchup_sum_pp": 2.97,
+            "known_matchup_count": 1,
+            "measured_matchup_count": 1,
+            "score": 50.0,
+            "tier": "B",
+            "winrate_score": 50.0,
+        }
+        broad = {
+            "role": "EXP",
+            "confirmed_counter_count": 2,
+            "confirmed_threat_count": 0,
+            "confirmed_net": 2,
+            "direct_role_direction": 0,
+            "role_adjusted_net": 2.0,
+            "draft_matchup_sum_pp": 1.76,
+            "known_matchup_count": 2,
+            "measured_matchup_count": 1,
+            "score": 50.0,
+            "tier": "A",
+            "winrate_score": 50.0,
+        }
+        rows = [direct, broad]
+        engine._assign_evidence_fronts(rows)
+        ranked = sorted(rows, key=engine._local_visible_key, reverse=True)
+        self.assertIs(ranked[0], direct)
+
+    def test_role_sensitive_exp_three_team_counters_still_beat_one_direct(self):
+        direct = {
+            "role": "EXP",
+            "confirmed_counter_count": 1,
+            "confirmed_threat_count": 0,
+            "confirmed_net": 1,
+            "direct_role_direction": 1,
+            "role_adjusted_net": 2.0,
+            "draft_matchup_sum_pp": 2.97,
+            "known_matchup_count": 1,
+            "measured_matchup_count": 1,
+            "score": 50.0,
+            "tier": "B",
+            "winrate_score": 50.0,
+        }
+        broad = {
+            "role": "EXP",
+            "confirmed_counter_count": 3,
+            "confirmed_threat_count": 0,
+            "confirmed_net": 3,
+            "direct_role_direction": 0,
+            "role_adjusted_net": 3.0,
+            "draft_matchup_sum_pp": 1.76,
+            "known_matchup_count": 3,
+            "measured_matchup_count": 1,
+            "score": 50.0,
+            "tier": "A",
+            "winrate_score": 50.0,
+        }
+        rows = [direct, broad]
+        engine._assign_evidence_fronts(rows)
+        ranked = sorted(rows, key=engine._local_visible_key, reverse=True)
+        self.assertIs(ranked[0], broad)
+
+    def test_jungle_and_roam_do_not_get_direct_lane_bonus(self):
+        for role in ("Лес", "Роум"):
+            direct = {
+                "role": role,
+                "confirmed_counter_count": 1,
+                "confirmed_threat_count": 0,
+                "confirmed_net": 1,
+                "direct_role_direction": 1,
+                "role_adjusted_net": 1.0,
+                "draft_matchup_sum_pp": 3.5,
+                "known_matchup_count": 1,
+                "measured_matchup_count": 1,
+                "score": 50.0,
+                "tier": "A",
+                "winrate_score": 50.0,
+            }
+            broad = {
+                "role": role,
+                "confirmed_counter_count": 2,
+                "confirmed_threat_count": 0,
+                "confirmed_net": 2,
+                "direct_role_direction": 0,
+                "role_adjusted_net": 2.0,
+                "draft_matchup_sum_pp": 1.5,
+                "known_matchup_count": 2,
+                "measured_matchup_count": 1,
+                "score": 50.0,
+                "tier": "A",
+                "winrate_score": 50.0,
+            }
+            rows = [direct, broad]
+            engine._assign_evidence_fronts(rows)
+            ranked = sorted(rows, key=engine._local_visible_key, reverse=True)
+            self.assertIs(ranked[0], broad)
+
+    def test_mid_direct_matchup_is_half_step_not_full_lane_bonus(self):
+        direct = {
+            "role": "Мид",
+            "confirmed_counter_count": 1,
+            "confirmed_threat_count": 0,
+            "confirmed_net": 1,
+            "direct_role_direction": 1,
+            "role_adjusted_net": 1.5,
+            "draft_matchup_sum_pp": 3.0,
+            "known_matchup_count": 1,
+            "measured_matchup_count": 1,
+            "score": 50.0,
+            "tier": "A",
+            "winrate_score": 50.0,
+        }
+        broad = {
+            "role": "Мид",
+            "confirmed_counter_count": 2,
+            "confirmed_threat_count": 0,
+            "confirmed_net": 2,
+            "direct_role_direction": 0,
+            "role_adjusted_net": 2.0,
+            "draft_matchup_sum_pp": 1.0,
+            "known_matchup_count": 2,
+            "measured_matchup_count": 0,
+            "score": 50.0,
+            "tier": "A",
+            "winrate_score": 50.0,
+        }
+        rows = [direct, broad]
+        engine._assign_evidence_fronts(rows)
+        ranked = sorted(rows, key=engine._local_visible_key, reverse=True)
+        self.assertIs(ranked[0], broad)
+
     def test_pick_excludes_hero_without_selected_role_build(self):
         items = {
             name: {"name": name, "tier": "Upgraded", "category": "Attack"}

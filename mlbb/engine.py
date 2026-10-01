@@ -19,6 +19,17 @@ TIER_SCORE = {"S+": 100.0, "S": 80.0, "A": 60.0, "B": 40.0, "C": 20.0, "D": 0.0}
 TIER_ORDER = {"S+": 6, "S": 5, "A": 4, "B": 3, "C": 2, "D": 1, "": 0}
 CANONICAL_ROLES = ("EXP", "Лес", "Мид", "Голд", "Роум")
 
+# Direct lane pressure matters most on EXP/Gold, somewhat on Mid, and should
+# not be privileged for Jungle/Roam. These are ranking-evidence weights only:
+# they never alter measured pp or invent matchup magnitudes.
+DIRECT_ROLE_EVIDENCE_BONUS = {
+    "EXP": 1.0,
+    "Голд": 1.0,
+    "Мид": 0.5,
+    "Лес": 0.0,
+    "Роум": 0.0,
+}
+
 DRAFT_MATRIX = DraftMatrixEngine()
 
 # MLBB matchup rows use a ±1.5 scale, while the Wild Rift engine uses ±3.
@@ -514,15 +525,29 @@ def _has_valid_role_build(champion_id: str, role_ru: str, snapshot: dict | None 
 _PICK_GRID_CACHE: dict[tuple, dict[str, list[dict]]] = {}
 
 
+def _direct_role_priority(row: dict) -> int:
+    """Extra direct-opponent tie-break only for EXP/Gold."""
+    role = str(row.get("role") or "")
+    if role not in {"EXP", "Голд"}:
+        return 0
+    try:
+        direction = int(row.get("direct_role_direction") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return direction if direction in {-1, 1} else 0
+
+
 def _evidence_dominates(a: dict, b: dict) -> bool:
-    """Pareto dominance over facts we actually know about the selected draft."""
+    """Pareto dominance over factual draft evidence, including role relevance."""
     a_metrics = (
+        float(a.get("role_adjusted_net") or 0.0),
         int(a.get("confirmed_counter_count") or 0),
         -int(a.get("confirmed_threat_count") or 0),
         float(a.get("draft_matchup_sum_pp") or 0.0),
         int(a.get("known_matchup_count") or 0),
     )
     b_metrics = (
+        float(b.get("role_adjusted_net") or 0.0),
         int(b.get("confirmed_counter_count") or 0),
         -int(b.get("confirmed_threat_count") or 0),
         float(b.get("draft_matchup_sum_pp") or 0.0),
@@ -556,9 +581,11 @@ def _assign_evidence_fronts(rows: list[dict]) -> None:
 
 
 def _local_discovery_key(row: dict) -> tuple:
-    """Deterministic evidence-first order for one exact role."""
+    """Role-aware evidence-first order for one exact MLCA role."""
     return (
         -int(row.get("evidence_front") or 0),
+        float(row.get("role_adjusted_net") or 0.0),
+        _direct_role_priority(row),
         int(row.get("confirmed_net") or 0),
         int(row.get("confirmed_counter_count") or 0),
         -int(row.get("confirmed_threat_count") or 0),
@@ -707,6 +734,35 @@ def _rank_role_candidates(
         confirmed_threat_count = len(confirmed_negative)
         confirmed_net = confirmed_counter_count - confirmed_threat_count
 
+        direct_role_cells = [
+            row for row in evidence_cells
+            if str(row.get("enemy_role") or "") == role_ru
+        ]
+        direct_role_cell = None
+        if direct_role_cells:
+            direct_role_cell = max(
+                direct_role_cells,
+                key=lambda row: (
+                    1 if row.get("evidence_type") == "measured" else 0,
+                    abs(float(row.get("edge_pp") or 0.0)),
+                    abs(int(row.get("direction") or 0)),
+                ),
+            )
+        direct_role_direction = (
+            int(direct_role_cell.get("direction") or 0)
+            if direct_role_cell else 0
+        )
+        direct_role_measured_pp = (
+            float(direct_role_cell.get("edge_pp"))
+            if direct_role_cell and direct_role_cell.get("edge_pp") is not None
+            else None
+        )
+        direct_role_known = bool(
+            direct_role_cell and direct_role_direction in {-1, 1}
+        )
+        direct_bonus = float(DIRECT_ROLE_EVIDENCE_BONUS.get(role_ru, 0.0))
+        role_adjusted_net = confirmed_net + direct_bonus * direct_role_direction
+
         measured_positive_strength = sum(
             max(float(row.get("edge_pp") or 0.0), 0.0) for row in measured_cells
         )
@@ -772,6 +828,11 @@ def _rank_role_candidates(
             "confirmed_counter_count": confirmed_counter_count,
             "confirmed_threat_count": confirmed_threat_count,
             "confirmed_net": confirmed_net,
+            "direct_role_direction": direct_role_direction,
+            "direct_role_known": direct_role_known,
+            "direct_role_measured_pp": direct_role_measured_pp,
+            "direct_role_evidence_bonus": direct_bonus,
+            "role_adjusted_net": role_adjusted_net,
             "known_matchup_count": known_count,
             "measured_matchup_count": measured_count,
             "directional_matchup_count": directional_count,
@@ -809,7 +870,7 @@ def _next_role_replacement_gap(
     ranked: dict[str, list[dict]],
     assigned: set[str],
 ) -> tuple:
-    """How much factual draft evidence a role loses if this flex hero moves."""
+    """How much role-aware factual evidence is lost if this flex hero moves."""
     cid = str((candidate.get("champion") or {}).get("id") or "")
     local_rank = max(1, int(candidate.get("local_rank") or 1))
     rows = ranked.get(role, [])
@@ -823,11 +884,14 @@ def _next_role_replacement_gap(
 
     if next_row is None:
         return (
-            float("inf"), float("inf"), float("inf"),
-            float("inf"), float("inf"), float("inf"),
+            float("inf"), float("inf"), float("inf"), float("inf"),
+            float("inf"), float("inf"), float("inf"), float("inf"),
         )
 
     return (
+        float(candidate.get("role_adjusted_net") or 0.0)
+        - float(next_row.get("role_adjusted_net") or 0.0),
+        _direct_role_priority(candidate) - _direct_role_priority(next_row),
         int(candidate.get("confirmed_net") or 0)
         - int(next_row.get("confirmed_net") or 0),
         int(candidate.get("confirmed_counter_count") or 0)
@@ -849,9 +913,11 @@ def _same_rank_conflict_key(
     ranked: dict[str, list[dict]],
     assigned: set[str],
 ) -> tuple:
-    """Place a same-rank flex hero where its evidence profile is most valuable."""
+    """Place a same-rank flex hero where its role-aware evidence is strongest."""
     return (
         -int(candidate.get("evidence_front") or 0),
+        float(candidate.get("role_adjusted_net") or 0.0),
+        _direct_role_priority(candidate),
         int(candidate.get("confirmed_net") or 0),
         int(candidate.get("confirmed_counter_count") or 0),
         -int(candidate.get("confirmed_threat_count") or 0),
