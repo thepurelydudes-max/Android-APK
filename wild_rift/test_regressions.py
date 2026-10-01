@@ -548,7 +548,7 @@ Open this draft in the tool →
 
 
 class RecommendationRegressionTests(unittest.TestCase):
-    def test_visible_total_score_is_the_primary_pick_order(self):
+    def test_matchup_sum_is_primary_over_tier_weighted_score(self):
         champions = [
             {"id": "Malphite", "name": "Malphite", "name_ru": "Мальфит", "roles": ["Tank"], "lanes": ["top"], "damage_type": "Magic"},
             {"id": "Jax", "name": "Jax", "name_ru": "Джакс", "roles": ["Fighter"], "lanes": ["top"], "damage_type": "Physical"},
@@ -601,11 +601,12 @@ class RecommendationRegressionTests(unittest.TestCase):
         results = engine.recommend_picks(
             "Барон", [("Irelia", "Барон")], limit=8, snapshot=snapshot
         )
-        self.assertEqual([row["champion"]["id"] for row in results], ["Malphite", "Jax"])
-        self.assertGreater(results[0]["score"], results[1]["score"])
-        self.assertEqual(
-            [row["score"] for row in results],
-            sorted((row["score"] for row in results), reverse=True),
+        self.assertEqual([row["champion"]["id"] for row in results], ["Jax", "Malphite"])
+        self.assertGreater(results[0]["matchup_sum"], results[1]["matchup_sum"])
+        self.assertGreater(
+            results[1]["score"],
+            results[0]["score"],
+            "Tier/winrate weighted score must not override a stronger matchup sum",
         )
 
     def test_flex_champion_is_allocated_to_only_one_best_branch(self):
