@@ -422,8 +422,9 @@ def _role_draft_rank_key(row: dict) -> tuple:
 
     The draft matrix sum is the primary authority. Coverage only breaks equal
     sums, so +1 +1 ranks above +2 +0 while +3 +0 still beats +1 +1.
-    Existing 60/20/15/5 score, tier and win-rate are retained as later
-    deterministic tie-breakers instead of overriding stronger matchup totals.
+    The user-facing Draft Score follows matchup_sum and coverage_count so it
+    cannot visually contradict the list. The legacy 60/20/15/5 meta score,
+    tier and win-rate are retained only as later deterministic tie-breakers.
     """
     return (
         float(row.get("matchup_sum") or 0.0),
@@ -431,7 +432,7 @@ def _role_draft_rank_key(row: dict) -> tuple:
         float(row.get("raw_positive_strength") or 0.0),
         -int(row.get("negative_count") or 0),
         -float(row.get("raw_negative_strength") or 0.0),
-        float(row.get("score") or 0.0),
+        float(row.get("meta_score") or 0.0),
         float(row.get("matchup_score") or 0.0),
         TIER_ORDER.get(str(row.get("tier") or ""), 0),
         float(row.get("winrate_score") or 0.0),
@@ -512,6 +513,12 @@ def _rank_role_candidates(
             winrate_score=winrate_score,
         )
 
+        raw_matchup_sum = sum(raw_edges)
+        draft_score = DRAFT_MATRIX.draft_score(
+            matchup_sum=raw_matchup_sum,
+            coverage_count=matrix["coverage_count"],
+        )
+
         direct_lane_edges = matrix["direct_lane_edges"]
         lane_hard_loss = any(edge <= -2.0 for edge in direct_lane_edges)
 
@@ -522,7 +529,8 @@ def _rank_role_candidates(
         out.append({
             "champion": cand,
             "role": role_ru,
-            "score": final["score"],
+            "score": draft_score,
+            "meta_score": final["score"],
             "positive": matrix["positive"],
             "negative": matrix["negative"],
             "neutral": matrix["neutral"],
@@ -531,7 +539,7 @@ def _rank_role_candidates(
             "raw_positive_strength": raw_positive_strength,
             "raw_negative_strength": raw_negative_strength,
             "negative_count": negative_count,
-            "matchup_sum": sum(raw_edges),
+            "matchup_sum": raw_matchup_sum,
             "hard_counters": matrix["hard_counters"],
             "coverage_count": matrix["coverage_count"],
             "coverage_total": matrix["coverage_total"],
@@ -598,7 +606,7 @@ def _marginal_role_gap(
         float(candidate.get("matchup_sum") or 0.0) - float(next_row.get("matchup_sum") or 0.0),
         int(candidate.get("coverage_count") or 0) - int(next_row.get("coverage_count") or 0),
         float(candidate.get("raw_positive_strength") or 0.0) - float(next_row.get("raw_positive_strength") or 0.0),
-        float(candidate.get("score") or 0.0) - float(next_row.get("score") or 0.0),
+        float(candidate.get("meta_score") or 0.0) - float(next_row.get("meta_score") or 0.0),
     )
 
 
@@ -626,7 +634,7 @@ def _conflict_role_key(
         int(candidate.get("coverage_count") or 0),
         float(candidate.get("raw_positive_strength") or 0.0),
         -float(candidate.get("raw_negative_strength") or 0.0),
-        float(candidate.get("score") or 0.0),
+        float(candidate.get("meta_score") or 0.0),
         1 if primary_role == role else 0,
         -CANONICAL_ROLES.index(role),
     )
