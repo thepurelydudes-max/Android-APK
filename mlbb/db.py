@@ -90,6 +90,19 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_matchup_evidence_lookup
                 ON matchup_evidence(champion_id,enemy_id,role,rank_segment,source);
+            CREATE TABLE IF NOT EXISTS matchup_directions (
+                champion_id TEXT NOT NULL, enemy_id TEXT NOT NULL,
+                direction INTEGER NOT NULL,
+                evidence_type TEXT NOT NULL DEFAULT 'counter_list',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                patch TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (champion_id,enemy_id,evidence_type,source),
+                CHECK(direction IN (-1,1))
+            );
+            CREATE INDEX IF NOT EXISTS idx_matchup_directions_lookup
+                ON matchup_directions(champion_id,enemy_id,source);
             CREATE TABLE IF NOT EXISTS champion_tiers (
                 champion_id TEXT NOT NULL, role TEXT NOT NULL, tier TEXT NOT NULL,
                 source TEXT NOT NULL, patch TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -501,6 +514,114 @@ def replace_active_matchup_evidence(source: str, rows: Iterable[dict]) -> None:
             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
             clean,
         )
+
+
+def replace_active_matchup_bundle(
+    source: str,
+    evidence_rows: Iterable[dict],
+    direction_rows: Iterable[dict],
+) -> None:
+    """Atomically activate measured pp evidence and direction-only counter facts."""
+    clean_evidence = []
+    for row in evidence_rows:
+        champion_id = str(row.get("champion_id") or "").strip()
+        enemy_id = str(row.get("enemy_id") or "").strip()
+        if not champion_id or not enemy_id or champion_id == enemy_id:
+            continue
+        clean_evidence.append((
+            champion_id,
+            enemy_id,
+            str(row.get("role") or "").strip().casefold(),
+            float(row.get("raw_edge") or 0.0),
+            str(row.get("raw_unit") or "percentage_points"),
+            max(-1.0, min(1.0, float(row.get("normalized_edge") or 0.0))),
+            str(row.get("evidence_type") or "measured"),
+            max(0.0, min(1.0, float(row.get("confidence", 1.0) or 0.0))),
+            str(row.get("rank_segment") or "all"),
+            str(row.get("sample_window") or ""),
+            str(row.get("patch") or ""),
+            source,
+        ))
+
+    clean_directions = []
+    seen_direction_keys: set[tuple[str, str, str]] = set()
+    for row in direction_rows:
+        champion_id = str(row.get("champion_id") or "").strip()
+        enemy_id = str(row.get("enemy_id") or "").strip()
+        try:
+            direction = int(row.get("direction") or 0)
+        except (TypeError, ValueError):
+            continue
+        evidence_type = str(row.get("evidence_type") or "counter_list")
+        key = (champion_id, enemy_id, evidence_type)
+        if (
+            not champion_id
+            or not enemy_id
+            or champion_id == enemy_id
+            or direction not in {-1, 1}
+            or key in seen_direction_keys
+        ):
+            continue
+        seen_direction_keys.add(key)
+        clean_directions.append((
+            champion_id,
+            enemy_id,
+            direction,
+            evidence_type,
+            max(0.0, min(1.0, float(row.get("confidence", 1.0) or 0.0))),
+            str(row.get("patch") or ""),
+            source,
+        ))
+
+    if not clean_evidence:
+        raise ValueError("Refusing to activate matchup bundle without measured evidence")
+    if not clean_directions:
+        raise ValueError("Refusing to activate matchup bundle without counter-list directions")
+
+    with connect() as con:
+        con.execute("DELETE FROM matchup_evidence")
+        con.execute("DELETE FROM matchup_directions")
+        con.executemany(
+            """INSERT OR REPLACE INTO matchup_evidence(
+                champion_id,enemy_id,role,raw_edge,raw_unit,normalized_edge,
+                evidence_type,confidence,rank_segment,sample_window,patch,source,
+                updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            clean_evidence,
+        )
+        con.executemany(
+            """INSERT OR REPLACE INTO matchup_directions(
+                champion_id,enemy_id,direction,evidence_type,confidence,patch,source,
+                updated_at
+            ) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            clean_directions,
+        )
+
+
+def get_matchup_direction(champion_id: str, enemy_id: str, source: str = "") -> int:
+    """Return a direction-only counter fact: +1 favored, -1 unfavored, 0 unknown."""
+    with connect() as con:
+        active_source = source
+        if not active_source:
+            row = con.execute(
+                "SELECT value FROM meta WHERE key='matchup_evidence_source'"
+            ).fetchone()
+            active_source = str(row[0]) if row else ""
+        if active_source:
+            row = con.execute(
+                "SELECT direction FROM matchup_directions "
+                "WHERE champion_id=? AND enemy_id=? AND source=? "
+                "ORDER BY confidence DESC LIMIT 1",
+                (champion_id, enemy_id, active_source),
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT direction FROM matchup_directions "
+                "WHERE champion_id=? AND enemy_id=? "
+                "ORDER BY confidence DESC LIMIT 1",
+                (champion_id, enemy_id),
+            ).fetchone()
+    return int(row[0]) if row else 0
 
 
 def replace_source_item_pools(source: str, rows: Iterable[tuple[str, str, str, int]]) -> None:
@@ -1142,11 +1263,20 @@ def load_runtime_snapshot() -> dict:
                 "FROM matchup_evidence WHERE source=?",
                 (active_matchup_source,),
             ).fetchall()
+            matchup_direction_rows = con.execute(
+                "SELECT champion_id,enemy_id,direction,evidence_type,confidence,patch,source "
+                "FROM matchup_directions WHERE source=?",
+                (active_matchup_source,),
+            ).fetchall()
         else:
             matchup_evidence_rows = con.execute(
                 "SELECT champion_id,enemy_id,role,raw_edge,raw_unit,normalized_edge,"
                 "evidence_type,confidence,rank_segment,sample_window,patch,source "
                 "FROM matchup_evidence"
+            ).fetchall()
+            matchup_direction_rows = con.execute(
+                "SELECT champion_id,enemy_id,direction,evidence_type,confidence,patch,source "
+                "FROM matchup_directions"
             ).fetchall()
         lane_evidence_rows = con.execute(
             "SELECT champion_id,lane,evidence_type,source,source_lane_id,rank_segment,"
@@ -1258,6 +1388,15 @@ def load_runtime_snapshot() -> dict:
         matchup_raw_pp.setdefault(
             (str(row["champion_id"]), str(row["enemy_id"])), []
         ).append((str(row["role"] or ""), pp))
+
+    matchup_directions: dict[tuple[str, str], int] = {}
+    for row in matchup_direction_rows:
+        direction = int(row["direction"] or 0)
+        if direction in {-1, 1}:
+            matchup_directions[
+                (str(row["champion_id"]), str(row["enemy_id"]))
+            ] = direction
+
     lane_evidence: dict[str, list[dict]] = {}
     for row in lane_evidence_rows:
         lane_evidence.setdefault(str(row["champion_id"]), []).append(dict(row))
@@ -1336,6 +1475,7 @@ def load_runtime_snapshot() -> dict:
         "champion_alias_ids": alias_ids,
         "matchups": matchups,
         "matchup_raw_pp": matchup_raw_pp,
+        "matchup_directions": matchup_directions,
         "matchup_contract_version": matchup_contract_version,
         "matchup_edge_scale_pp_p95": matchup_edge_scale_pp_p95,
         "matchup_evidence_source": active_matchup_source,
