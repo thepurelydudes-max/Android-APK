@@ -37,4 +37,34 @@ jobs:
               print(f"{i}. {err}")
           PY
 
-# diagnostics-run-2
+      - name: Probe live counter endpoint direction and coverage
+        working-directory: mlbb
+        run: |
+          python - <<'PY'
+          import json, requests
+          from sources import RONE_HERO_COUNTERS, RONE_PUBLIC_HEROES, fetch_mlbb_patch_info, Net
+          print("PATCH", fetch_mlbb_patch_info(Net(delay=0)))
+          heroes = requests.get(f"{RONE_PUBLIC_HEROES}?size=300&index=1&lang=en", timeout=30).json()
+          records = ((heroes.get("data") or {}).get("records") or [])
+          ids = []
+          for rec in records:
+              row=(rec or {}).get("data") or {}
+              hid=row.get("hero_id") or row.get("heroid")
+              name=(((row.get("hero") or {}).get("data") or {}).get("name") or "")
+              ids.append((str(hid),name))
+          print("PUBLIC HERO RECORDS", len(records), "UNIQUE IDS", len({x[0] for x in ids}), "FIRST", ids[:5], "LAST", ids[-5:])
+          for hid in ("103","8","19","20","130","97"):
+              url=RONE_HERO_COUNTERS.format(hero_id=hid)+"?days=7&rank=all&size=300&index=1&lang=en"
+              payload=requests.get(url,timeout=30).json()
+              rows=((payload.get("data") or {}).get("records") or [])
+              print("COUNTER",hid,"records",len(rows))
+              for rec in rows[:2]:
+                  data=(rec or {}).get("data") or {}
+                  a=data.get("sub_hero") or []
+                  b=data.get("sub_hero_last") or []
+                  print(" main",data.get("main_heroid"),"plus",len(a),"minus",len(b),
+                        "plus_sample",[(x.get("heroid"),x.get("increase_win_rate")) for x in a[:5]],
+                        "minus_sample",[(x.get("heroid"),x.get("increase_win_rate")) for x in b[:5]])
+          PY
+
+# diagnostics-run-3-live-counter-direction
