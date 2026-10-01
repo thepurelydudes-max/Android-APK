@@ -1,0 +1,31 @@
+{
+  "protocol_version": 1,
+  "package_version": "2026.10.01.1",
+  "min_app_version": "3.9.0",
+  "patch": "7.3",
+  "generated_at_utc": "2026-10-01T20:21:39.775004+00:00",
+  "release_tag": "wlca-data-2026.10.01.1",
+  "download_url": "https://github.com/thepurelydudes-max/Android-APK/releases/download/wlca-data-2026.10.01.1/WLCA-data-2026.10.01.1.zip",
+  "size_bytes": 8727984,
+  "sha256": "f11caddfa7e86387bbf8892f669831b8b7e8c28b59996ae0ed2ac6d1e2658755",
+  "manifest_sha256": "9f60ed7e7b4ba67cf004a15ca30435758ebe0ae3ea986df72d2dfb59b5987479",
+  "counts": {
+    "build_cache_champions": 142,
+    "build_page_cache": 142,
+    "champion_icons": 142,
+    "champion_tiers": 241,
+    "champions": 142,
+    "counter_items": 841,
+    "item_icons": 118,
+    "item_pools": 2266,
+    "items": 118,
+    "matchup_cache_champions": 142,
+    "matchup_page_cache": 142,
+    "matchups": 9606,
+    "role_build_champions": 142,
+    "role_build_variants": 678,
+    "role_builds": 226,
+    "stats": 922,
+    "tier_roles": 5
+  }
+}
