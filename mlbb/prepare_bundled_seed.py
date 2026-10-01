@@ -58,6 +58,38 @@ def _audit() -> dict:
                 "SELECT champion_id,enemy_id,raw_edge FROM matchup_evidence"
             ).fetchall()
         ]
+        matchup_sources = [
+            str(row[0]) for row in con.execute(
+                "SELECT DISTINCT source FROM matchup_evidence ORDER BY source"
+            ).fetchall()
+        ]
+        meta = {
+            str(row[0]): str(row[1])
+            for row in con.execute(
+                "SELECT key,value FROM meta WHERE key IN ("
+                "'patch_version','matchup_evidence_source','matchup_direction',"
+                "'matchup_sample_window','matchup_patch','matchup_updated_at')"
+            ).fetchall()
+        }
+        sentinel_pairs = (
+            ("Paquito", "Karina"),
+            ("Minotaur", "Lolita"),
+            ("Obsidia", "Benedetta"),
+            ("Obsidia", "Aldous"),
+        )
+        direction_sentinels = {}
+        for champion_name, enemy_name in sentinel_pairs:
+            row = con.execute(
+                "SELECT e.raw_edge FROM matchup_evidence e "
+                "JOIN champions c ON c.id=e.champion_id "
+                "JOIN champions x ON x.id=e.enemy_id "
+                "WHERE lower(c.name)=lower(?) AND lower(x.name)=lower(?) "
+                "ORDER BY e.confidence DESC LIMIT 1",
+                (champion_name, enemy_name),
+            ).fetchone()
+            direction_sentinels[f"{champion_name}->{enemy_name}"] = (
+                float(row[0]) if row is not None else None
+            )
 
     evidence_by_pair = {(a, b): edge for a, b, edge in evidence_rows}
     mirror_checked = 0
@@ -187,6 +219,9 @@ def _audit() -> dict:
         "matchup_mean_magnitude_residual": mirror_mean_residual,
         "matchup_id_positive_correlation": id_positive_correlation,
         "matchup_positive_share_top": positive_share_top,
+        "matchup_sources": matchup_sources,
+        "matchup_meta": meta,
+        "matchup_direction_sentinels": direction_sentinels,
     }
 
     print(json.dumps({"seed_audit_preview": audit}, ensure_ascii=False, indent=2), flush=True)
@@ -199,6 +234,39 @@ def _audit() -> dict:
         raise RuntimeError(f"Too few finished MLBB items in bundled seed: {counts['items']}")
     if counts["matchups"] < 2500:
         raise RuntimeError(f"Too few MLBB matchup rows in bundled seed: {counts['matchups']}")
+    if meta.get("patch_version") != "2.2.16":
+        raise RuntimeError(
+            "Bundled MLBB patch is not the required live Original Server patch 2.2.16: "
+            f"{meta.get('patch_version') or 'missing'}"
+        )
+    if meta.get("matchup_evidence_source") != "mlbb.rone.public.counters.7d":
+        raise RuntimeError(
+            "Bundled matchup source is not the live 7-day Rone matrix: "
+            f"{meta.get('matchup_evidence_source') or 'missing'}"
+        )
+    if meta.get("matchup_direction") != "main_hero_to_sub_hero":
+        raise RuntimeError(
+            "Bundled matchup direction contract is missing or inverted: "
+            f"{meta.get('matchup_direction') or 'missing'}"
+        )
+    if meta.get("matchup_sample_window") != "7d":
+        raise RuntimeError(
+            f"Bundled matchup sample window is not 7d: {meta.get('matchup_sample_window') or 'missing'}"
+        )
+    if matchup_sources != ["mlbb.rone.public.counters.7d"]:
+        raise RuntimeError(
+            "Stale matchup evidence sources leaked into the bundled seed: "
+            + json.dumps(matchup_sources, ensure_ascii=False)
+        )
+    bad_sentinels = {
+        name: value for name, value in direction_sentinels.items()
+        if value is None or value <= 0.0
+    }
+    if bad_sentinels:
+        raise RuntimeError(
+            "MLBB 2.2.16 matchup direction sanity-check failed: "
+            + json.dumps(bad_sentinels, ensure_ascii=False)
+        )
     if len(numeric_points) >= 50 and abs(id_positive_correlation) > 0.95:
         raise RuntimeError(
             "MLBB matchup signs are implausibly correlated with numeric hero IDs: "
@@ -291,7 +359,7 @@ def main() -> None:
 
     manifest = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "source": "Rone Arena API + MLBBDex; full offline MLCA seed",
+        "source": "Rone Arena 7-day counters + MLBBDex + MLBBHub patch metadata; full offline MLCA seed",
         "patch": db.get_meta("patch_version", ""),
         "last_update": db.get_meta("last_update", ""),
         "database_sha256": hashlib.sha256(bundled_db.read_bytes()).hexdigest(),
