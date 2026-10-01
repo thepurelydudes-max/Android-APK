@@ -194,6 +194,10 @@ def build_resolver(champs: list[dict]):
     # Scrapers that already possess a canonical /champions/<slug> URL must use
     # this strict resolver rather than fuzzy/display-name matching.
     resolve.exact_id = resolve_exact_id
+    # Source discovery must prove that it found the complete current roster.
+    # Without this guard a paginated/partially rendered index can look "complete"
+    # after exposing only its first page (currently 20 cards).
+    resolve.known_ids = frozenset(str(champ["id"]) for champ in champs)
     return resolve
 
 
