@@ -220,12 +220,21 @@ def _snapshot_matchup_pp(snapshot: dict, champion_id: str, enemy_id: str, prefer
 def _matchup_pp(champion_id: str, enemy_id: str, preferred_role: str = "", snapshot: dict | None = None) -> float:
     if snapshot is not None:
         return _snapshot_matchup_pp(snapshot, champion_id, enemy_id, preferred_role)
+    active_source = db.get_meta("matchup_evidence_source", "")
     with db.connect() as con:
-        rows = con.execute(
-            "SELECT role,raw_edge,raw_unit FROM matchup_evidence "
-            "WHERE champion_id=? AND enemy_id=? ORDER BY confidence DESC",
-            (champion_id, enemy_id),
-        ).fetchall()
+        if active_source:
+            rows = con.execute(
+                "SELECT role,raw_edge,raw_unit FROM matchup_evidence "
+                "WHERE champion_id=? AND enemy_id=? AND source=? "
+                "ORDER BY confidence DESC",
+                (champion_id, enemy_id, active_source),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT role,raw_edge,raw_unit FROM matchup_evidence "
+                "WHERE champion_id=? AND enemy_id=? ORDER BY confidence DESC",
+                (champion_id, enemy_id),
+            ).fetchall()
     if not rows:
         return 0.0
     converted = []
