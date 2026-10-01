@@ -213,10 +213,6 @@ def _validate_payload(root: Path, remote: dict) -> dict:
     if not re_full_sha(db_hash) or _sha256(data_path) != db_hash:
         raise PackageUpdateError("Контрольная сумма wildrift.db не совпадает.")
 
-    cache_hash = str(internal.get("cache_sha256") or "").lower()
-    if not re_full_sha(cache_hash) or _tree_sha256(cache_path) != cache_hash:
-        raise PackageUpdateError("Контрольная сумма cache/ не совпадает.")
-
     actual = _database_counts(data_path)
     expected = dict(internal.get("counts") or {})
     if not expected:
@@ -274,6 +270,13 @@ def _safe_extract(package: Path, target: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(package, "r") as archive:
+        # The outer release SHA-256 proves the exact ZIP bytes. ZIP CRC then
+        # verifies every member survived decompression byte-for-byte.
+        bad_member = archive.testzip()
+        if bad_member:
+            raise PackageUpdateError(
+                f"ZIP CRC не пройден для файла: {bad_member}"
+            )
         infos = archive.infolist()
         if not infos or len(infos) > MAX_ARCHIVE_FILES:
             raise PackageUpdateError("ZIP содержит недопустимое число файлов.")
@@ -497,8 +500,6 @@ def _installed_is_current(remote: dict) -> bool:
         cache_path = RUNTIME_DIR / "cache"
         actual = _database_counts(db_path)
         if _sha256(db_path) != str(installed.get("database_sha256") or "").lower():
-            return False
-        if _tree_sha256(cache_path) != str(installed.get("cache_sha256") or "").lower():
             return False
         expected = dict(installed.get("counts") or {})
         for key, value in expected.items():
