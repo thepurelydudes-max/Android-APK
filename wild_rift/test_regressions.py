@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from collections import Counter
 
@@ -16,6 +20,7 @@ import engine
 from draft_matrix_engine import DraftEdge, DraftMatrixEngine
 import sources
 import updater
+import package_updater
 import paths
 from paths import ensure_initial_data
 
@@ -617,6 +622,72 @@ class AtomicUpdateRegressionTests(unittest.TestCase):
             self.assertEqual(live_db.read_bytes(), b"NEW")
             self.assertTrue((live_cache / "new.txt").is_file())
             self.assertFalse((live_cache / "old.txt").exists())
+
+
+class GitHubPackageUpdaterRegressionTests(unittest.TestCase):
+    def test_package_version_comparison(self):
+        self.assertLess(
+            package_updater._version_tuple("3.8.2"),
+            package_updater._version_tuple("3.9.0"),
+        )
+        self.assertEqual(
+            package_updater._version_tuple("3.9.0"),
+            (3, 9, 0),
+        )
+
+    def test_safe_extract_rejects_path_traversal(self):
+        with tempfile.TemporaryDirectory(prefix="wlca-zip-") as folder:
+            root = Path(folder)
+            archive = root / "bad.zip"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("../escape.txt", "bad")
+            with self.assertRaises(package_updater.PackageUpdateError):
+                package_updater._safe_extract(archive, root / "stage")
+            self.assertFalse((root / "escape.txt").exists())
+
+    def test_interrupted_promotion_restores_previous_working_set(self):
+        with tempfile.TemporaryDirectory(prefix="wlca-promote-") as folder:
+            root = Path(folder)
+            old_values = {
+                "RUNTIME_DIR": package_updater.RUNTIME_DIR,
+                "UPDATE_DIR": package_updater.UPDATE_DIR,
+                "PART_PATH": package_updater.PART_PATH,
+                "STAGE_DIR": package_updater.STAGE_DIR,
+                "BACKUP_DIR": package_updater.BACKUP_DIR,
+                "RECOVERY_MARKER": package_updater.RECOVERY_MARKER,
+                "INSTALLED_MANIFEST": package_updater.INSTALLED_MANIFEST,
+            }
+            try:
+                package_updater.RUNTIME_DIR = root
+                package_updater.UPDATE_DIR = root / "github-update"
+                package_updater.PART_PATH = package_updater.UPDATE_DIR / "WLCA-data.zip.part"
+                package_updater.STAGE_DIR = package_updater.UPDATE_DIR / "stage"
+                package_updater.BACKUP_DIR = package_updater.UPDATE_DIR / "rollback"
+                package_updater.RECOVERY_MARKER = package_updater.UPDATE_DIR / "promotion.json"
+                package_updater.INSTALLED_MANIFEST = root / "data" / "package_manifest.json"
+
+                live_db = root / "data" / "wildrift.db"
+                live_cache = root / "cache"
+                backup_db = package_updater.BACKUP_DIR / "data" / "wildrift.db"
+                backup_cache = package_updater.BACKUP_DIR / "cache"
+                live_db.parent.mkdir(parents=True)
+                live_cache.mkdir(parents=True)
+                backup_db.parent.mkdir(parents=True)
+                backup_cache.mkdir(parents=True)
+                live_db.write_bytes(b"NEW")
+                (live_cache / "new.txt").write_text("new", encoding="utf-8")
+                backup_db.write_bytes(b"OLD")
+                (backup_cache / "old.txt").write_text("old", encoding="utf-8")
+                package_updater.RECOVERY_MARKER.parent.mkdir(parents=True, exist_ok=True)
+                package_updater.RECOVERY_MARKER.write_text("{}", encoding="utf-8")
+
+                self.assertTrue(package_updater.recover_interrupted_update())
+                self.assertEqual(live_db.read_bytes(), b"OLD")
+                self.assertTrue((live_cache / "old.txt").is_file())
+                self.assertFalse(package_updater.RECOVERY_MARKER.exists())
+            finally:
+                for name, value in old_values.items():
+                    setattr(package_updater, name, value)
 
 
 class RecommendationRegressionTests(unittest.TestCase):
