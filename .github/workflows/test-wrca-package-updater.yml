@@ -1,0 +1,59 @@
+name: Test WRCA GitHub Package Updater
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".test-wrca-package-updater-trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "requests>=2.32.0"
+      - name: Install current GitHub data package into disposable runtime
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/wrca_runtime
+          FLET_ASSETS_DIR: ${{ github.workspace }}/wild_rift/assets
+        run: |
+          set -euo pipefail
+          cd wild_rift
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import paths
+          paths.ensure_initial_data()
+          import package_updater
+
+          events = []
+          summary = package_updater.update_all(events.append, "ru")
+          print("\n".join(events))
+          print(json.dumps(summary, ensure_ascii=False, indent=2))
+          manifest = json.loads(
+              (paths.RUNTIME_DIR / "data" / "package_manifest.json").read_text(encoding="utf-8")
+          )
+          assert manifest["protocol_version"] == 1
+          remote = package_updater._fetch_latest(__import__("requests").Session())
+          assert manifest["package_version"] == remote["package_version"]
+          counts = package_updater._database_counts(paths.RUNTIME_DIR / "data" / "wildrift.db")
+          assert counts["champions"] == 142
+          assert counts["build_cache_champions"] == 142
+          assert counts["matchup_cache_champions"] == 142
+
+          # Second check must not download/reinstall the same package.
+          summary2 = package_updater.update_all(events.append, "ru")
+          assert summary2["already_current"] is True
+          assert summary2["downloaded"] is False
+          print("SECOND_CHECK:", json.dumps(summary2, ensure_ascii=False))
+          PY
