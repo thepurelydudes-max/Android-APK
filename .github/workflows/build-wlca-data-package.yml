@@ -123,6 +123,10 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The package source restoration intentionally modifies tracked assets
+          # in the runner. Drop those temporary changes before rebasing the tiny
+          # latest.json pointer commit; dist/ remains untracked and intact.
+          git reset --hard HEAD
           git fetch origin main
           git rebase origin/main
           cp dist/wlca-data/latest.json wlca_data/latest.json
