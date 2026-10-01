@@ -608,6 +608,87 @@ class RecommendationRegressionTests(unittest.TestCase):
             sorted((row["score"] for row in results), reverse=True),
         )
 
+    def test_flex_champion_is_recommended_only_in_primary_branch(self):
+        champions = [
+            {
+                "id": "Vayne", "name": "Vayne", "name_ru": "Вейн",
+                "roles": ["Marksman", "Assassin"],
+                "lanes": ["ad", "top"], "damage_type": "Physical",
+            },
+            {
+                "id": "TankEnemy", "name": "TankEnemy", "name_ru": "Танк",
+                "roles": ["Tank"], "lanes": ["top"], "damage_type": "Physical",
+            },
+            {
+                "id": "AdcEnemy", "name": "AdcEnemy", "name_ru": "АДК",
+                "roles": ["Marksman"], "lanes": ["ad"], "damage_type": "Physical",
+            },
+        ]
+        core = [
+            "Blade of the Ruined King", "Wit's End", "Terminus",
+            "Phantom Dancer", "Guardian Angel",
+        ]
+        boot = "Berserker's Greaves"
+        items = {
+            name: {
+                "name": name,
+                "category": "Boots" if name == boot else "Physical",
+                "tier": "Upgraded",
+                "stats_json": "[]",
+                "effect_en": "",
+            }
+            for name in core + [boot]
+        }
+        role_builds = {
+            ("Vayne", role): {
+                "champion_id": "Vayne",
+                "role": role,
+                "items": core,
+                "boot_name": boot,
+                "source": "wildriftcore.com",
+                "source_url": f"https://example.invalid/vayne/{role}",
+            }
+            for role in ("Барон", "ADC")
+        }
+        snapshot = make_snapshot(
+            champions,
+            matchups={
+                ("Vayne", "TankEnemy"): [("Барон", 3.0), ("ADC", 2.0)],
+                ("Vayne", "AdcEnemy"): [("ADC", 1.0)],
+            },
+            tiers={
+                ("Vayne", "Барон"): "A",
+                ("Vayne", "ADC"): "A",
+            },
+            stats={
+                ("Vayne", "top", "all"): {"win_rate": 51.0, "pick_rate": 1.99},
+                ("Vayne", "ad", "all"): {"win_rate": 50.0, "pick_rate": 5.44},
+            },
+            items=items,
+            role_builds=role_builds,
+        )
+
+        self.assertEqual(
+            engine._primary_recommendation_role(
+                snapshot["champions_by_id"]["Vayne"], snapshot
+            ),
+            "ADC",
+        )
+        adc = engine.recommend_picks(
+            "ADC",
+            [("TankEnemy", "Барон"), ("AdcEnemy", "ADC")],
+            limit=8,
+            snapshot=snapshot,
+        )
+        top = engine.recommend_picks(
+            "Барон",
+            [("TankEnemy", "Барон"), ("AdcEnemy", "ADC")],
+            limit=8,
+            snapshot=snapshot,
+        )
+        self.assertIn("Vayne", [row["champion"]["id"] for row in adc])
+        self.assertNotIn("Vayne", [row["champion"]["id"] for row in top])
+
     def test_missing_role_build_is_rejected_instead_of_wrpocket_fallback(self):
         champions = [
             {"id": "Malphite", "name": "Malphite", "name_ru": "Мальфит", "roles": ["Tank"], "lanes": ["top"], "damage_type": "Magic"},
@@ -1560,6 +1641,34 @@ class DraftMatrixEngineRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(result["coverage_score"], 100.0 / 3.0, places=5)
         # Weighted edge: (3/3 * 2) / 6 = 1/3 -> score 66.666...
         self.assertAlmostEqual(result["matchup_score"], 200.0 / 3.0, places=5)
+
+    def test_two_strong_counters_beat_five_weaker_positives_by_sum(self):
+        matrix = DraftMatrixEngine()
+        two_strong = matrix.analyze_row([
+            DraftEdge("a", "A", "", 2.5, 1.0),
+            DraftEdge("b", "B", "", 2.5, 1.0),
+            DraftEdge("c", "C", "", 0.0, 1.0),
+            DraftEdge("d", "D", "", 0.0, 1.0),
+            DraftEdge("e", "E", "", 0.0, 1.0),
+        ])
+        five_weak = matrix.analyze_row([
+            DraftEdge(str(i), f"E{i}", "", 0.8, 1.0)
+            for i in range(5)
+        ])
+        self.assertEqual(two_strong["coverage_count"], 2)
+        self.assertEqual(five_weak["coverage_count"], 5)
+        self.assertGreater(
+            two_strong["positive_strength"],
+            five_weak["positive_strength"],
+        )
+        self.assertGreater(
+            two_strong["coverage_score"],
+            five_weak["coverage_score"],
+        )
+        self.assertGreater(
+            two_strong["matchup_score"],
+            five_weak["matchup_score"],
+        )
 
     def test_inverse_matrix_edge_penalizes_candidate(self):
         matrix = DraftMatrixEngine()
