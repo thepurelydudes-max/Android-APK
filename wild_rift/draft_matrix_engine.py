@@ -133,14 +133,17 @@ class DraftMatrixEngine:
         avg_edge = max(-1.0, min(1.0, avg_edge))
         matchup_score = 50.0 + 50.0 * avg_edge
 
-        # Coverage answers a different question from matchup strength:
-        # "what share of this draft do I actually beat?" The direct lane target
-        # uses the same role weight as MATCHUP so a +3 against a random support
-        # cannot equal a +3 against the user's lane opponent.
+        # The old coverage component counted positive matchups, which could
+        # rank five tiny advantages above two genuinely strong counter matchups.
+        # 3.7.14 scores positive coverage by *strength sum* instead: every
+        # positive edge contributes its actual magnitude (with the same direct
+        # lane weight used by MATCHUP). Therefore +3 +2 beats five weaker
+        # positives whose total edge is smaller.
         coverage_score = (
-            100.0 * positive_weight / total_weight
+            100.0 * positive_strength / (3.0 * total_weight)
             if total_weight > 0 else 0.0
         )
+        coverage_score = max(0.0, min(100.0, coverage_score))
 
         return {
             "matchup_score": matchup_score,
