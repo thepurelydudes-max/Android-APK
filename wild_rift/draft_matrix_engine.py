@@ -166,6 +166,23 @@ class DraftMatrixEngine:
             "matrix_row": matrix_row,
         }
 
+    @staticmethod
+    def draft_score(matchup_sum: float, coverage_count: int) -> float:
+        """User-facing draft score aligned with the actual recommendation order.
+
+        The visible score must never contradict the first two ranking authorities:
+        raw matchup sum first, positive target coverage second. A full point of
+        matchup_sum is deliberately worth more than the entire possible 0..5
+        coverage spread, so coverage can only break equal matchup sums.
+
+        Formula:
+            50 + 3 * matchup_sum + 0.4 * coverage_count
+
+        The result is clamped to 0..100 for a stable UI scale.
+        """
+        value = 50.0 + 3.0 * float(matchup_sum) + 0.4 * max(0, int(coverage_count))
+        return max(0.0, min(100.0, value))
+
     def final_score(
         self,
         *,
