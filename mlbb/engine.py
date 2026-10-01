@@ -407,25 +407,43 @@ def _has_valid_role_build(champion_id: str, role_ru: str, snapshot: dict | None 
     return len(items) >= 3 or (len(items) >= 2 and bool(boot))
 
 
-def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8, snapshot: dict | None = None) -> list[dict]:
-    """Recommend from the ten strongest literal draft-matchup rows.
+_PICK_GRID_CACHE: dict[tuple, dict[str, list[dict]]] = {}
 
-    Stage 1 is intentionally pure: every selected enemy contributes its raw
-    percentage-point edge and the ten greatest net sums become the candidate
-    pool.  The visible order remains primarily the literal net matchup sum.
-    The established 60/20/15/5 model (matchup, strength-aware coverage, tier
-    and role win rate) is retained only as a tie-breaker inside that pool.
+
+def _local_discovery_key(row: dict) -> tuple:
+    """Preserve MLCA 2.1.2 stage-1 candidate discovery exactly."""
+    return (
+        float(row.get("draft_matchup_sum_pp") or 0.0),
+        float(row.get("draft_matchup_score") or 0.0),
+        float(row.get("positive_strength_pp") or 0.0),
+    )
+
+
+def _local_visible_key(row: dict) -> tuple:
+    """Preserve MLCA 2.1.2 visible ordering inside each role."""
+    return (
+        float(row.get("draft_matchup_sum_pp") or 0.0),
+        float(row.get("score") or 0.0),
+        float(row.get("coverage_score") or 0.0),
+        not bool(row.get("lane_hard_loss", False)),
+        TIER_ORDER.get(str(row.get("tier") or ""), 0),
+        float(row.get("winrate_score") or 0.0),
+    )
+
+
+def _rank_role_candidates(
+    role_ru: str,
+    enemy_objs: list[tuple[dict, str]],
+    enemy_ids: set[str],
+    snapshot: dict | None = None,
+) -> list[dict]:
+    """Build the complete local ranking for one exact MLCA role.
+
+    The scoring/ranking math is intentionally the same as MLCA 2.1.2.
+    The only difference is that rows after the old visible top-10 are retained
+    so the global flex allocator can promote replacements when duplicates are
+    removed from another role.
     """
-    raw_enemy_objs: list[tuple[dict, str]] = []
-    for name, enemy_role in enemies:
-        champ = _find_champ(name, snapshot)
-        if champ:
-            raw_enemy_objs.append((champ, enemy_role))
-    if not raw_enemy_objs:
-        return []
-
-    enemy_objs = _infer_enemy_roles(raw_enemy_objs, snapshot)
-    enemy_ids = {enemy["id"] for enemy, _enemy_role in enemy_objs if enemy.get("id")}
     stat_lane = ROLE_TO_STAT.get(role_ru, "")
 
     candidate_rows: list[tuple[dict, str, dict | None]] = []
@@ -484,9 +502,9 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
                 weight=1.0,
             ))
 
-        # A visible recommendation must counter at least one selected opponent.
-        # Negative and neutral cells still remain in the sum and can pull the
-        # candidate down against the complete five-hero draft.
+        # Keep the MLCA 2.1.2 invariant: a visible recommendation must counter
+        # at least one selected opponent. Negative/neutral cells still remain
+        # in the complete draft sum.
         if not any(float(row.edge) > 0.0 for row in raw_edges):
             continue
 
@@ -525,6 +543,7 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
 
         out.append({
             "champion": cand,
+            "role": role_ru,
             "score": components["score"],
             "meta_score": components["score"],
             "draft_matchup_sum": raw_analysis["sum_pp"],
@@ -573,33 +592,216 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             "matrix_row": lane_analysis["matrix_row"],
         })
 
-    # Stage 1: matrix discovery.  Meta strength cannot sneak a hero into the
-    # recommendation table if its literal matchup sum is outside the best ten.
-    shortlist = sorted(
-        out,
-        key=lambda x: (
-            x["draft_matchup_sum_pp"],
-            x["draft_matchup_score"],
-            x["positive_strength_pp"],
-        ),
-        reverse=True,
-    )[:10]
+    # Keep the exact old top-10 membership/order first.  Only the tail is new:
+    # it exists solely as a replacement pool for global duplicate removal.
+    discovery = sorted(out, key=_local_discovery_key, reverse=True)
+    old_top = discovery[:10]
+    tail = discovery[10:]
+    old_top.sort(key=_local_visible_key, reverse=True)
+    tail.sort(key=_local_visible_key, reverse=True)
+    ranked = old_top + tail
 
-    # Stage 2: preserve literal draft-matchup strength as the primary visible
-    # order.  Meta/tier/coverage may resolve equal (or numerically identical)
-    # sums, but must never lift a weaker draft counter above a stronger one.
-    shortlist.sort(
-        key=lambda x: (
-            x["draft_matchup_sum_pp"],
-            x["score"],
-            x["coverage_score"],
-            not x.get("lane_hard_loss", False),
-            TIER_ORDER.get(x.get("tier", ""), 0),
-            x["winrate_score"],
-        ),
-        reverse=True,
+    for index, row in enumerate(ranked, start=1):
+        row["local_rank"] = index
+    return ranked
+
+
+def _next_role_replacement_gap(
+    role: str,
+    candidate: dict,
+    ranked: dict[str, list[dict]],
+    assigned: set[str],
+) -> tuple:
+    """Measure how badly one branch degrades if this flex hero is lost."""
+    cid = str((candidate.get("champion") or {}).get("id") or "")
+    local_rank = max(1, int(candidate.get("local_rank") or 1))
+    rows = ranked.get(role, [])
+
+    next_row = None
+    for row in rows[local_rank:]:
+        row_cid = str((row.get("champion") or {}).get("id") or "")
+        if row_cid and row_cid != cid and row_cid not in assigned:
+            next_row = row
+            break
+
+    if next_row is None:
+        return (float("inf"), float("inf"), float("inf"))
+
+    return (
+        float(candidate.get("draft_matchup_sum_pp") or 0.0)
+        - float(next_row.get("draft_matchup_sum_pp") or 0.0),
+        float(candidate.get("score") or 0.0)
+        - float(next_row.get("score") or 0.0),
+        float(candidate.get("coverage_score") or 0.0)
+        - float(next_row.get("coverage_score") or 0.0),
     )
-    return shortlist[:max(0, min(int(limit), 10))]
+
+
+def _same_rank_conflict_key(
+    role: str,
+    candidate: dict,
+    ranked: dict[str, list[dict]],
+    assigned: set[str],
+) -> tuple:
+    """Resolve a same-local-rank flex conflict without changing MLCA scoring.
+
+    User rule:
+      1) same local place -> stronger matchup sum wins;
+      2) same matchup sum -> keep the hero where losing it hurts more;
+      3) remaining fields are deterministic fallbacks only.
+    """
+    return (
+        float(candidate.get("draft_matchup_sum_pp") or 0.0),
+        _next_role_replacement_gap(role, candidate, ranked, assigned),
+        float(candidate.get("coverage_score") or 0.0),
+        -float(candidate.get("negative_strength_pp") or 0.0),
+        float(candidate.get("score") or 0.0),
+        TIER_ORDER.get(str(candidate.get("tier") or ""), 0),
+        float(candidate.get("winrate_score") or 0.0),
+        -CANONICAL_ROLES.index(role),
+    )
+
+
+def _allocate_unique_role_grid(
+    ranked: dict[str, list[dict]],
+    limit: int,
+) -> dict[str, list[dict]]:
+    """Allocate flex heroes globally by their *original* local rank.
+
+    Rank layers are processed in ascending order. Therefore a hero that was
+    originally #3 in Jungle and #4 in EXP is already owned by Jungle before the
+    EXP #4 layer is ever considered. This avoids the immediate-refill edge case
+    found in WRCA 3.7.15 while preserving the same one-hero/one-branch concept.
+    """
+    wanted = max(0, min(int(limit), 10))
+    result: dict[str, list[dict]] = {role: [] for role in CANONICAL_ROLES}
+    assigned: set[str] = set()
+    if wanted == 0:
+        return result
+
+    max_rank = max((len(rows) for rows in ranked.values()), default=0)
+    for rank_index in range(max_rank):
+        claims: dict[str, list[tuple[str, dict]]] = {}
+
+        for role in CANONICAL_ROLES:
+            if len(result[role]) >= wanted:
+                continue
+            rows = ranked.get(role, [])
+            if rank_index >= len(rows):
+                continue
+            row = rows[rank_index]
+            cid = str((row.get("champion") or {}).get("id") or "")
+            if not cid or cid in assigned:
+                continue
+            claims.setdefault(cid, []).append((role, row))
+
+        # Every role contributes at most one candidate on this original layer.
+        # When the same flex hero appears in multiple branches at this same
+        # local rank, resolve only that hero's ownership; unrelated branches
+        # remain independent.
+        for cid, options in claims.items():
+            if cid in assigned:
+                continue
+            available = [
+                (role, row) for role, row in options
+                if len(result[role]) < wanted
+            ]
+            if not available:
+                continue
+
+            if len(available) == 1:
+                winner_role, winner_row = available[0]
+            else:
+                winner_role, winner_row = max(
+                    available,
+                    key=lambda pair: _same_rank_conflict_key(
+                        pair[0], pair[1], ranked, assigned
+                    ),
+                )
+
+            result[winner_role].append(winner_row)
+            assigned.add(cid)
+
+        if all(len(result[role]) >= wanted for role in CANONICAL_ROLES):
+            break
+
+    # Defensive completion: if a thin role lost many flex conflicts, fill it
+    # only with still-unassigned heroes from its own original ranking.
+    for role in CANONICAL_ROLES:
+        if len(result[role]) >= wanted:
+            continue
+        for row in ranked.get(role, []):
+            cid = str((row.get("champion") or {}).get("id") or "")
+            if not cid or cid in assigned:
+                continue
+            result[role].append(row)
+            assigned.add(cid)
+            if len(result[role]) >= wanted:
+                break
+
+    return result
+
+
+def recommend_pick_grid(
+    enemies: list[tuple[str, str]],
+    limit: int = 8,
+    snapshot: dict | None = None,
+) -> dict[str, list[dict]]:
+    """Return five globally unique MLCA recommendation branches."""
+    raw_enemy_objs: list[tuple[dict, str]] = []
+    for name, enemy_role in enemies:
+        champ = _find_champ(name, snapshot)
+        if champ:
+            raw_enemy_objs.append((champ, enemy_role))
+    if not raw_enemy_objs:
+        return {role: [] for role in CANONICAL_ROLES}
+
+    cache_key = None
+    if snapshot is not None:
+        cache_key = (
+            id(snapshot),
+            tuple(
+                (str(champ.get("id") or ""), str(role or ""))
+                for champ, role in raw_enemy_objs
+            ),
+            max(0, min(int(limit), 10)),
+        )
+        cached = _PICK_GRID_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    enemy_objs = _infer_enemy_roles(raw_enemy_objs, snapshot)
+    enemy_ids = {
+        str(enemy["id"])
+        for enemy, _enemy_role in enemy_objs
+        if enemy.get("id")
+    }
+
+    ranked = {
+        role: _rank_role_candidates(role, enemy_objs, enemy_ids, snapshot)
+        for role in CANONICAL_ROLES
+    }
+    grid = _allocate_unique_role_grid(ranked, limit)
+
+    if cache_key is not None:
+        if len(_PICK_GRID_CACHE) >= 64:
+            _PICK_GRID_CACHE.clear()
+        _PICK_GRID_CACHE[cache_key] = grid
+    return grid
+
+
+def recommend_picks(
+    role_ru: str,
+    enemies: list[tuple[str, str]],
+    limit: int = 8,
+    snapshot: dict | None = None,
+) -> list[dict]:
+    """Return one role from the globally unique five-role recommendation grid."""
+    if role_ru not in CANONICAL_ROLES:
+        return []
+    return list(
+        recommend_pick_grid(enemies, limit=limit, snapshot=snapshot).get(role_ru, [])
+    )
 
 def _generic_threat_tags(enemy: dict) -> set[str]:
     roles = {str(x).casefold() for x in enemy.get("roles", [])}
