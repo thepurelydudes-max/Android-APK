@@ -459,8 +459,8 @@ jobs:
           echo "MLBB Android identity: com.flet.mlbb"
           echo "MLBB versionName=$BUILD_VERSION versionCode=$BUILD_NUMBER"
 
-          for attempt in 1 2; do
-            echo "MLBB APK build attempt $attempt/2"
+          for attempt in 1 2 3 4; do
+            echo "MLBB APK build attempt $attempt/4"
             if flet build apk "$RUNTIME_PROJECT" \
               --project "mlbb" \
               --product "MLBB Counter Assistant" \
@@ -475,14 +475,14 @@ jobs:
               --verbose; then
               break
             fi
-            if [[ "$attempt" -eq 2 ]]; then
-              echo "MLBB APK build failed twice."
+            if [[ "$attempt" -eq 4 ]]; then
+              echo "MLBB APK build failed after four attempts."
               exit 1
             fi
-            echo "Transient Android/Flet failure; cleaning build state and retrying once..."
+            echo "Transient Android/Flet/Maven failure; waiting before retry..."
             rm -rf "$RUNTIME_PROJECT/build" "$GITHUB_WORKSPACE/apk_output/mlbb"
             mkdir -p "$GITHUB_WORKSPACE/apk_output/mlbb"
-            sleep 10
+            sleep 60
           done
 
       - name: Show APK files
