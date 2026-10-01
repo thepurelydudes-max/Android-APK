@@ -1301,8 +1301,22 @@ def update_all(
         db.merge_champion_lanes_from_role_builds("mlbb.rone")
 
     pools = _filter_build_pool([*live_pools, *role_pool_rows], valid_ids, item_by_slug)
-    db.replace_source_item_pools("mlbb.builds", pools)
-    summary["item_pool"] = len(pools)
+    if pools:
+        db.replace_source_item_pools("mlbb.builds", pools)
+        summary["item_pool"] = len(pools)
+    else:
+        # Rone's build endpoints can be temporarily blocked while the existing
+        # offline seed is still perfectly valid. Never erase that last-good pool
+        # merely because a refresh returned no build rows.
+        with db.connect() as con:
+            existing_pool_count = int(con.execute(
+                "SELECT COUNT(*) FROM item_pools WHERE source='mlbb.builds'"
+            ).fetchone()[0])
+        summary["item_pool"] = existing_pool_count
+        if existing_pool_count:
+            summary["errors"].append(
+                "Build item-pool providers unavailable; kept the previous verified pool"
+            )
     summary["role_builds"] = len(role_build_rows)
     summary["role_variants"] = len(role_variant_rows)
     summary["role_build_pages"] = role_pages_ok
