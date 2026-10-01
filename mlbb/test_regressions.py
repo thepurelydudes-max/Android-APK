@@ -222,7 +222,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result[0]["champion"]["id"], "a")
         self.assertTrue(result[0]["matrix_row"])
 
-    def test_pick_ranking_uses_raw_five_enemy_sum(self):
+    def test_pick_ranking_prefers_broader_safer_evidence_over_slightly_larger_sum(self):
         champions = [
             {"id": "a", "name": "A", "name_ru": "А", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
             {"id": "b", "name": "B", "name_ru": "Б", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
@@ -259,13 +259,108 @@ class EngineTests(unittest.TestCase):
         result = engine.recommend_picks("EXP", [("E1", ""), ("E2", "")], snapshot=snapshot)
         by_id = {row["champion"]["id"]: row for row in result}
 
-        # B wins the literal matchup sum (2.5 > 2.0), so it must stay above A
-        # even though A has the stronger meta score.  Tier/win rate/coverage are
-        # tie-breakers now; they cannot overturn the selected-draft relationship.
+        # B has the slightly larger measured sum (2.5 > 2.0), but that comes
+        # from one winning and one losing matchup. A is confirmed positive into
+        # both enemies and has no confirmed threat, so the factual evidence
+        # profile ranks A first without inventing any synthetic matchup number.
         self.assertGreater(by_id["b"]["draft_matchup_sum_pp"], by_id["a"]["draft_matchup_sum_pp"])
-        self.assertGreater(by_id["a"]["score"], by_id["b"]["score"])
-        self.assertEqual(result[0]["champion"]["id"], "b")
+        self.assertEqual(by_id["a"]["confirmed_counter_count"], 2)
+        self.assertEqual(by_id["a"]["confirmed_threat_count"], 0)
+        self.assertEqual(by_id["b"]["confirmed_counter_count"], 1)
+        self.assertEqual(by_id["b"]["confirmed_threat_count"], 1)
+        self.assertEqual(result[0]["champion"]["id"], "a")
         self.assertEqual(by_id["b"]["positive"], ["E1"])
+    def test_direction_only_counters_expand_coverage_without_fake_pp(self):
+        champions = [
+            {"id": "a", "name": "A", "name_ru": "А", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
+            {"id": "b", "name": "B", "name_ru": "Б", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"},
+            *[
+                {"id": f"e{i}", "name": f"E{i}", "name_ru": f"E{i}", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"}
+                for i in range(1, 6)
+            ],
+        ]
+        items = {
+            name: {"name": name, "tier": "Upgraded", "category": "Attack"}
+            for name in ["Axe", "Spear", "Bow"]
+        }
+        snapshot = {
+            "champions": champions,
+            "champions_by_id": {row["id"]: row for row in champions},
+            "champion_aliases": {row["name"].casefold(): row for row in champions},
+            "champion_alias_ids": {row["name"].casefold(): {row["id"]} for row in champions},
+            "matchups": {},
+            "matchup_raw_pp": {
+                ("a", "e1"): [("", 4.5)],
+                ("b", "e1"): [("", 3.8)],
+            },
+            "matchup_directions": {
+                ("b", "e2"): 1,
+                ("b", "e3"): 1,
+                ("b", "e4"): 1,
+            },
+            "matchup_edge_scale_pp_p95": 4.08,
+            "tiers": {("a", "EXP"): "A", ("b", "EXP"): "A"},
+            "stats": {
+                ("a", "exp", "all"): {"win_rate": 51.0},
+                ("b", "exp", "all"): {"win_rate": 51.0},
+            },
+            "item_pools": {}, "counter_items": {},
+            "role_builds": {
+                ("a", "EXP"): {"items": ["Axe", "Spear", "Bow"], "boot_name": "", "source": "test"},
+                ("b", "EXP"): {"items": ["Axe", "Spear", "Bow"], "boot_name": "", "source": "test"},
+            },
+            "role_variants": {}, "role_situational": {}, "role_boots": {},
+            "role_opponent_adaptations": {}, "items": items,
+        }
+        result = engine.recommend_picks(
+            "EXP",
+            [(f"E{i}", "EXP" if i == 1 else "") for i in range(1, 6)],
+            snapshot=snapshot,
+        )
+        by_id = {row["champion"]["id"]: row for row in result}
+
+        self.assertEqual(result[0]["champion"]["id"], "b")
+        self.assertAlmostEqual(by_id["b"]["draft_matchup_sum_pp"], 3.8)
+        self.assertEqual(by_id["b"]["confirmed_counter_count"], 4)
+        self.assertEqual(by_id["b"]["measured_matchup_count"], 1)
+        self.assertEqual(by_id["b"]["directional_matchup_count"], 3)
+        self.assertEqual(by_id["b"]["known_matchup_count"], 4)
+        self.assertEqual(by_id["b"]["unknown_matchup_count"], 1)
+        self.assertEqual(by_id["a"]["confirmed_counter_count"], 1)
+        self.assertAlmostEqual(by_id["a"]["draft_matchup_sum_pp"], 4.5)
+
+    def test_direction_only_counter_can_be_recommended_with_zero_measured_pp(self):
+        champion = {"id": "a", "name": "A", "name_ru": "А", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"}
+        enemy = {"id": "e", "name": "Enemy", "name_ru": "Враг", "lanes": ["exp"], "roles": ["fighter"], "damage_type": "physical"}
+        items = {
+            name: {"name": name, "tier": "Upgraded", "category": "Attack"}
+            for name in ["Axe", "Spear", "Bow"]
+        }
+        snapshot = {
+            "champions": [champion, enemy],
+            "champions_by_id": {"a": champion, "e": enemy},
+            "champion_aliases": {"a": champion, "enemy": enemy},
+            "champion_alias_ids": {"a": {"a"}, "enemy": {"e"}},
+            "matchups": {},
+            "matchup_raw_pp": {},
+            "matchup_directions": {("a", "e"): 1},
+            "matchup_edge_scale_pp_p95": 4.08,
+            "tiers": {("a", "EXP"): "A"},
+            "stats": {("a", "exp", "all"): {"win_rate": 51.0}},
+            "item_pools": {}, "counter_items": {},
+            "role_builds": {
+                ("a", "EXP"): {"items": ["Axe", "Spear", "Bow"], "boot_name": "", "source": "test"},
+            },
+            "role_variants": {}, "role_situational": {}, "role_boots": {},
+            "role_opponent_adaptations": {}, "items": items,
+        }
+        result = engine.recommend_picks("EXP", [("Enemy", "EXP")], snapshot=snapshot)
+        self.assertEqual([row["champion"]["id"] for row in result], ["a"])
+        self.assertAlmostEqual(result[0]["draft_matchup_sum_pp"], 0.0)
+        self.assertEqual(result[0]["positive"], ["Enemy"])
+        self.assertEqual(result[0]["directional_matchup_count"], 1)
+        self.assertEqual(result[0]["measured_matchup_count"], 0)
+
     def test_pick_excludes_hero_without_selected_role_build(self):
         items = {
             name: {"name": name, "tier": "Upgraded", "category": "Attack"}
