@@ -260,7 +260,23 @@ def _snapshot_measured_matchup_pp(
     preferred_role: str = "",
 ) -> float | None:
     """Return a real measured pp edge, or None when GMS has no measurement."""
-    rows = snapshot.get("matchup_raw_pp", {}).get((champion_id, enemy_id), [])
+    raw_index = snapshot.get("matchup_raw_pp")
+    if raw_index is None:
+        internal = _snapshot_matchup_score(
+            snapshot, champion_id, enemy_id, preferred_role
+        )
+        if abs(float(internal)) < 1e-12:
+            return None
+        try:
+            scale_pp = float(
+                snapshot.get("matchup_edge_scale_pp_p95")
+                or DEFAULT_MATCHUP_SCALE_PP_P95
+            )
+        except (TypeError, ValueError):
+            scale_pp = DEFAULT_MATCHUP_SCALE_PP_P95
+        return (float(internal) / MATCHUP_ABS_MAX) * scale_pp
+
+    rows = raw_index.get((champion_id, enemy_id), [])
     if not rows:
         return None
     role_norm = preferred_role.casefold()
@@ -565,12 +581,11 @@ def _rank_role_candidates(
     enemy_ids: set[str],
     snapshot: dict | None = None,
 ) -> list[dict]:
-    """Build the complete local ranking for one exact MLCA role.
+    """Build one role ranking from factual matchup evidence.
 
-    The scoring/ranking math is intentionally the same as MLCA 2.1.2.
-    The only difference is that rows after the old visible top-10 are retained
-    so the global flex allocator can promote replacements when duplicates are
-    removed from another role.
+    Measured GMS percentage points and Moonton direction-only counter facts stay
+    separate. Missing pairs remain unknown. The resulting local order is then
+    consumed by the global flex allocator so one hero appears in only one role.
     """
     stat_lane = ROLE_TO_STAT.get(role_ru, "")
 
@@ -794,7 +809,7 @@ def _next_role_replacement_gap(
     ranked: dict[str, list[dict]],
     assigned: set[str],
 ) -> tuple:
-    """Measure how badly one branch degrades if this flex hero is lost."""
+    """How much factual draft evidence a role loses if this flex hero moves."""
     cid = str((candidate.get("champion") or {}).get("id") or "")
     local_rank = max(1, int(candidate.get("local_rank") or 1))
     rows = ranked.get(role, [])
@@ -807,15 +822,24 @@ def _next_role_replacement_gap(
             break
 
     if next_row is None:
-        return (float("inf"), float("inf"), float("inf"))
+        return (
+            float("inf"), float("inf"), float("inf"),
+            float("inf"), float("inf"), float("inf"),
+        )
 
     return (
+        int(candidate.get("confirmed_net") or 0)
+        - int(next_row.get("confirmed_net") or 0),
+        int(candidate.get("confirmed_counter_count") or 0)
+        - int(next_row.get("confirmed_counter_count") or 0),
+        int(next_row.get("confirmed_threat_count") or 0)
+        - int(candidate.get("confirmed_threat_count") or 0),
         float(candidate.get("draft_matchup_sum_pp") or 0.0)
         - float(next_row.get("draft_matchup_sum_pp") or 0.0),
+        int(candidate.get("known_matchup_count") or 0)
+        - int(next_row.get("known_matchup_count") or 0),
         float(candidate.get("score") or 0.0)
         - float(next_row.get("score") or 0.0),
-        float(candidate.get("coverage_score") or 0.0)
-        - float(next_row.get("coverage_score") or 0.0),
     )
 
 
@@ -825,18 +849,16 @@ def _same_rank_conflict_key(
     ranked: dict[str, list[dict]],
     assigned: set[str],
 ) -> tuple:
-    """Resolve a same-local-rank flex conflict without changing MLCA scoring.
-
-    User rule:
-      1) same local place -> stronger matchup sum wins;
-      2) same matchup sum -> keep the hero where losing it hurts more;
-      3) remaining fields are deterministic fallbacks only.
-    """
+    """Place a same-rank flex hero where its evidence profile is most valuable."""
     return (
+        -int(candidate.get("evidence_front") or 0),
+        int(candidate.get("confirmed_net") or 0),
+        int(candidate.get("confirmed_counter_count") or 0),
+        -int(candidate.get("confirmed_threat_count") or 0),
         float(candidate.get("draft_matchup_sum_pp") or 0.0),
         _next_role_replacement_gap(role, candidate, ranked, assigned),
-        float(candidate.get("coverage_score") or 0.0),
-        -float(candidate.get("negative_strength_pp") or 0.0),
+        int(candidate.get("measured_matchup_count") or 0),
+        int(candidate.get("known_matchup_count") or 0),
         float(candidate.get("score") or 0.0),
         TIER_ORDER.get(str(candidate.get("tier") or ""), 0),
         float(candidate.get("winrate_score") or 0.0),
