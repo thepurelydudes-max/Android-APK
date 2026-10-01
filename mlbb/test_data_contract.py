@@ -118,24 +118,31 @@ class DataContractTests(unittest.TestCase):
         self.assertNotIn(("20", "17"), edges)
 
 
-    def test_mlbbhub_matrix_preserves_row_to_column_direction(self):
+    def test_mlbbhub_matrix_preserves_measured_and_direction_only_evidence(self):
         heroes = [
             {"slug": f"hero-{i}", "name": f"Hero {i}"}
             for i in range(100)
         ]
-        edges = []
-        for i in range(100):
-            row = []
-            for j in range(100):
-                if i == j:
-                    row.append(0.0)
-                else:
-                    row.append(2.5 if i < j else -2.5)
-            edges.append(row)
+        edges = [[0.0 for _ in heroes] for _ in heroes]
+        directions = [[0 for _ in heroes] for _ in heroes]
+
+        # 800 unique measured pairs -> 1600 directed pp edges.
+        # 500 disjoint counter-list pairs -> 1000 direction-only rows.
+        pairs = [(i, j) for i in range(100) for j in range(i + 1, 100)]
+        measured_pairs = pairs[:800]
+        directional_pairs = pairs[800:1300]
+        for i, j in measured_pairs:
+            edges[i][j] = 2.5
+            edges[j][i] = -2.5
+        for i, j in directional_pairs:
+            directions[i][j] = 1
+            directions[j][i] = -1
+
         matrix = {
             "heroes": heroes,
             "edges": edges,
-            "evidenceTotals": {"measured": 9900},
+            "directions": directions,
+            "evidenceTotals": {"measured": 1600, "counterList": 1000},
         }
         decoded = 'prefix "matrix":' + json.dumps(matrix, separators=(",", ":"))
         raw = json.dumps(decoded, ensure_ascii=False)[1:-1]
@@ -145,12 +152,25 @@ class DataContractTests(unittest.TestCase):
         )
         parsed = parse_mlbbhub_matchup_matrix_html(page)
         self.assertEqual(parsed["patch"], "2.2.16")
-        by_pair = {
+        self.assertEqual(len(parsed["rows"]), 1600)
+        self.assertEqual(len(parsed["direction_rows"]), 1000)
+
+        measured = {
             (row["champion_slug"], row["enemy_slug"]): row["raw_edge"]
             for row in parsed["rows"]
         }
-        self.assertAlmostEqual(by_pair[("hero-0", "hero-1")], 2.5)
-        self.assertAlmostEqual(by_pair[("hero-1", "hero-0")], -2.5)
+        i, j = measured_pairs[0]
+        self.assertAlmostEqual(measured[(f"hero-{i}", f"hero-{j}")], 2.5)
+        self.assertAlmostEqual(measured[(f"hero-{j}", f"hero-{i}")], -2.5)
+
+        directional = {
+            (row["champion_slug"], row["enemy_slug"]): row["direction"]
+            for row in parsed["direction_rows"]
+        }
+        i, j = directional_pairs[0]
+        self.assertEqual(directional[(f"hero-{i}", f"hero-{j}")], 1)
+        self.assertEqual(directional[(f"hero-{j}", f"hero-{i}")], -1)
+        self.assertNotIn((f"hero-{i}", f"hero-{j}"), measured)
 
 
 if __name__ == "__main__":
