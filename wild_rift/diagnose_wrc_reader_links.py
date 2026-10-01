@@ -4,7 +4,7 @@ import sources
 net=sources.Net()
 r=sources._jina_reader_get(net,sources.WR_CORE_BUILDS,print)
 text=r.text or ""
-print("LEN",len(text),flush=True)
+print("LEN",len(text),flush=True)\nprint("FULL_READER_TEXT",repr(text),flush=True)
 lines=[line for line in text.splitlines() if "champion" in line.casefold() or "build" in line.casefold()]
 print("MATCHING_LINES",len(lines),flush=True)
 for line in lines[:120]:
