@@ -36,6 +36,36 @@ jobs:
           paths.ensure_initial_data()
           import package_updater
 
+          # Seed a deliberately interrupted download first. The real updater
+          # must either resume it with HTTP Range or safely restart if GitHub's
+          # CDN ignores Range; in both cases the installed result must be exact.
+          import requests
+          remote = package_updater._fetch_latest(requests.Session())
+          identity = {
+              "package_version": str(remote.get("package_version") or ""),
+              "sha256": str(remote.get("sha256") or "").lower(),
+              "size_bytes": int(remote["size_bytes"]),
+              "download_url": str(remote["download_url"]),
+          }
+          package_updater.UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+          package_updater.PART_META_PATH.write_text(
+              json.dumps(identity, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          with requests.get(remote["download_url"], stream=True, timeout=(20, 90)) as response:
+              response.raise_for_status()
+              with package_updater.PART_PATH.open("wb") as fh:
+                  remaining = min(1024 * 1024, int(remote["size_bytes"]) // 3)
+                  for chunk in response.iter_content(chunk_size=128 * 1024):
+                      if not chunk or remaining <= 0:
+                          break
+                      piece = chunk[:remaining]
+                      fh.write(piece)
+                      remaining -= len(piece)
+          partial_size = package_updater.PART_PATH.stat().st_size
+          assert 0 < partial_size < int(remote["size_bytes"]), partial_size
+          print("SEEDED_PARTIAL_BYTES:", partial_size)
+
           events = []
           summary = package_updater.update_all(events.append, "ru")
           print("\n".join(events))
