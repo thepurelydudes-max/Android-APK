@@ -547,6 +547,77 @@ Open this draft in the tool →
             con.execute("DELETE FROM champions WHERE id=?", (cid,))
 
 
+class AtomicUpdateRegressionTests(unittest.TestCase):
+    def test_strict_validation_rejects_any_warning(self):
+        import updater
+        with tempfile.TemporaryDirectory(prefix="wrca-stage-") as folder:
+            db_path = Path(folder) / "wildrift.db"
+            con = sqlite3.connect(db_path)
+            for table in (
+                "champions", "stats", "champion_tiers", "matchups", "items",
+                "role_builds", "role_build_variants", "counter_items",
+            ):
+                con.execute(f"CREATE TABLE {table}(x INTEGER)")
+                con.execute(f"INSERT INTO {table}(x) VALUES(1)")
+            con.commit()
+            con.close()
+            summary = {
+                "patch": "7.3a",
+                "champions": 1,
+                "stats": 1,
+                "tiers": 1,
+                "matchups": 1,
+                "item_pool": 1,
+                "counter_items": 1,
+                "champion_images": 1,
+                "wrc_build_profiles_total": 1,
+                "wrc_build_pages_success": 1,
+                "wrc_build_integrity": {
+                    "missing_champions": [],
+                    "missing_variant_roles": [],
+                    "incomplete_variant_sets": [],
+                    "incomplete_builds": [],
+                    "incomplete_variants": [],
+                },
+                "item_icon_missing_catalog": [],
+                "item_icon_missing": [],
+                "errors": ["temporary source failure"],
+            }
+            with self.assertRaises(updater.UpdateValidationError):
+                updater._validate_staged_update(
+                    summary,
+                    baseline_counts={"champions": 1},
+                    staged_database=db_path,
+                )
+
+    def test_failed_staged_promotion_can_restore_old_runtime(self):
+        import updater
+        with tempfile.TemporaryDirectory(prefix="wrca-promote-") as folder:
+            root = Path(folder)
+            live_db = root / "data" / "wildrift.db"
+            live_cache = root / "cache"
+            stage_db = root / ".update-stage" / "data" / "wildrift.db"
+            stage_cache = root / ".update-stage" / "cache"
+            live_db.parent.mkdir(parents=True)
+            live_cache.mkdir(parents=True)
+            stage_db.parent.mkdir(parents=True)
+            stage_cache.mkdir(parents=True)
+            live_db.write_bytes(b"OLD")
+            (live_cache / "old.txt").write_text("old", encoding="utf-8")
+            stage_db.write_bytes(b"NEW")
+            (stage_cache / "new.txt").write_text("new", encoding="utf-8")
+            updater._promote_staged_runtime(
+                live_database=live_db,
+                live_cache=live_cache,
+                staged_database=stage_db,
+                staged_cache=stage_cache,
+                runtime_root=root,
+            )
+            self.assertEqual(live_db.read_bytes(), b"NEW")
+            self.assertTrue((live_cache / "new.txt").is_file())
+            self.assertFalse((live_cache / "old.txt").exists())
+
+
 class RecommendationRegressionTests(unittest.TestCase):
     def test_visible_draft_score_follows_primary_ranking_keys(self):
         matrix = DraftMatrixEngine()
