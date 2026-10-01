@@ -13,6 +13,7 @@ from paths import APP_DIR
 from localization import has_cyrillic, russian_hero_name, russian_item_name
 from sources import (
     MLBBDEX_ITEMS,
+    MLBBHUB_MATCHUPS,
     RONE_ACADEMY_RECOMMENDED,
     RONE_ACADEMY_HERO_BUILDS,
     RONE_ACADEMY_HEROES,
@@ -31,6 +32,7 @@ from sources import (
     fetch_mlbbdex_items,
     fetch_mlbbdex_rankings,
     parse_rone_build_variants,
+    parse_mlbbhub_matchup_matrix_html,
     parse_rone_academy_lane_filter,
     parse_rone_academy_counter_raw,
     parse_rone_equipment,
@@ -765,67 +767,132 @@ def update_all(
         if tier_dates:
             db.set_meta("tier_date", max(tier_dates))
 
-    # 3) Matchups: use Rone's rolling 7-day public counter endpoint. The source
-    # value is stored in one invariant direction: candidate/main hero -> enemy.
-    # This fixes the old MLCA inversion where sub hero -> main hero was stored.
+    # 3) Matchups: MLBBHub publishes a current-patch ranked matrix whose sign
+    # contract is explicit: row hero -> column hero. Positive pp means the row
+    # hero performs better in that matchup. This source is used atomically so a
+    # fresh matrix can never be mixed with the old inverted Rone Academy rows.
     emit(update_text("loading_matchups", lang))
     relation_rows = relation_matchups(champs)
     detailed_matchups: list[tuple[str, str, str, float]] = []
-    matchup_source = "mlbb.rone.public.counters.7d"
+    matchup_source = "mlbbhub.matchups"
     matchup_patch = current_patch or "current"
     raw_matchup_rows: dict[tuple[str, str, str], dict] = {}
-    counter_pages_ok = 0
+    resolved_matrix_heroes: set[str] = set()
+    matrix_source_rows = 0
+    inverse_checked = 0
+    inverse_ok = 0
+    inverse_ratio = 0.0
+    sentinel_edges: dict[str, float | None] = {}
 
-    for index, champ in enumerate(champs, 1):
-        _check_cancel(cancel_check)
-        cid = str(champ.get("id") or "")
-        if not cid:
-            continue
-        url = (
-            RONE_HERO_COUNTERS.format(hero_id=cid)
-            + "?days=7&rank=all&size=300&index=1&lang=en"
+    try:
+        response = net.get(
+            MLBBHUB_MATCHUPS,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
         )
-        try:
-            page_rows = parse_rone_academy_counter_raw(net.get(url).json(), cid)
-            page_rows = [
-                row for row in page_rows
-                if str(row.get("champion_id") or "") in valid_ids
-                and str(row.get("enemy_id") or "") in valid_ids
-            ]
-            if page_rows:
-                counter_pages_ok += 1
-                for row in page_rows:
-                    key = (
-                        str(row.get("champion_id") or ""),
-                        str(row.get("enemy_id") or ""),
-                        str(row.get("role") or ""),
-                    )
-                    old = raw_matchup_rows.get(key)
-                    if old is None or abs(float(row.get("raw_edge") or 0.0)) > abs(float(old.get("raw_edge") or 0.0)):
-                        raw_matchup_rows[key] = row
-        except Exception as exc:
-            summary["errors"].append(f"Rone public 7d counters {cid}: {exc}")
+        parsed_matrix = parse_mlbbhub_matchup_matrix_html(response.text)
+        matrix_source_rows = len(parsed_matrix.get("rows") or [])
+        parsed_patch = str(parsed_matrix.get("patch") or "").strip()
+        if parsed_patch:
+            matchup_patch = parsed_patch
+            current_patch = parsed_patch
+            summary["patch"] = parsed_patch
+            db.set_meta("patch_version", parsed_patch)
+
+        for row in parsed_matrix.get("rows") or []:
+            cid = resolve(row.get("champion_slug") or row.get("champion_name"))
+            eid = resolve(row.get("enemy_slug") or row.get("enemy_name"))
+            if not cid:
+                cid = resolve(row.get("champion_name"))
+            if not eid:
+                eid = resolve(row.get("enemy_name"))
+            if not cid or not eid or cid == eid:
+                continue
+            if cid not in valid_ids or eid not in valid_ids:
+                continue
+            resolved_matrix_heroes.add(cid)
+            resolved_matrix_heroes.add(eid)
+            key = (cid, eid, "")
+            edge = float(row.get("raw_edge") or 0.0)
+            old = raw_matchup_rows.get(key)
+            if old is None or abs(edge) > abs(float(old.get("raw_edge") or 0.0)):
+                raw_matchup_rows[key] = {
+                    "champion_id": cid,
+                    "enemy_id": eid,
+                    "role": "",
+                    "raw_edge": edge,
+                    "raw_unit": "percentage_points",
+                    "evidence_type": "measured:mlbbhub_matrix",
+                    "rank_segment": "all",
+                    "sample_window": "ranked-current",
+                    "confidence": 1.0,
+                }
+
+        # The published matrix is almost perfectly antisymmetric. Refuse to
+        # activate a payload if its direction/shape suddenly changes.
+        seen_pairs: set[tuple[str, str]] = set()
+        for (a, b, _role), row in raw_matchup_rows.items():
+            pair = tuple(sorted((a, b)))
+            if pair in seen_pairs:
+                continue
+            reverse = raw_matchup_rows.get((b, a, ""))
+            if reverse is None:
+                continue
+            seen_pairs.add(pair)
+            inverse_checked += 1
+            edge = float(row.get("raw_edge") or 0.0)
+            reverse_edge = float(reverse.get("raw_edge") or 0.0)
+            if abs(edge + reverse_edge) <= 0.05:
+                inverse_ok += 1
+        inverse_ratio = (inverse_ok / inverse_checked) if inverse_checked else 0.0
+
+        for champion_name, enemy_name in (
+            ("Paquito", "Karina"),
+            ("Minotaur", "Lolita"),
+            ("Obsidia", "Benedetta"),
+            ("Obsidia", "Aldous"),
+        ):
+            cid = resolve(champion_name)
+            eid = resolve(enemy_name)
+            row = raw_matchup_rows.get((cid, eid, "")) if cid and eid else None
+            sentinel_edges[f"{champion_name}->{enemy_name}"] = (
+                float(row.get("raw_edge") or 0.0) if row else None
+            )
+    except Exception as exc:
+        summary["errors"].append(f"MLBBHub matchup matrix: {exc}")
 
     normalized_evidence: list[MatchupEvidence] = []
     matchup_scale_pp = 0.0
-    matrix_expected = len(valid_ids) * max(0, len(valid_ids) - 1)
+    bad_sentinels = {
+        name: value for name, value in sentinel_edges.items()
+        if value is None or value <= 0.0
+    }
     matrix_good = (
-        counter_pages_ok >= max(1, len(valid_ids) - 3)
-        and len(raw_matchup_rows) >= int(matrix_expected * 0.95)
+        matrix_source_rows >= 1900
+        and len(raw_matchup_rows) >= 1850
+        and len(resolved_matrix_heroes) >= 130
+        and inverse_checked >= 900
+        and inverse_ratio >= 0.97
+        and not bad_sentinels
+        and matchup_patch not in {"", "current"}
     )
+
     if matrix_good:
         evidence_objects = [
             MatchupEvidence(
                 champion_id=str(row["champion_id"]),
                 enemy_id=str(row["enemy_id"]),
                 raw_edge=float(row.get("raw_edge") or 0.0),
-                raw_unit=str(row.get("raw_unit") or "fraction"),
+                raw_unit="percentage_points",
                 source=matchup_source,
                 evidence_type=str(row.get("evidence_type") or "measured"),
-                role=str(row.get("role") or ""),
-                rank_segment=str(row.get("rank_segment") or "all"),
-                sample_window="7d",
-                confidence=float(row.get("confidence", 1.0) or 0.0),
+                role="",
+                rank_segment="all",
+                sample_window="ranked-current",
+                confidence=1.0,
                 patch=matchup_patch,
             )
             for row in raw_matchup_rows.values()
@@ -843,25 +910,32 @@ def update_all(
             )
             for row in normalized_evidence
         ]
+        db.set_meta("matchup_contract_version", "1")
         db.set_meta("matchup_edge_scale_pp_p95", f"{matchup_scale_pp:.6f}")
         db.set_meta("matchup_evidence_source", matchup_source)
-        db.set_meta("matchup_direction", "main_hero_to_sub_hero")
-        db.set_meta("matchup_sample_window", "7d")
+        db.set_meta("matchup_direction", "row_hero_to_column_hero")
+        db.set_meta("matchup_sample_window", "ranked-current")
         db.set_meta("matchup_patch", matchup_patch)
         db.set_meta("matchup_updated_at", now_iso)
         summary["matchup_updated"] = True
     else:
         summary["errors"].append(
-            f"Public 7d matchup matrix incomplete: pages={counter_pages_ok}/{len(valid_ids)}, "
-            f"edges={len(raw_matchup_rows)}/{matrix_expected}; keeping previous runtime matrix"
+            "MLBBHub matchup matrix failed activation checks: "
+            f"source_edges={matrix_source_rows}, resolved_edges={len(raw_matchup_rows)}, "
+            f"heroes={len(resolved_matrix_heroes)}, inverse={inverse_ok}/{inverse_checked} "
+            f"({inverse_ratio:.3f}), sentinels={bad_sentinels}, patch={matchup_patch}; "
+            "keeping previous runtime matrix"
         )
 
-    summary["counter_pages"] = counter_pages_ok
+    summary["counter_pages"] = len(resolved_matrix_heroes)
     summary["matchup_evidence"] = len(normalized_evidence)
     summary["matchup_edge_scale_pp_p95"] = matchup_scale_pp
     summary["matchup_source"] = matchup_source if summary["matchup_updated"] else db.get_meta("matchup_evidence_source", "")
     summary["matchup_direction"] = db.get_meta("matchup_direction", "")
     summary["matchup_sample_window"] = db.get_meta("matchup_sample_window", "")
+    summary["matchup_patch"] = db.get_meta("matchup_patch", "")
+    summary["matchup_inverse_ratio"] = inverse_ratio
+    summary["matchup_direction_sentinels"] = sentinel_edges
 
     # 4) Items and builds. MLBBDex defines the final shop catalog; Rone adds
     # icons/details and lane-specific build variants.
