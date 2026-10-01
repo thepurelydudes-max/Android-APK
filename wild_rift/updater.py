@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 import re
+import shutil
+import sqlite3
 import time
 from pathlib import Path
 from typing import Callable
 
 import db
+import media_cache
 from localization import COMMON_CHAMPION_ALIASES, champion_name_ru
 from media_cache import BRAND_DIR, CHAMPION_DIR, ITEM_DIR, cache_brand_logo, ensure_cache_dirs, safe_name, sync_cached_image, _valid_image
 from sources import (
@@ -25,9 +29,18 @@ from sources import (
 ITEM_DATA_SCHEMA_VERSION = "4"
 ITEM_ICON_SCHEMA_VERSION = "7"
 
+# During an in-app refresh WRCA 3.8.1 works only inside a disposable staging
+# runtime. The live database/cache are not touched until every source and every
+# integrity audit has succeeded.
+_ACTIVE_UPDATE_RUNTIME_ROOT: Path | None = None
+
 
 class UpdateCancelled(RuntimeError):
     """Raised when a cooperative update cancellation is requested."""
+
+
+class UpdateValidationError(RuntimeError):
+    """Raised when a staged refresh is incomplete and must not be published."""
 
 
 def _check_cancel(cancel_check: Callable[[], bool] | None) -> None:
@@ -186,7 +199,10 @@ def build_resolver(champs: list[dict]):
 
 def _portable_path(path: str) -> str:
     from paths import portable_media_path
-    return portable_media_path(path)
+    return portable_media_path(
+        path,
+        runtime_root=_ACTIVE_UPDATE_RUNTIME_ROOT,
+    )
 
 
 def _canonicalize_item_pools(pools: list[tuple[str, str, str, int]], items: list[tuple[str, str, str]]) -> list[tuple[str, str, str, int]]:
@@ -717,7 +733,10 @@ def _audit_item_icon_integrity() -> tuple[list[str], list[str]]:
             missing_icons.append(name)
             continue
         try:
-            resolved = resolve_media_path(icon_path)
+            resolved = resolve_media_path(
+                icon_path,
+                runtime_root=_ACTIVE_UPDATE_RUNTIME_ROOT,
+            )
         except Exception:
             missing_icons.append(name)
             continue
@@ -793,7 +812,7 @@ def _audit_wrc_build_integrity() -> dict:
     }
 
 
-def update_all(
+def _update_all_in_staging(
     progress: Callable[[str], None] | None = None,
     lang: str = "ru",
     cancel_check: Callable[[], bool] | None = None,
@@ -1318,4 +1337,273 @@ def update_all(
         net,
     )
     raw_progress(update_text("done", lang))
+    return summary
+
+
+def _database_counts(database: Path) -> dict[str, int]:
+    """Read the small set of counts used by strict publish validation."""
+    if not database.is_file():
+        return {}
+    with sqlite3.connect(database) as con:
+        names = {
+            row[0] for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        result: dict[str, int] = {}
+        for table in (
+            "champions", "stats", "champion_tiers", "matchups", "items",
+            "role_builds", "role_build_variants", "counter_items",
+        ):
+            if table in names:
+                result[table] = int(
+                    con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                )
+        result["quick_check_ok"] = 1 if (
+            con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        ) else 0
+        return result
+
+
+def _validate_staged_update(
+    summary: dict,
+    *,
+    baseline_counts: dict[str, int],
+    staged_database: Path,
+) -> None:
+    """Refuse publication unless the staged refresh is complete and healthy."""
+    problems: list[str] = []
+
+    for value in summary.get("errors") or []:
+        problems.append(str(value))
+
+    patch = str(summary.get("patch") or "").strip()
+    if not patch:
+        problems.append("Patch version was not verified.")
+
+    champions = int(summary.get("champions") or 0)
+    baseline_champions = int(baseline_counts.get("champions") or 0)
+    if champions <= 0:
+        problems.append("Champion roster is empty.")
+    elif baseline_champions and champions < baseline_champions:
+        problems.append(
+            f"Champion roster is incomplete: {champions}/{baseline_champions}."
+        )
+
+    if int(summary.get("stats") or 0) <= 0:
+        problems.append("Current statistics were not downloaded.")
+    if int(summary.get("tiers") or 0) <= 0:
+        problems.append("Tier list was not downloaded.")
+    if int(summary.get("matchups") or 0) <= 0:
+        problems.append("Counter matrix is empty.")
+    if int(summary.get("item_pool") or 0) <= 0:
+        problems.append("Champion item pools are empty.")
+    if int(summary.get("counter_items") or 0) <= 0:
+        problems.append("Counter-item source is empty.")
+
+    wrc_total = int(summary.get("wrc_build_profiles_total") or 0)
+    wrc_success = int(summary.get("wrc_build_pages_success") or 0)
+    if wrc_total <= 0 or wrc_success != wrc_total:
+        problems.append(
+            f"WildRiftCore builds are incomplete: {wrc_success}/{wrc_total}."
+        )
+    if champions and wrc_total < champions:
+        problems.append(
+            f"WildRiftCore profile coverage is incomplete: {wrc_total}/{champions}."
+        )
+
+    build_integrity = dict(summary.get("wrc_build_integrity") or {})
+    for key in (
+        "missing_champions",
+        "missing_variant_roles",
+        "incomplete_variant_sets",
+        "incomplete_builds",
+        "incomplete_variants",
+    ):
+        rows = list(build_integrity.get(key) or [])
+        if rows:
+            problems.append(f"WRC integrity {key}: {len(rows)}.")
+
+    if list(summary.get("item_icon_missing_catalog") or []):
+        problems.append("Referenced items are missing from the item catalog.")
+    if list(summary.get("item_icon_missing") or []):
+        problems.append("One or more item icons failed integrity validation.")
+
+    if champions and int(summary.get("champion_images") or 0) < champions:
+        problems.append(
+            "Not every champion portrait was validated: "
+            f"{int(summary.get('champion_images') or 0)}/{champions}."
+        )
+
+    staged_counts = _database_counts(staged_database)
+    if not staged_counts.get("quick_check_ok"):
+        problems.append("SQLite quick_check failed for staged database.")
+    for table in (
+        "champions", "stats", "champion_tiers", "matchups", "items",
+        "role_builds", "role_build_variants",
+    ):
+        if int(staged_counts.get(table) or 0) <= 0:
+            problems.append(f"Staged table {table} is empty.")
+
+    if problems:
+        unique = []
+        for item in problems:
+            clean = str(item).strip()
+            if clean and clean not in unique:
+                unique.append(clean)
+        raise UpdateValidationError(
+            "Обновление не применено: полная проверка не пройдена. "
+            + " | ".join(unique[:12])
+        )
+
+
+def _promote_staged_runtime(
+    *,
+    live_database: Path,
+    live_cache: Path,
+    staged_database: Path,
+    staged_cache: Path,
+    runtime_root: Path,
+) -> None:
+    """Atomically swap the validated staged DB/cache with rollback on failure."""
+    backup_root = runtime_root / ".update-backup"
+    if backup_root.exists():
+        shutil.rmtree(backup_root, ignore_errors=True)
+    backup_root.mkdir(parents=True, exist_ok=True)
+    backup_database = backup_root / "wildrift.db"
+    backup_cache = backup_root / "cache"
+
+    live_database.parent.mkdir(parents=True, exist_ok=True)
+    moved_live_db = False
+    moved_live_cache = False
+    installed_stage_db = False
+    installed_stage_cache = False
+
+    try:
+        if live_database.exists():
+            live_database.replace(backup_database)
+            moved_live_db = True
+        if live_cache.exists():
+            live_cache.rename(backup_cache)
+            moved_live_cache = True
+
+        staged_database.replace(live_database)
+        installed_stage_db = True
+        staged_cache.rename(live_cache)
+        installed_stage_cache = True
+    except Exception:
+        try:
+            if installed_stage_cache and live_cache.exists():
+                shutil.rmtree(live_cache, ignore_errors=True)
+            if installed_stage_db and live_database.exists():
+                live_database.unlink(missing_ok=True)
+            if moved_live_cache and backup_cache.exists():
+                backup_cache.rename(live_cache)
+            if moved_live_db and backup_database.exists():
+                backup_database.replace(live_database)
+        finally:
+            shutil.rmtree(backup_root, ignore_errors=True)
+        raise
+    else:
+        shutil.rmtree(backup_root, ignore_errors=True)
+
+
+def update_all(
+    progress: Callable[[str], None] | None = None,
+    lang: str = "ru",
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict:
+    """Download into a disposable copy and publish only after full validation.
+
+    Bad internet, a partial parser result, a missing icon, a failed WRC page, or
+    any other warning leaves the currently installed database/cache untouched.
+    """
+    global _ACTIVE_UPDATE_RUNTIME_ROOT
+    global CHAMPION_DIR, ITEM_DIR, BRAND_DIR
+
+    _check_cancel(cancel_check)
+    db.init_db()
+
+    live_database = Path(db.DB_PATH).resolve()
+    runtime_root = live_database.parent.parent.resolve()
+    live_cache = runtime_root / "cache"
+    stage_root = runtime_root / ".update-stage"
+    stage_database = stage_root / "data" / "wildrift.db"
+    stage_cache = stage_root / "cache"
+
+    if stage_root.exists():
+        shutil.rmtree(stage_root, ignore_errors=True)
+    (stage_root / "data").mkdir(parents=True, exist_ok=True)
+    if live_database.is_file():
+        shutil.copy2(live_database, stage_database)
+    else:
+        raise UpdateValidationError("Текущая база отсутствует; обновление отменено.")
+    if live_cache.is_dir():
+        shutil.copytree(live_cache, stage_cache, dirs_exist_ok=True)
+    else:
+        stage_cache.mkdir(parents=True, exist_ok=True)
+
+    baseline_counts = _database_counts(live_database)
+
+    original_db_path = db.DB_PATH
+    original_active_root = _ACTIVE_UPDATE_RUNTIME_ROOT
+    original_updater_dirs = (CHAMPION_DIR, ITEM_DIR, BRAND_DIR)
+    original_media_dirs = (
+        media_cache.BASE_DIR,
+        media_cache.CACHE_DIR,
+        media_cache.CHAMPION_DIR,
+        media_cache.ITEM_DIR,
+        media_cache.BRAND_DIR,
+    )
+
+    staged_champion_dir = stage_cache / "champions"
+    staged_item_dir = stage_cache / "items"
+    staged_brand_dir = stage_cache / "brand"
+
+    try:
+        db.DB_PATH = stage_database
+        _ACTIVE_UPDATE_RUNTIME_ROOT = stage_root
+
+        CHAMPION_DIR = staged_champion_dir
+        ITEM_DIR = staged_item_dir
+        BRAND_DIR = staged_brand_dir
+
+        media_cache.BASE_DIR = stage_root
+        media_cache.CACHE_DIR = stage_cache
+        media_cache.CHAMPION_DIR = staged_champion_dir
+        media_cache.ITEM_DIR = staged_item_dir
+        media_cache.BRAND_DIR = staged_brand_dir
+
+        summary = _update_all_in_staging(progress, lang, cancel_check)
+        _validate_staged_update(
+            summary,
+            baseline_counts=baseline_counts,
+            staged_database=stage_database,
+        )
+    except Exception:
+        shutil.rmtree(stage_root, ignore_errors=True)
+        raise
+    finally:
+        db.DB_PATH = original_db_path
+        _ACTIVE_UPDATE_RUNTIME_ROOT = original_active_root
+        CHAMPION_DIR, ITEM_DIR, BRAND_DIR = original_updater_dirs
+        (
+            media_cache.BASE_DIR,
+            media_cache.CACHE_DIR,
+            media_cache.CHAMPION_DIR,
+            media_cache.ITEM_DIR,
+            media_cache.BRAND_DIR,
+        ) = original_media_dirs
+
+    try:
+        _promote_staged_runtime(
+            live_database=live_database,
+            live_cache=live_cache,
+            staged_database=stage_database,
+            staged_cache=stage_cache,
+            runtime_root=runtime_root,
+        )
+    finally:
+        shutil.rmtree(stage_root, ignore_errors=True)
+
     return summary
