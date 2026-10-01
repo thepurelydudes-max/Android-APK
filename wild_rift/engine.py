@@ -117,6 +117,63 @@ def lane_ok(champ: dict, role_ru: str) -> bool:
     return bool(lanes & allowed)
 
 
+def _role_pick_rate(champ: dict, role_ru: str, snapshot: dict | None = None) -> float | None:
+    """Return current all-rank pick rate for an exact champion+role, if known."""
+    stat_lane = ROLE_TO_STAT.get(role_ru, "")
+    if not stat_lane:
+        return None
+    st = _stat(champ.get("id", ""), stat_lane, "all", snapshot)
+    if not st or st.get("pick_rate") is None:
+        return None
+    try:
+        return max(0.0, float(st.get("pick_rate") or 0.0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _primary_recommendation_role(
+    champ: dict,
+    snapshot: dict | None = None,
+) -> str:
+    """Assign every champion to exactly one recommendation branch.
+
+    Flex-lane metadata is still used for enemy-role inference and exact build
+    lookup, but a champion must not appear in several recommendation branches
+    at once. Among roles that have a complete WildRiftCore build, prefer the
+    role where the champion is actually played most according to current
+    all-rank pick rate. If pick-rate data is unavailable/tied, use current role
+    tier and finally the upstream lane order as deterministic fallbacks.
+    """
+    lanes = [str(x).casefold() for x in champ.get("lanes", [])]
+    lane_position: dict[str, int] = {}
+    for index, lane in enumerate(lanes):
+        for role, aliases in ROLE_TO_LANES.items():
+            if lane in aliases and role not in lane_position:
+                lane_position[role] = index
+
+    candidates: list[tuple[int, float, int, int, int, str]] = []
+    for canonical_index, role in enumerate(CANONICAL_ROLES):
+        if not lane_ok(champ, role):
+            continue
+        if not _has_usable_role_build(champ, role, snapshot):
+            continue
+
+        pick_rate = _role_pick_rate(champ, role, snapshot)
+        has_pick_rate = 1 if pick_rate is not None else 0
+        role_tier = TIER_ORDER.get(_tier(champ.get("id", ""), role, snapshot), 0)
+        lane_rank = -lane_position.get(role, 999)
+        candidates.append((
+            has_pick_rate,
+            float(pick_rate or 0.0),
+            role_tier,
+            lane_rank,
+            -canonical_index,
+            role,
+        ))
+
+    return max(candidates)[-1] if candidates else ""
+
+
 def archetype(champ: dict) -> set[str]:
     roles = {str(x).casefold() for x in champ.get("roles", [])}
     typ = str(champ.get("damage_type", "")).casefold()
@@ -361,8 +418,8 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
     """Rank legal role candidates against the complete entered enemy draft.
 
     DraftMatrixEngine is the single scoring authority:
-      60% role-correct matchup matrix strength
-      20% weighted multi-target coverage
+      60% role-correct net matchup strength
+      20% positive matchup strength across the entered draft
       15% current role tier
        5% current role win-rate percentile
 
@@ -388,14 +445,11 @@ def recommend_picks(role_ru: str, enemies: list[tuple[str, str]], limit: int = 8
             continue
         tier = _tier(cand.get("id", ""), role_ru, snapshot)
         st = _stat(cand.get("id", ""), stat_lane, "all", snapshot) if stat_lane else None
-        # Selected role is a hard eligibility gate. Niche/noisy stat rows can
-        # rank a legal flex pick but can never invent a role for that champion.
-        if not lane_ok(cand, role_ru):
-            continue
-        # A legal lane is recommendable only when the exact champion+role has
-        # a healthy WildRiftCore build. This rule is data-driven and therefore
-        # also covers any future flex role automatically.
-        if not _has_usable_role_build(cand, role_ru, snapshot):
+        # Every champion belongs to exactly one recommendation branch.
+        # Flex/off-meta role metadata remains available to the rest of the
+        # engine, but it must not duplicate thin ADC/mage/etc. picks into Baron,
+        # Jungle, Mid or Support recommendation lists.
+        if _primary_recommendation_role(cand, snapshot) != role_ru:
             continue
         candidate_rows.append((cand, tier, st))
 
