@@ -1,0 +1,30 @@
+from __future__ import annotations
+from datetime import datetime
+import hashlib,json,shutil,subprocess,sys,tempfile
+from pathlib import Path
+from PIL import Image
+ROOT=Path(__file__).resolve().parent; NAME="@@EXE@@"; VERSION="@@VERSION@@"; WINVER=VERSION+".0"
+def icon_path():
+    ico=ROOT/"assets"/"@@ICON_ICO@@"
+    if ico.is_file(): return ico
+    png=ROOT/"assets"/"@@ICON_PNG@@"
+    if not png.is_file(): png=next((p for p in (ROOT/"assets").glob("*icon*.png")),None)
+    if png is None: raise FileNotFoundError("Application icon PNG missing")
+    Image.open(png).convert("RGBA").save(ico,sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)]); return ico
+def cmd(out):
+    return [sys.executable,"-m","nuitka","--mode=onefile","--assume-yes-for-downloads","--mingw64","--include-package=flet","--include-package-data=flet","--include-package=flet_desktop","--include-package-data=flet_desktop","--include-package=requests","--include-package=certifi","--include-package-data=certifi","--include-package=charset_normalizer","--include-package=urllib3","--include-package=idna","--include-package=PIL",f"--include-data-dir={ROOT/'assets'}=assets",f"--include-data-files={ROOT/'VERSION.txt'}=VERSION.txt","--windows-console-mode=disable","--python-flag=isolated","--python-flag=safe_path",f"--windows-icon-from-ico={icon_path()}",f"--output-dir={out}",f"--output-filename={NAME}.exe","--product-name=@@TITLE@@","--file-description=@@TITLE@@",f"--file-version={WINVER}",f"--product-version={WINVER}","--copyright=FARLINER",str(ROOT/"launcher.py")]
+def manifest(target):
+    files={}
+    for p in sorted(target.rglob("*")):
+        if p.is_file() and p.name!="distribution.json": files[p.relative_to(target).as_posix()]={"size":p.stat().st_size,"sha256":hashlib.sha256(p.read_bytes()).hexdigest()}
+    (target/"distribution.json").write_text(json.dumps({"version":VERSION,"builder":"Nuitka 4.2.2 onefile","files":files},ensure_ascii=False,indent=2),encoding="utf-8")
+def main():
+    if sys.platform!="win32": raise SystemExit("Windows release must be built on Windows")
+    outtmp=Path(tempfile.mkdtemp(prefix="@@PRODUCT@@-Nuitka-")); subprocess.run(cmd(outtmp),cwd=ROOT,check=True); exe=outtmp/f"{NAME}.exe"
+    if not exe.is_file():
+        matches=list(outtmp.rglob(f"{NAME}.exe")); exe=matches[0] if len(matches)==1 else exe
+    if not exe.is_file(): raise FileNotFoundError("Nuitka EXE not found")
+    release=ROOT/"dist"/datetime.now().strftime("%Y%m%d-%H%M%S"); target=release/NAME; target.mkdir(parents=True,exist_ok=True); shutil.copy2(exe,target/f"{NAME}.exe"); shutil.copytree(ROOT/"data",target/"data",dirs_exist_ok=True); shutil.copytree(ROOT/"cache",target/"cache",dirs_exist_ok=True); shutil.copy2(ROOT/"VERSION.txt",target/"VERSION.txt")
+    if (ROOT/"README_PORTABLE_RU.md").is_file(): shutil.copy2(ROOT/"README_PORTABLE_RU.md",target/"README_PORTABLE_RU.md")
+    subprocess.run([str(target/f"{NAME}.exe"),"--self-test"],cwd=target,check=True,timeout=180); manifest(target); archive=shutil.make_archive(str(release/f"{NAME}-{VERSION}-Portable"),"zip",root_dir=release,base_dir=NAME); print(archive); return 0
+if __name__=="__main__": raise SystemExit(main())

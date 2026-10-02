@@ -1,0 +1,84 @@
+name: Build PC Portables
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "pc/build-request.txt"
+      - "pc/make_builder.py"
+      - "pc/runtime/**"
+      - ".github/workflows/build-pc.yml"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        product: [wrca, mlca]
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+      - name: Generate current PC Builder
+        id: prep
+        shell: pwsh
+        run: |
+          python pc/make_builder.py --product "${{ matrix.product }}" --output _pc
+          $builder = Get-ChildItem _pc -Directory | Select-Object -First 1
+          if (-not $builder) { throw "Builder directory was not generated" }
+          $version = (Get-Content (Join-Path $builder.FullName "VERSION.txt") -Raw).Trim()
+          "builder=$($builder.FullName)" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Get-Content (Join-Path $builder.FullName "PC_BUILD_METADATA.json")
+      - name: Build verified one-file EXE
+        shell: pwsh
+        run: |
+          Push-Location "${{ steps.prep.outputs.builder }}"
+          cmd /c build_exe.bat
+          $code = $LASTEXITCODE
+          if (Test-Path build.log) { Get-Content build.log -Tail 300 }
+          if ($code -ne 0) { throw "build_exe.bat failed with exit code $code" }
+          Pop-Location
+      - name: Collect Builder + Portable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path _deliverables | Out-Null
+          $builder = "${{ steps.prep.outputs.builder }}"
+          $builderZip = Get-ChildItem _pc -File -Filter "*.zip" | Select-Object -First 1
+          if (-not $builderZip) { throw "Builder ZIP missing" }
+          Copy-Item $builderZip.FullName _deliverables -Force
+          $portable = Get-ChildItem (Join-Path $builder "dist") -Recurse -File -Filter "*-Portable.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $portable) { throw "Portable ZIP missing" }
+          Copy-Item $portable.FullName _deliverables -Force
+          Get-ChildItem _deliverables | ForEach-Object { Get-FileHash $_.FullName -Algorithm SHA256 }
+      - name: Upload verified PC files
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.product }}-pc-${{ steps.prep.outputs.version }}
+          path: _deliverables/*.zip
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish versioned GitHub Release
+        if: success()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $product = "${{ matrix.product }}"
+          $version = "${{ steps.prep.outputs.version }}"
+          $tag = "$product-pc-$version"
+          gh release view $tag --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -eq 0) { gh release delete $tag --repo "${{ github.repository }}" --yes }
+          git push origin ":refs/tags/$tag" 2>$null
+          gh release create $tag _deliverables/*.zip --repo "${{ github.repository }}" --title "$product $version Windows PC" --notes "Verified Windows Builder + Portable EXE built on GitHub Actions from the current APK source and current verified data package."

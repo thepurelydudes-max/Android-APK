@@ -1,1 +1,0 @@
-# Paths are relative to cache/. One path per line.

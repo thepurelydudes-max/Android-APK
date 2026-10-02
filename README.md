@@ -1,38 +1,27 @@
-# FARLINER Android APK builds
+# FARLINER Counter Assistants
 
-This repository builds Android APK files for:
+Current projects:
 
-- Wild Rift Counter Assistant
-- Mobile Legends Counter Assistant
+- `wild_rift/` — WRCA Android/application source.
+- `mlbb/` — MLCA Android/application source.
+- `wrca_data/` — verified WRCA GitHub data-package pipeline.
+- `mlca_data/` — verified MLCA GitHub data-package pipeline.
+- `pc/` — Windows Builder generator and build trigger.
 
-## One-time source import
+## Android
 
-Upload these two archives to the repository root **without renaming them**:
+Use **Actions → Build Android APK** to build the current APK versions.
 
-- `SRC WILD RIFT.zip`
-- `SRC_MLBB_1.0.5_REWORKED.zip`
+## Windows PC
 
-The workflow **Import full SRC archives** starts automatically after the upload. It unpacks the archives and commits the complete projects to:
+Windows EXE files are built on GitHub `windows-latest`, so a local PC does not need to run Nuitka.
+A change to `pc/build-request.txt` starts **Build PC Portables**, which builds WRCA and MLCA in parallel and produces for each application:
 
-- `wild_rift/`
-- `mlbb/`
+- a current PC Builder ZIP;
+- a verified Portable ZIP containing the ready-to-run EXE.
 
-All bundled PNG images, databases, cache assets, icons and Python files are kept.
+The PC Builder is generated from the same current application source used for the APK plus a small Windows-specific layer for filesystem/update behavior. Data/cache are restored from the current verified GitHub data package instead of being duplicated in Git.
 
-## Build APK
+## Repository history
 
-Open **Actions → Build Android APK → Run workflow** and choose:
-
-- `wild_rift`
-- `mlbb`
-- `both`
-
-The finished APK build is saved as a GitHub Actions artifact named `FARLINER-...-APK`.
-
-## Toolchain
-
-- Ubuntu GitHub runner
-- Python 3.12
-- Java 17
-- Flet CLI 1.0.1
-- Flutter / Android SDK prepared by Flet as required
+Obsolete source-import archives, retired WLCA package experiments, old broken PC workflows and WRCA `BUILD_LOGIC_*` notes below 3.8.1 were removed from the current `main` tree. Their history remains available in Git commits; history was not rewritten.
