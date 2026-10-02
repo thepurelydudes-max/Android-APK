@@ -320,6 +320,7 @@ jobs:
             engine.py \
             draft_matrix_engine.py \
             package_updater.py \
+            sources.py \
             paths.py \
             localization.py \
             adaptive_descriptions.py \
@@ -344,7 +345,6 @@ jobs:
             moonton_gms.py \
             prepare_bundled_seed.py \
             updater.py \
-            sources.py \
             data_contract.py \
             media_cache.py \
             README_REWORK_RU.txt; do
