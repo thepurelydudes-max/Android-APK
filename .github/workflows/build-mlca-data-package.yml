@@ -1,0 +1,163 @@
+name: Build MLCA Data Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: "Optional data package version (blank = UTC date + run number)"
+        required: false
+        default: ""
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - ".mlca-data-package-trigger"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package-builder dependencies
+        run: python -m pip install "requests>=2.32.0" "Pillow>=10.0"
+
+      - name: Restore current verified MLCA package or bootstrap 2.1.6
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          CURRENT_ZIP="${{ runner.temp }}/mlca-current.zip"
+          CURRENT_DIR="${{ runner.temp }}/mlca-current"
+          URL="$(python -c 'import json; print(json.load(open("mlca_data/latest.json", encoding="utf-8")).get("download_url",""))')"
+          SHA="$(python -c 'import json; print(json.load(open("mlca_data/latest.json", encoding="utf-8")).get("sha256",""))')"
+          RESTORED=0
+
+          if [[ -n "$URL" ]] && curl --fail --location --retry 3 --retry-all-errors "$URL" -o "$CURRENT_ZIP"; then
+            if [[ -n "$SHA" ]] && echo "$SHA  $CURRENT_ZIP" | sha256sum --check --status; then
+              rm -rf "$CURRENT_DIR"
+              mkdir -p "$CURRENT_DIR"
+              unzip -q "$CURRENT_ZIP" -d "$CURRENT_DIR"
+              if [[ -f "$CURRENT_DIR/data/mobilelegends.db" && -d "$CURRENT_DIR/cache" ]]; then
+                RESTORED=1
+              fi
+            fi
+          fi
+
+          if [[ "$RESTORED" != "1" ]]; then
+            echo "No verified MLCA package yet; bootstrapping from MLCA 2.1.6 APK."
+            BOOT="${{ runner.temp }}/mlca-bootstrap"
+            rm -rf "$BOOT" "$CURRENT_DIR"
+            mkdir -p "$BOOT" "$CURRENT_DIR"
+            gh run download 36922722629               --repo "${{ github.repository }}"               --name "MLCA-2.1.6-APK"               --dir "$BOOT"
+            APK="$(find "$BOOT" -type f -name '*.apk' -print -quit)"
+            test -n "$APK" && test -f "$APK"
+            unzip -p "$APK" assets/app.zip > "${{ runner.temp }}/mlca-bootstrap-app.zip"
+            APPDIR="${{ runner.temp }}/mlca-bootstrap-app"
+            rm -rf "$APPDIR"
+            mkdir -p "$APPDIR"
+            unzip -q "${{ runner.temp }}/mlca-bootstrap-app.zip" 'assets/cache/*' 'assets/data/*' -d "$APPDIR"
+            cp -a "$APPDIR/assets/cache" "$CURRENT_DIR/"
+            cp -a "$APPDIR/assets/data" "$CURRENT_DIR/"
+          fi
+
+          test -f "$CURRENT_DIR/data/mobilelegends.db"
+          test -d "$CURRENT_DIR/cache"
+          rm -rf "$GITHUB_WORKSPACE/mlbb/assets/cache" "$GITHUB_WORKSPACE/mlbb/assets/data"
+          mkdir -p "$GITHUB_WORKSPACE/mlbb/assets"
+          cp -a "$CURRENT_DIR/cache" "$GITHUB_WORKSPACE/mlbb/assets/"
+          cp -a "$CURRENT_DIR/data" "$GITHUB_WORKSPACE/mlbb/assets/"
+
+      - name: Refresh and audit MLCA data on GitHub
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/mlca_package_runtime
+          FLET_ASSETS_DIR: ${{ github.workspace }}/mlbb/assets
+        run: |
+          set -euo pipefail
+          python mlbb/prepare_bundled_seed.py
+
+      - name: Apply repository-prepared data overrides
+        shell: bash
+        run: |
+          set -euo pipefail
+          python mlca_data/source/apply_update.py --assets-root mlbb/assets
+
+      - name: Choose package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUESTED="${{ inputs.package_version }}"
+          if [[ -n "$REQUESTED" ]]; then
+            VERSION="$REQUESTED"
+          else
+            VERSION="$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}"
+          fi
+          TAG="mlca-data-$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build and validate MLCA package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist/mlca-data
+          python mlca_data/build_package.py             --assets-root mlbb/assets             --output dist/mlca-data             --package-version "${{ steps.version.outputs.version }}"             --release-tag "${{ steps.version.outputs.tag }}"             --min-app-version "2.1.7"
+          cat dist/mlca-data/latest.json
+
+      - name: Publish immutable GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ZIP="$(find dist/mlca-data -maxdepth 1 -name 'MLCA-data-*.zip' -print -quit)"
+          SHA="$ZIP.sha256"
+          gh release create "${{ steps.version.outputs.tag }}"             "$ZIP" "$SHA" dist/mlca-data/manifest.json dist/mlca-data/latest.json             --repo "${{ github.repository }}"             --title "MLCA Data ${{ steps.version.outputs.version }}"             --notes-file dist/mlca-data/release-notes.md
+
+      - name: Point MLCA updater to the verified release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git reset --hard HEAD
+          git fetch origin main
+          git rebase origin/main
+          cp dist/mlca-data/latest.json mlca_data/latest.json
+          git add mlca_data/latest.json
+          if git diff --cached --quiet; then
+            echo "latest.json already points to this package"
+          else
+            git commit -m "Publish MLCA data ${{ steps.version.outputs.version }}"
+            git push origin HEAD:main
+          fi
+
+      - name: Upload diagnostic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MLCA-data-${{ steps.version.outputs.version }}
+          path: |
+            dist/mlca-data/manifest.json
+            dist/mlca-data/latest.json
+            dist/mlca-data/*.sha256
+            dist/mlca-data/release-notes.md
+          if-no-files-found: error
+          retention-days: 30
