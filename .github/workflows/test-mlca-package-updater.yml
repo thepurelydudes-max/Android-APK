@@ -1,0 +1,98 @@
+name: Test MLCA GitHub Package Updater
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".test-mlca-package-updater-trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install "requests>=2.32.0"
+
+      - name: Install current GitHub MLCA package into disposable runtime
+        shell: bash
+        env:
+          FLET_APP_STORAGE_DATA: ${{ runner.temp }}/mlca_runtime
+          FLET_ASSETS_DIR: ${{ github.workspace }}/mlbb/assets
+        run: |
+          set -euo pipefail
+          cd mlbb
+          python - <<'PY'
+          import json
+          import requests
+          import paths
+
+          paths.ensure_initial_data()
+          import package_updater
+
+          remote = package_updater._fetch_latest(requests.Session())
+          identity = {
+              "package_version": str(remote.get("package_version") or ""),
+              "sha256": str(remote.get("sha256") or "").lower(),
+              "size_bytes": int(remote["size_bytes"]),
+              "download_url": str(remote["download_url"]),
+          }
+
+          # Seed an interrupted download. The updater must resume or safely restart.
+          package_updater.UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+          package_updater.PART_META_PATH.write_text(
+              json.dumps(identity, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          with requests.get(remote["download_url"], stream=True, timeout=(20, 90)) as response:
+              response.raise_for_status()
+              with package_updater.PART_PATH.open("wb") as fh:
+                  remaining = min(512 * 1024, max(1, int(remote["size_bytes"]) // 3))
+                  for chunk in response.iter_content(chunk_size=128 * 1024):
+                      if not chunk or remaining <= 0:
+                          break
+                      piece = chunk[:remaining]
+                      fh.write(piece)
+                      remaining -= len(piece)
+
+          partial = package_updater.PART_PATH.stat().st_size
+          assert 0 < partial < int(remote["size_bytes"]), partial
+          print("SEEDED_PARTIAL_BYTES:", partial)
+
+          events = []
+          summary = package_updater.update_all(events.append, "ru")
+          print("\n".join(events))
+          print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+          manifest = json.loads(
+              (paths.RUNTIME_DIR / "data" / "package_manifest.json").read_text(encoding="utf-8")
+          )
+          assert manifest["protocol_version"] == 1
+          assert manifest["package_version"] == remote["package_version"]
+
+          counts = package_updater._database_counts(
+              paths.RUNTIME_DIR / "data" / "mobilelegends.db"
+          )
+          assert counts["champions"] >= 130
+          assert counts["matchup_evidence"] >= 1850
+          assert counts["matchup_directions"] >= 900
+          assert counts["role_builds"] >= 160
+          assert counts["matchup_contract_v2"] == 1
+          assert counts["matchup_source_mlbbhub"] == 1
+          assert counts["matchup_direction_ok"] == 1
+
+          summary2 = package_updater.update_all(events.append, "ru")
+          assert summary2["already_current"] is True
+          assert summary2["downloaded"] is False
+          print("SECOND_CHECK:", json.dumps(summary2, ensure_ascii=False))
+          PY
