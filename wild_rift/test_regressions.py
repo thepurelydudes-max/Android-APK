@@ -21,6 +21,7 @@ from draft_matrix_engine import DraftEdge, DraftMatrixEngine
 import sources
 import updater
 import package_updater
+import item_text_utils
 import paths
 from paths import ensure_initial_data
 
@@ -622,6 +623,23 @@ class AtomicUpdateRegressionTests(unittest.TestCase):
             self.assertEqual(live_db.read_bytes(), b"NEW")
             self.assertTrue((live_cache / "new.txt").is_file())
             self.assertFalse((live_cache / "old.txt").exists())
+
+
+class RuntimeItemTextUtilsRegressionTests(unittest.TestCase):
+    def test_runtime_item_cleaners_do_not_depend_on_sources_module(self):
+        stats = item_text_utils.clean_item_stats([
+            "+55 Attack Damage",
+            "Physical",
+            "Gain 10% damage after attacking",
+        ])
+        self.assertEqual(stats, ["+55 Attack Damage"])
+        effect = item_text_utils.clean_item_effect([
+            "Effect",
+            "Unique: Deal bonus damage.",
+            "Recipe",
+            "Long page chrome that must not be included",
+        ])
+        self.assertEqual(effect, "Unique: Deal bonus damage.")
 
 
 class GitHubPackageUpdaterRegressionTests(unittest.TestCase):
