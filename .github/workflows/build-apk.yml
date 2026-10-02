@@ -61,7 +61,7 @@ jobs:
           run-id: 36425019210
 
       - name: Download canonical MLCA full seed
-        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        if: ${{ (steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded != 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: MLCA-2.1.2-APK
@@ -102,8 +102,59 @@ jobs:
             test -d mlbb/assets || { echo "mlbb/assets is missing."; exit 1; }
           fi
 
+      - name: Restore verified MLCA GitHub package seed
+        if: ${{ (steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE="${{ runner.temp }}/mlca_verified_package.zip"
+          STAGE="${{ runner.temp }}/mlca_verified_package"
+          URL="$(python -c 'import json; print(json.load(open("mlca_data/latest.json", encoding="utf-8"))["download_url"])')"
+          SHA="$(python -c 'import json; print(json.load(open("mlca_data/latest.json", encoding="utf-8"))["sha256"])')"
+          test -n "$URL" && test -n "$SHA" || {
+            echo "::error::mlca_data/latest.json does not point to a verified package."
+            exit 1
+          }
+          curl --fail --location --retry 3 --retry-all-errors "$URL" -o "$PACKAGE"
+          echo "$SHA  $PACKAGE" | sha256sum --check --status || {
+            echo "::error::MLCA package SHA-256 mismatch."
+            exit 1
+          }
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          unzip -q "$PACKAGE" -d "$STAGE"
+          test -f "$STAGE/data/mobilelegends.db"
+          test -d "$STAGE/cache"
+
+          rm -rf "$GITHUB_WORKSPACE/mlbb/assets/cache" "$GITHUB_WORKSPACE/mlbb/assets/data"
+          mkdir -p "$GITHUB_WORKSPACE/mlbb/assets"
+          cp -a "$STAGE/cache" "$GITHUB_WORKSPACE/mlbb/assets/"
+          cp -a "$STAGE/data" "$GITHUB_WORKSPACE/mlbb/assets/"
+
+          python - <<'PY'
+          import json, sqlite3
+          from pathlib import Path
+          db_path = Path("mlbb/assets/data/mobilelegends.db")
+          with sqlite3.connect(db_path) as con:
+              assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+              meta = dict(con.execute("SELECT key,value FROM meta"))
+              assert meta.get("matchup_contract_version") == "2", meta
+              assert meta.get("matchup_evidence_source") == "mlbbhub.matchups", meta
+              assert con.execute("SELECT COUNT(*) FROM matchup_evidence").fetchone()[0] >= 1850
+              assert con.execute("SELECT COUNT(*) FROM matchup_directions").fetchone()[0] >= 900
+              assert con.execute("SELECT COUNT(*) FROM role_builds").fetchone()[0] >= 160
+              print("Verified MLCA package seed:", json.dumps({
+                  "patch": meta.get("patch_version"),
+                  "package": meta.get("package_version"),
+                  "heroes": con.execute("SELECT COUNT(*) FROM champions").fetchone()[0],
+                  "measured": con.execute("SELECT COUNT(*) FROM matchup_evidence").fetchone()[0],
+                  "directions": con.execute("SELECT COUNT(*) FROM matchup_directions").fetchone()[0],
+                  "role_builds": con.execute("SELECT COUNT(*) FROM role_builds").fetchone()[0],
+              }, ensure_ascii=False))
+          PY
+
       - name: Restore canonical MLCA full role-build seed
-        if: ${{ steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both' }}
+        if: ${{ (steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -237,7 +288,7 @@ jobs:
           set -euo pipefail
           python -m pip install -r "$GITHUB_WORKSPACE/mlbb/requirements.txt"
           cd "$GITHUB_WORKSPACE/mlbb"
-          python -m py_compile db.py data_contract.py draft_matrix_engine.py engine.py sources.py updater.py main.py prepare_bundled_seed.py
+          python -m py_compile db.py data_contract.py draft_matrix_engine.py engine.py sources.py updater.py package_updater.py main.py prepare_bundled_seed.py
           python -m unittest -v test_regressions.py test_data_contract.py
 
       - name: Refresh bundled MLBB database and media
@@ -268,10 +319,7 @@ jobs:
             db.py \
             engine.py \
             draft_matrix_engine.py \
-            data_contract.py \
-            sources.py \
-            updater.py \
-            media_cache.py \
+            package_updater.py \
             paths.py \
             localization.py \
             adaptive_descriptions.py \
@@ -295,12 +343,25 @@ jobs:
             collect_mlbb_snapshot.py \
             moonton_gms.py \
             prepare_bundled_seed.py \
+            updater.py \
+            sources.py \
+            data_contract.py \
+            media_cache.py \
             README_REWORK_RU.txt; do
             test ! -e "$RUNTIME_PROJECT/$dead"
           done
 
           echo "Lean MLBB runtime project:"
           find "$RUNTIME_PROJECT" -maxdepth 1 -type f -printf '%f\n' | sort
+
+          FLET_APP_STORAGE_DATA="${{ runner.temp }}/mlca_runtime_smoke" \
+          FLET_ASSETS_DIR="$RUNTIME_PROJECT/assets" \
+          PYTHONPATH="$RUNTIME_PROJECT" \
+          python - <<'PY'
+          import package_updater
+          import main
+          print("Lean MLCA GitHub-package runtime imports: OK")
+          PY
 
       - name: Prepare lean Wild Rift runtime project
         if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
