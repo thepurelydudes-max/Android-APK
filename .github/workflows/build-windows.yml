@@ -52,8 +52,8 @@ jobs:
           if (Test-Path "wild_rift\assets\cache") { Remove-Item "wild_rift\assets\cache" -Recurse -Force }
           Copy-Item "$extract\data" "wild_rift\assets\data" -Recurse
           Copy-Item "$extract\cache" "wild_rift\assets\cache" -Recurse
-          python - <<'PY'
-          import json, sqlite3
+          @'
+          import sqlite3
           from pathlib import Path
           db = Path("wild_rift/assets/data/wildrift.db")
           con = sqlite3.connect(db)
@@ -63,7 +63,7 @@ jobs:
           assert meta.get("package_version"), meta
           print("PC seed:", meta.get("patch_version"), meta.get("last_update"), meta.get("package_version"))
           con.close()
-          PY
+          '@ | python -
 
       - name: Test shared WRCA engine
         shell: pwsh
