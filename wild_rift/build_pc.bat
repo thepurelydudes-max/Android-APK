@@ -17,7 +17,18 @@ python -m pip install "flet[desktop,cli]==1.0.1" pyinstaller "requests>=2.32.0" 
 python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py package_updater.py item_text_utils.py main.py desktop_main.py adaptive_descriptions.py build_pc_release.py
 if errorlevel 1 exit /b 1
 
-python -m unittest -v test_regressions.py
+python -m unittest -v ^
+  test_regressions.FreshInstallSeedRegressionTests ^
+  test_regressions.ResolverRegressionTests ^
+  test_regressions.ChampionIdentityRegressionTests ^
+  test_regressions.RuntimeItemTextUtilsRegressionTests ^
+  test_regressions.GitHubPackageUpdaterRegressionTests ^
+  test_regressions.RecommendationRegressionTests ^
+  test_regressions.PerformanceRegressionTests ^
+  test_regressions.ItemAliasMigrationRegressionTests ^
+  test_regressions.BundledDatabaseSmokeTests ^
+  test_regressions.BootsOfManaLocalizationRegressionTests ^
+  test_regressions.DraftMatrixEngineRegressionTests
 if errorlevel 1 exit /b 1
 
 python -c "from PIL import Image; im=Image.open('assets/icon.png').convert('RGBA'); im.save('assets/icon_windows.ico', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
