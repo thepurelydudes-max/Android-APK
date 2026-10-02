@@ -1,0 +1,27 @@
+name: Inspect WRCA Package Meta
+on:
+  push:
+    branches: [main]
+    paths: [".inspect-wrca-meta-trigger"]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect published WRCA package meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="$(python -c 'import json; print(json.load(open("wrca_data/latest.json", encoding="utf-8"))["download_url"])')"
+          curl --fail --location "$URL" -o /tmp/wrca.zip
+          rm -rf /tmp/wrca && mkdir -p /tmp/wrca
+          unzip -q /tmp/wrca.zip -d /tmp/wrca
+          python - <<'PY'
+          import sqlite3, json
+          con=sqlite3.connect("/tmp/wrca/data/wildrift.db")
+          meta=dict(con.execute("SELECT key,value FROM meta"))
+          print(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True))
+          con.close()
+          PY
