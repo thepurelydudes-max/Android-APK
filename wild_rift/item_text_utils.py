@@ -75,8 +75,13 @@ def clean_item_effect(lines: Iterable[str] | str) -> str:
         if not line:
             continue
         folded = line.casefold()
+        # Recipe/build-navigation marks the end of the actual effect section.
+        # Stop immediately instead of skipping the label and accidentally
+        # appending page chrome that follows it.
+        if folded == "recipe":
+            break
         if folded in {
-            "effect", "stats", "recipe", "physical", "magic",
+            "effect", "stats", "physical", "magic",
             "upgraded", "adaptive", "on-hit",
         }:
             continue
