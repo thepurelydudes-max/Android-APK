@@ -1,0 +1,35 @@
+"""Windows launcher generated from the current APK source."""
+from __future__ import annotations
+import ctypes,json,sys,traceback
+from paths import ensure_initial_data,runtime_dir,resource_path
+def main():
+    root=runtime_dir(); sys.dont_write_bytecode=True
+    try:
+        if sys.platform=="win32":
+            try: ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FARLINER.@@EXE@@")
+            except Exception: pass
+        ensure_initial_data(); import package_updater; package_updater.recover_interrupted_update(); import db,engine,main as mobile_main; db.init_db()
+        apk_update=mobile_main.MobileAssistant.update_data
+        async def pc_update(self,*args,**kwargs):
+            await apk_update(self,*args,**kwargs)
+            try:
+                if package_updater.pending_update_ready():
+                    info=package_updater.pending_update_info(); patch=str(info.get("patch") or ""); pkg=str(info.get("package_version") or ""); ru=getattr(self,"lang","ru")=="ru"
+                    msg="Пакет полностью проверен. Закройте и снова запустите программу — обновление установится до открытия базы." if ru else "Package verified. Close and reopen the app; it will install before the database opens."
+                    if patch: msg+=(f" Патч: {patch}." if ru else f" Patch: {patch}.")
+                    if pkg: msg+=(f" Пакет: {pkg}." if ru else f" Package: {pkg}.")
+                    self.status_text.value=msg; self.page.update()
+            except Exception: pass
+        mobile_main.MobileAssistant.update_data=pc_update
+        if "--self-test" in sys.argv:
+            snap=db.load_runtime_snapshot(); probe=engine.recommend_picks("@@ROLE@@",[("@@ENEMY@@","")],limit=3,snapshot=snap)
+            if not probe: raise RuntimeError("Recommendation engine returned no picks")
+            result={"status":"ok","product":"@@PRODUCT@@","version":"@@VERSION@@","recommendation_probe_count":len(probe),"windows_deferred_update":True}; (root/"logs").mkdir(parents=True,exist_ok=True); (root/"logs"/"self-test.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8"); print(json.dumps(result,ensure_ascii=False)); return 0
+        import flet as ft; ft.run(mobile_main.main,assets_dir=str(resource_path("assets"))); return 0
+    except Exception:
+        details=traceback.format_exc()
+        try: (root/"logs").mkdir(parents=True,exist_ok=True); (root/"logs"/"startup-error.log").write_text(details,encoding="utf-8")
+        except Exception: pass
+        if sys.stderr: print(details,file=sys.stderr)
+        return 1
+if __name__=="__main__": raise SystemExit(main())

@@ -1,0 +1,13 @@
+import json,shutil,sqlite3,tempfile,unittest
+from pathlib import Path
+from pc_update import stage_pending_update,pending_update_ready,apply_pending_update
+class PendingUpdateTests(unittest.TestCase):
+    def payload(self,root,value):
+        root=Path(root); (root/"data").mkdir(parents=True); (root/"cache").mkdir(); con=sqlite3.connect(root/"data"/"@@DB@@"); con.execute("create table t(v text)"); con.execute("insert into t values(?)",(value,)); con.commit(); con.close(); (root/"cache"/"x.txt").write_text(value); (root/"manifest.json").write_text(json.dumps({"package_version":value,"patch":"test"}))
+    def test_deferred_replace(self):
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td); runtime=base/"runtime"; stage=base/"stage"; self.payload(runtime,"old"); self.payload(stage,"new"); stage_pending_update(stage,runtime,"@@DB@@","@@PRODUCT@@"); self.assertTrue(pending_update_ready(runtime,"@@DB@@")); self.assertTrue(apply_pending_update(runtime,"@@DB@@")); con=sqlite3.connect(runtime/"data"/"@@DB@@"); value=con.execute("select v from t").fetchone()[0]; con.close(); self.assertEqual(value,"new")
+    def test_verifier_releases_sqlite(self):
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td); runtime=base/"runtime"; stage=base/"stage"; self.payload(runtime,"old"); self.payload(stage,"new"); stage_pending_update(stage,runtime,"@@DB@@","@@PRODUCT@@"); shutil.rmtree(stage); self.assertFalse(stage.exists())
+if __name__=="__main__": unittest.main()

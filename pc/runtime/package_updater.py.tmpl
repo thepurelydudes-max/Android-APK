@@ -1,0 +1,41 @@
+"""APK package updater plus Windows-safe promotion layer."""
+from __future__ import annotations
+import sys
+from pathlib import Path
+import package_updater_apk as _apk
+from paths import RUNTIME_DIR
+from pc_update import apply_pending_update,pending_update_ready as _pending_ready,pending_info as _pending_info,stage_pending_update,write_apply_error
+PackageUpdateError=_apk.PackageUpdateError
+def _tree_sha256(folder):
+    import hashlib
+    folder=Path(folder); h=hashlib.sha256()
+    if not folder.is_dir(): return ""
+    files=[p for p in folder.rglob("*") if p.is_file()]; files.sort(key=lambda p:p.relative_to(folder).as_posix())
+    for p in files:
+        rel=p.relative_to(folder).as_posix().encode("utf-8"); h.update(len(rel).to_bytes(4,"big")); h.update(rel)
+        with p.open("rb") as f:
+            for chunk in iter(lambda:f.read(1<<20),b""): h.update(chunk)
+    return h.hexdigest()
+_DB_FILENAME="@@DB@@"; _PRODUCT="@@PRODUCT@@"; _apk_promote=_apk._promote; _apk_recover=_apk.recover_interrupted_update; _apk_version=_apk._app_version
+def _pc_version():
+    try:
+        v=(Path(RUNTIME_DIR)/"VERSION.txt").read_text(encoding="utf-8").strip()
+        if v: return v
+    except Exception: pass
+    return _apk_version()
+def _pc_promote(stage):
+    if sys.platform=="win32": stage_pending_update(Path(stage),Path(RUNTIME_DIR),_DB_FILENAME,_PRODUCT); return
+    return _apk_promote(stage)
+_apk._tree_sha256=_tree_sha256; _apk._promote=_pc_promote; _apk._app_version=_pc_version
+@@PROXY_CODE@@
+def pending_update_ready(): return _pending_ready(Path(RUNTIME_DIR),_DB_FILENAME)
+def pending_update_info(): return _pending_info(Path(RUNTIME_DIR))
+def recover_interrupted_update():
+    recovered=False
+    try: recovered=bool(_apk_recover())
+    except Exception as exc: write_apply_error(Path(RUNTIME_DIR),exc)
+    if sys.platform=="win32" and pending_update_ready():
+        try: return bool(apply_pending_update(Path(RUNTIME_DIR),_DB_FILENAME)) or recovered
+        except Exception as exc: write_apply_error(Path(RUNTIME_DIR),exc); return recovered
+    return recovered
+def __getattr__(name): return getattr(_apk,name)
