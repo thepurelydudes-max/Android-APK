@@ -9,7 +9,7 @@ on:
       - ".build-pc-trigger"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
@@ -33,6 +33,38 @@ jobs:
           flet --version
           python --version
 
+      - name: Restore current verified WRCA package
+        shell: pwsh
+        run: |
+          $latest = Get-Content "wrca_data/latest.json" -Raw | ConvertFrom-Json
+          $zip = Join-Path $env:RUNNER_TEMP "wrca-data.zip"
+          Invoke-WebRequest -Uri $latest.download_url -OutFile $zip
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $latest.sha256.ToLowerInvariant()) {
+            throw "WRCA data package SHA-256 mismatch"
+          }
+          $extract = Join-Path $env:RUNNER_TEMP "wrca-data"
+          if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          if (!(Test-Path "$extract\data\wildrift.db")) { throw "wildrift.db missing in WRCA data package" }
+          if (!(Test-Path "$extract\cache")) { throw "cache missing in WRCA data package" }
+          if (Test-Path "wild_rift\assets\data") { Remove-Item "wild_rift\assets\data" -Recurse -Force }
+          if (Test-Path "wild_rift\assets\cache") { Remove-Item "wild_rift\assets\cache" -Recurse -Force }
+          Copy-Item "$extract\data" "wild_rift\assets\data" -Recurse
+          Copy-Item "$extract\cache" "wild_rift\assets\cache" -Recurse
+          python - <<'PY'
+          import json, sqlite3
+          from pathlib import Path
+          db = Path("wild_rift/assets/data/wildrift.db")
+          con = sqlite3.connect(db)
+          meta = dict(con.execute("SELECT key,value FROM meta"))
+          assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+          assert meta.get("patch_version") == "7.3a", meta
+          assert meta.get("package_version"), meta
+          print("PC seed:", meta.get("patch_version"), meta.get("last_update"), meta.get("package_version"))
+          con.close()
+          PY
+
       - name: Test shared WRCA engine
         shell: pwsh
         working-directory: wild_rift
@@ -40,7 +72,7 @@ jobs:
           FLET_APP_STORAGE_DATA: ${{ runner.temp }}\wrca_pc_test
           FLET_ASSETS_DIR: ${{ github.workspace }}\wild_rift\assets
         run: |
-          python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py main.py desktop_main.py adaptive_descriptions.py build_pc_release.py
+          python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py package_updater.py item_text_utils.py main.py desktop_main.py adaptive_descriptions.py build_pc_release.py
           python -m unittest -v test_regressions.py
 
       - name: Create Windows icon
@@ -78,6 +110,19 @@ jobs:
           if (!(Test-Path "release\WildRiftCounterAssistant\data\wildrift.db")) { throw "Database missing" }
           if (!(Test-Path "release\WildRiftCounterAssistant\cache\champions")) { throw "Champion cache missing" }
           if (!(Test-Path "release\WildRiftCounterAssistant\cache\items")) { throw "Item cache missing" }
+
+      - name: Publish WRCA 3.9.2 PC portable release
+        if: success()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = (Get-Content "wild_rift\VERSION.txt" -Raw).Trim()
+          $zip = "wild_rift\release\WildRiftCounterAssistant-$version-Portable-FREE.zip"
+          $tag = "wrca-pc-$version"
+          gh release delete $tag --repo "${{ github.repository }}" --yes 2>$null
+          git push origin ":refs/tags/$tag" 2>$null
+          gh release create $tag $zip --repo "${{ github.repository }}" --title "WRCA $version Windows Portable" --notes "WRCA $version Windows portable. Same recommendation logic and GitHub data-package updater as Android 3.9.2."
 
       - name: Upload Windows portable
         uses: actions/upload-artifact@v4
