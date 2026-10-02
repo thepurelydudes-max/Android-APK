@@ -12,9 +12,12 @@ from paths import RUNTIME_DIR, ensure_initial_data, resolve_media_path
 # Android bundles are read-only. Seed the writable database/cache before db.py
 # captures its paths at import time.
 ensure_initial_data()
+import package_updater as updater
+# If Android was killed during the final verified-package swap, recover the
+# previous working database/cache before db.py opens SQLite.
+updater.recover_interrupted_update()
 import db
 import engine
-import updater
 from adaptive_descriptions import contextual_item_explanation
 
 
@@ -68,18 +71,19 @@ TEXT = {
         "stats": "Характеристики",
         "effect": "Эффект",
         "update": "Обновить данные",
-        "updating": "Обновляю локальную базу из интернет-источников…",
-        "updated": "Данные обновлены.",
+        "updating": "Проверяю полный пакет данных MLCA на GitHub…",
+        "updated": "Пакет данных установлен.",
         "update_error": "Ошибка обновления",
         "patch": "Патч",
         "last_update": "База",
+        "package": "Пакет",
         "lang": "EN",
         "selected": "Мой герой",
         "draft_matchup": "Матчап",
         "evidence": "Данные",
         "recommended_items": "Рекомендуемые предметы",
         "build_description": "Описание сборки",
-        "offline": "Основная работа офлайн; интернет нужен только для обновления базы.",
+        "offline": "Основная работа офлайн; обновление скачивается одним проверенным пакетом с GitHub.",
         "attribution": "Матчапы: Moonton GMS и внутриигровые контрпики через MLBBHub. Мета/сборки: MLBBDex и Rone. MLBB © Moonton. Неофициальное приложение.",
     },
     "en": {
@@ -102,18 +106,19 @@ TEXT = {
         "stats": "Stats",
         "effect": "Effect",
         "update": "Update data",
-        "updating": "Updating the local database from internet sources…",
-        "updated": "Data updated.",
+        "updating": "Checking the complete MLCA data package on GitHub…",
+        "updated": "Data package installed.",
         "update_error": "Update error",
         "patch": "Patch",
         "last_update": "Database",
+        "package": "Package",
         "lang": "RU",
         "selected": "My hero",
         "draft_matchup": "Matchup",
         "evidence": "Evidence",
         "recommended_items": "Recommended items",
         "build_description": "Build description",
-        "offline": "Normal use is offline; internet is required only for database updates.",
+        "offline": "Normal use is offline; updates download as one verified package from GitHub.",
         "attribution": "Matchups: Moonton GMS and in-game counter lists via MLBBHub. Meta/builds: MLBBDex and Rone. MLBB © Moonton. Unofficial app.",
     },
 }
@@ -398,11 +403,14 @@ class MobileAssistant:
     def header_meta_value(self) -> str:
         patch = db.get_meta("patch_version", "")
         last = db.get_meta("last_update", "")
+        package = db.get_meta("package_version", "")
         info_parts = []
         if patch:
             info_parts.append(f"{self.t('patch')}: {patch}")
         if last:
             info_parts.append(f"{self.t('last_update')}: {last}")
+        if package:
+            info_parts.append(f"{self.t('package')}: {package}")
         return " • ".join(info_parts) if info_parts else self.t("offline")
 
     def header(self) -> ft.Control:
@@ -1250,33 +1258,34 @@ class MobileAssistant:
         self.page.update()
 
     def _apply_update_progress(self, message: str) -> None:
-        """Translate updater text into a visible stage and progress bar value."""
+        """Translate four-stage GitHub package progress into the progress bar."""
         message = str(message or "").strip()
         if not message:
             return
         self.status_text.value = message
         self.status_text.color = P["cyan_soft"]
 
-        stage_match = re.match(r"\s*([1-6])/6\b", message)
+        stage_match = re.match(r"\s*([1-4])/4\b", message)
         if stage_match:
             self._update_stage = int(stage_match.group(1))
             if self.update_progress:
-                # A stage message means that stage has just started.
-                self.update_progress.value = max(0.0, min(1.0, (self._update_stage - 1) / 6.0))
+                self.update_progress.value = max(
+                    0.0, min(1.0, (self._update_stage - 1) / 4.0)
+                )
             return
 
-        # Stage 6 emits detailed image-cache counters. Reflect those as
-        # fractional progress instead of leaving the bar apparently frozen.
-        count_match = re.search(r"(\d+)\s*/\s*(\d+)", message)
-        if count_match and self._update_stage >= 6 and self.update_progress:
-            current = int(count_match.group(1))
-            total = max(1, int(count_match.group(2)))
+        # The download stage reports current/total MiB. Reflect it continuously.
+        count_match = re.search(
+            r"([0-9]+(?:\.[0-9]+)?)\s*/\s*([0-9]+(?:\.[0-9]+)?)\s*МБ",
+            message,
+            flags=re.I,
+        )
+        if count_match and self._update_stage == 2 and self.update_progress:
+            current = float(count_match.group(1))
+            total = max(0.001, float(count_match.group(2)))
             fraction = max(0.0, min(1.0, current / total))
-            is_items = ("предмет" in message.casefold()) or ("item" in message.casefold())
-            if is_items:
-                self.update_progress.value = (5.5 + 0.5 * fraction) / 6.0
-            else:
-                self.update_progress.value = (5.0 + 0.5 * fraction) / 6.0
+            self.update_progress.value = (1.0 + fraction) / 4.0
+
 
     async def update_data(self, _e=None) -> None:
         if self.update_button:
@@ -1362,7 +1371,10 @@ class MobileAssistant:
             if self.header_meta_text is not None:
                 self.header_meta_text.value = self.header_meta_value()
 
-            msg = self.t("updated")
+            if summary.get("already_current"):
+                msg = "База уже актуальна." if self.lang == "ru" else "Data is already up to date."
+            else:
+                msg = self.t("updated")
             if summary.get("patch"):
                 msg += f" {self.t('patch')}: {summary['patch']}."
             if errors:
