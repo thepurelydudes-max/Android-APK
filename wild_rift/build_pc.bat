@@ -14,7 +14,7 @@ call .venv-build-pc\Scripts\activate.bat
 python -m pip install --upgrade pip
 python -m pip install "flet[desktop,cli]==1.0.1" pyinstaller "requests>=2.32.0" "Pillow>=10.4.0" "beautifulsoup4>=4.12.0"
 
-python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py main.py desktop_main.py adaptive_descriptions.py build_pc_release.py
+python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py package_updater.py item_text_utils.py main.py desktop_main.py adaptive_descriptions.py build_pc_release.py
 if errorlevel 1 exit /b 1
 
 python -m unittest -v test_regressions.py
