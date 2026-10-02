@@ -13,6 +13,52 @@ PROTOCOL_VERSION = 1
 DEFAULT_MIN_APP_VERSION = "3.9.0"
 REPO = "thepurelydudes-max/Android-APK"
 
+def load_package_source_metadata() -> dict:
+    path = Path(__file__).resolve().parent / "source" / "package_metadata.json"
+    if not path.is_file():
+        raise SystemExit(f"Missing package metadata file: {path}")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"Invalid package metadata JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise SystemExit("package_metadata.json must contain a JSON object")
+    patch = str(value.get("patch") or "").strip()
+    if not patch:
+        raise SystemExit("package_metadata.json must define a non-empty patch")
+    return value
+
+def write_package_db_metadata(
+    database: Path,
+    *,
+    package_version: str,
+    patch: str,
+    generated_at: datetime,
+) -> None:
+    display_time = generated_at.astimezone(timezone.utc).strftime("%d-%m-%Y %H:%M")
+    iso_time = generated_at.astimezone(timezone.utc).isoformat()
+    rows = {
+        "patch_version": patch,
+        "tier_patch": patch,
+        "item_dataset_checked_patch": patch,
+        "last_update": display_time,
+        "last_update_iso": iso_time,
+        "package_version": package_version,
+        "package_generated_at": iso_time,
+        "package_protocol_version": str(PROTOCOL_VERSION),
+    }
+    with sqlite3.connect(database) as con:
+        con.executemany(
+            "INSERT INTO meta(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rows.items(),
+        )
+        con.commit()
+        quick = con.execute("PRAGMA quick_check").fetchone()
+        if not quick or str(quick[0]).casefold() != "ok":
+            raise SystemExit("SQLite quick_check failed after package metadata update")
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -106,6 +152,16 @@ def main() -> int:
     if not db_path.is_file() or not cache.is_dir():
         raise SystemExit("Expected wildrift.db and cache/ in assets root")
 
+    source_meta = load_package_source_metadata()
+    generated_at = datetime.now(timezone.utc)
+    patch = str(source_meta["patch"]).strip()
+    write_package_db_metadata(
+        db_path,
+        package_version=args.package_version,
+        patch=patch,
+        generated_at=generated_at,
+    )
+
     counts, meta = db_audit(db_path)
     champ_icons = len(list((cache / "champions").glob("*.png")))
     item_icons = len(list((cache / "items").glob("*.png")))
@@ -113,16 +169,18 @@ def main() -> int:
     counts["champion_icons"] = champ_icons
     counts["item_icons"] = item_icons
 
-    patch = meta.get("patch_version", "").strip()
-    if not patch:
-        raise SystemExit("patch_version is missing from DB meta")
+    db_patch = meta.get("patch_version", "").strip()
+    if db_patch != patch:
+        raise SystemExit(f"DB patch metadata mismatch: {db_patch!r} != {patch!r}")
+    if meta.get("package_version", "").strip() != args.package_version:
+        raise SystemExit("DB package_version metadata mismatch")
 
     internal = {
         "protocol_version": PROTOCOL_VERSION,
         "package_version": args.package_version,
         "min_app_version": args.min_app_version,
         "patch": patch,
-        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "generated_at_utc": generated_at.isoformat(),
         "source_revision": os.environ.get("GITHUB_SHA", ""),
         "database_sha256": sha256(db_path),
         "cache_sha256": tree_sha256(cache),
