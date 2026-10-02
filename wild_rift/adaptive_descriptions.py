@@ -4,7 +4,7 @@ import json
 import re
 
 import engine
-from sources import clean_wrpocket_item_effect as clean_item_effect, clean_wrpocket_item_stats as clean_item_stats
+from item_text_utils import clean_item_effect, clean_item_stats
 
 _REASON_TEXT = {
     "ru": {
