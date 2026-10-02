@@ -213,7 +213,7 @@ jobs:
           set -euo pipefail
           python -m pip install "requests>=2.32.0" "Pillow>=10.4.0" "beautifulsoup4>=4.12.0"
           cd "$GITHUB_WORKSPACE/wild_rift"
-          python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py package_updater.py main.py prepare_bundled_seed.py
+          python -m py_compile db.py draft_matrix_engine.py engine.py sources.py updater.py package_updater.py item_text_utils.py adaptive_descriptions.py main.py prepare_bundled_seed.py
           python -m unittest -v test_regressions.py
 
       - name: Refresh bundled Wild Rift database and media
@@ -317,6 +317,7 @@ jobs:
             engine.py \
             draft_matrix_engine.py \
             package_updater.py \
+            item_text_utils.py \
             media_cache.py \
             paths.py \
             localization.py \
@@ -395,6 +396,18 @@ jobs:
 
           echo "Lean Wild Rift runtime project:"
           find "$RUNTIME_PROJECT" -maxdepth 1 -type f -printf '%f\n' | sort
+
+          # Import the actual lean runtime before building the APK. py_compile
+          # cannot detect a missing runtime-only module such as sources.py.
+          FLET_APP_STORAGE_DATA="${{ runner.temp }}/wrca_runtime_smoke" \
+          FLET_ASSETS_DIR="$RUNTIME_PROJECT/assets" \
+          PYTHONPATH="$RUNTIME_PROJECT" \
+          python - <<'PY'
+          import adaptive_descriptions
+          import package_updater
+          import main
+          print("Lean WRCA runtime imports: OK")
+          PY
 
       - name: Build Wild Rift APK
         if: ${{ steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both' }}
