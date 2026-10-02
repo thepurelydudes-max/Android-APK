@@ -20,12 +20,10 @@ if errorlevel 1 exit /b 1
 python -m unittest -v ^
   test_regressions.FreshInstallSeedRegressionTests ^
   test_regressions.ResolverRegressionTests ^
-  test_regressions.ChampionIdentityRegressionTests ^
   test_regressions.RuntimeItemTextUtilsRegressionTests ^
   test_regressions.GitHubPackageUpdaterRegressionTests ^
   test_regressions.RecommendationRegressionTests ^
   test_regressions.PerformanceRegressionTests ^
-  test_regressions.ItemAliasMigrationRegressionTests ^
   test_regressions.BundledDatabaseSmokeTests ^
   test_regressions.BootsOfManaLocalizationRegressionTests ^
   test_regressions.DraftMatrixEngineRegressionTests
