@@ -81,6 +81,7 @@ TEXT = {
         "update_error": "Ошибка обновления",
         "patch": "Патч",
         "last_update": "База",
+        "package": "Пакет",
         "lang": "EN",
         "selected": "Мой чемпион",
         "score": "Оценка",
@@ -121,6 +122,7 @@ TEXT = {
         "update_error": "Update error",
         "patch": "Patch",
         "last_update": "Database",
+        "package": "Package",
         "lang": "RU",
         "selected": "My champion",
         "score": "Score",
@@ -366,11 +368,14 @@ class MobileAssistant:
     def header_meta_value(self) -> str:
         patch = db.get_meta("patch_version", "")
         last = db.get_meta("last_update", "")
+        package_version = db.get_meta("package_version", "")
         info_parts = []
         if patch:
             info_parts.append(f"{self.t('patch')}: {patch}")
         if last:
             info_parts.append(f"{self.t('last_update')}: {last}")
+        if package_version:
+            info_parts.append(f"{self.t('package')}: {package_version}")
         return " • ".join(info_parts) if info_parts else self.t("offline")
 
     def header(self) -> ft.Control:
