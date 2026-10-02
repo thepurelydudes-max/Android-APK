@@ -30,7 +30,7 @@ from main import (
 
 
 class DesktopAssistant(MobileAssistant):
-    """Wide-screen Windows shell around the exact same WRCA 3.7.11 logic.
+    """Wide-screen Windows shell around the exact same WRCA 3.9.2 logic.
 
     The Android app and this desktop app share db.py, engine.py,
     draft_matrix_engine.py, updater.py and adaptive_descriptions.py. Only the
