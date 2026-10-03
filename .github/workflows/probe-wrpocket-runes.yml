@@ -34,6 +34,19 @@ jobs:
               if any(x in blob for x in ("lane","top","support","build trend","rune")):
                   if len(txt)<100:
                       print("CTRL",tag.name,repr(txt),attrs)
+          print("SCRIPT_SRCS",[s.get("src") for s in soup.find_all("script") if s.get("src")])
+          lane_buttons=soup.select(".wrp-ci-lanetab")
+          for bi,b in enumerate(lane_buttons):
+              print("LANEBUTTON",bi,b.get_text(" ",strip=True),b.attrs)
+              p=b.parent
+              for depth in range(4):
+                  if not p: break
+                  print("LANE_PARENT",bi,depth,p.name,p.attrs,str(p)[:5000].replace("\n"," "))
+                  p=p.parent
+          for tag in soup.find_all(class_=lambda c: c and "lane" in " ".join(c if isinstance(c,list) else [c]).casefold()):
+              txt=" ".join(tag.get_text(" ",strip=True).split())
+              if len(txt)<200:
+                  print("LANECLASS",tag.name,tag.get("class"),tag.attrs,repr(txt))
           # Find JS/JSON fragments mentioning lane + runes or endpoints.
           for s in soup.find_all("script"):
               body=s.string or s.get_text("\n")
