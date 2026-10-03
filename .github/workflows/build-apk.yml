@@ -15,7 +15,7 @@ on:
   push:
     branches:
       - main
-      - wrca-runes-3.9.3-test
+      - wrca-runes-3.9.4-test
     paths:
       - ".build-trigger"
 
@@ -52,7 +52,7 @@ jobs:
           fi
 
       - name: Download canonical 3.7.12 APK seed
-        if: ${{ github.ref_name != 'wrca-runes-3.9.3-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        if: ${{ github.ref_name != 'wrca-runes-3.9.4-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: FARLINER-Wild-Rift-APK
@@ -104,17 +104,17 @@ jobs:
           fi
 
       - name: Download audited WRCA full-rune database
-        if: ${{ github.ref_name == 'wrca-runes-3.9.3-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') }}
+        if: ${{ github.ref_name == 'wrca-runes-3.9.4-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') }}
         uses: actions/download-artifact@v4
         with:
           name: WRCA-3.9.3-full-rune-database
           path: ${{ runner.temp }}/wrca_full_runes_artifact
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          run-id: 37121525394
+          run-id: 37123062121
 
       - name: Restore verified WRCA GitHub package seed for rune test
-        if: ${{ github.ref_name == 'wrca-runes-3.9.3-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') }}
+        if: ${{ github.ref_name == 'wrca-runes-3.9.4-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -193,6 +193,27 @@ jobs:
                       incomplete.append((key, runes, selected_runes[key][1]))
               assert not incomplete, incomplete
               assert con.execute("SELECT COUNT(*) FROM runes").fetchone()[0] >= 51
+              localized = con.execute(
+                  "SELECT COUNT(*) FROM runes "
+                  "WHERE TRIM(COALESCE(name_ru,''))<>'' "
+                  "AND TRIM(COALESCE(effect_ru,''))<>''"
+              ).fetchone()[0]
+              used_names = set()
+              for raw_json, in con.execute("SELECT runes_json FROM role_runes"):
+                  try:
+                      used_names.update(json.loads(raw_json or "[]"))
+                  except Exception:
+                      pass
+              missing_ru = [
+                  name for name in sorted(used_names)
+                  if not con.execute(
+                      "SELECT 1 FROM runes WHERE name=? "
+                      "AND TRIM(COALESCE(name_ru,''))<>'' "
+                      "AND TRIM(COALESCE(effect_ru,''))<>''",
+                      (name,),
+                  ).fetchone()
+              ]
+              assert not missing_ru, missing_ru
               print("Rune-test seed:", json.dumps({
                   "patch": meta.get("patch_version"),
                   "package": meta.get("package_version"),
@@ -201,6 +222,7 @@ jobs:
                   "rune_catalog": con.execute("SELECT COUNT(*) FROM runes").fetchone()[0],
                   "rune_role_pairs": len(build_pairs & rune_pairs),
                   "five_rune_pages": len(build_pairs),
+                  "localized_runes": localized,
               }, ensure_ascii=False))
           PY
 
@@ -280,7 +302,7 @@ jobs:
           PY
 
       - name: Restore updated 3.7.12 preseed without network refresh
-        if: ${{ github.ref_name != 'wrca-runes-3.9.3-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        if: ${{ github.ref_name != 'wrca-runes-3.9.4-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
