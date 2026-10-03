@@ -1292,6 +1292,30 @@ def _enemy_threat_profile(
     return counts, enemies_by_tag
 
 
+def analyze_enemy_draft(
+    enemies: list[tuple[str, str]],
+    snapshot: dict | None = None,
+) -> dict:
+    """Public, read-only enemy profile for optional recommendation layers.
+
+    It reuses the exact threat semantics already used by adaptive item builds,
+    so experimental rune logic does not invent a second draft classifier.
+    """
+    raw_enemy_objs = [(_find_champ(name, snapshot), role) for name, role in enemies]
+    raw_enemy_objs = [
+        (enemy, enemy_role)
+        for enemy, enemy_role in raw_enemy_objs
+        if enemy
+    ]
+    enemy_objs = _infer_enemy_roles(raw_enemy_objs, snapshot) if raw_enemy_objs else []
+    counts, enemies_by_tag = _enemy_threat_profile(enemy_objs, snapshot)
+    return {
+        "enemy_count": len(enemy_objs),
+        "counts": dict(counts),
+        "enemies_by_tag": {key: list(value) for key, value in enemies_by_tag.items()},
+    }
+
+
 def _trigger_is_active(trigger_text: str, tags: set[str], threat_counts: Counter) -> bool:
     if not tags:
         return False
