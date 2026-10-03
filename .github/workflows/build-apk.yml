@@ -111,7 +111,7 @@ jobs:
           path: ${{ runner.temp }}/wrca_full_runes_artifact
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          run-id: 37120937586
+          run-id: 37121525394
 
       - name: Restore verified WRCA GitHub package seed for rune test
         if: ${{ github.ref_name == 'wrca-runes-3.9.3-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') }}
