@@ -1,11 +1,7 @@
 name: Build Full WRCA Rune Database
 
 on:
-  push:
-    branches:
-      - wrca-runes-3.9.4-test
-    paths:
-      - ".full-runes-trigger"
+  workflow_dispatch:
 
 jobs:
   build:
