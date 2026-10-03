@@ -172,7 +172,12 @@ def main() -> int:
     with sqlite3.connect(args.db) as con:
         con.execute("PRAGMA foreign_keys=ON")
         ensure_schema(con)
-        champs = {str(x[0]) for x in con.execute("SELECT id FROM champions")}
+        champ_ids = [str(x[0]) for x in con.execute("SELECT id FROM champions")]
+        champs = {value.casefold(): value for value in champ_ids}
+        champ_folded = {
+            "".join(ch for ch in value.casefold() if ch.isalnum()): value
+            for value in champ_ids
+        }
         names = canonical_rune_names(con)
 
         normalize_existing_source_rows(con, names)
@@ -182,10 +187,14 @@ def main() -> int:
         con.execute("DELETE FROM role_runes WHERE source=?", (source,))
         inserted = 0
         for row in entries:
-            cid = str(row.get("champion_id") or "")
+            raw_cid = str(row.get("champion_id") or "")
             role = str(row.get("role") or "")
-            if cid not in champs:
-                raise SystemExit(f"Unknown champion in rune fallback: {cid}")
+            cid = champs.get(raw_cid.casefold())
+            if cid is None:
+                folded = "".join(ch for ch in raw_cid.casefold() if ch.isalnum())
+                cid = champ_folded.get(folded)
+            if cid is None:
+                raise SystemExit(f"Unknown champion in rune fallback: {raw_cid}")
             raw_runes = [str(x).strip() for x in (row.get("runes") or []) if str(x).strip()]
             if len(raw_runes) not in (4, 5):
                 raise SystemExit(f"{cid}/{role}: expected 4 or 5 source runes, got {raw_runes}")
