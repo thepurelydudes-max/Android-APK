@@ -70,6 +70,24 @@ jobs:
           for row in cnb_tags[:500]:
               print("CNBTAG",row)
 
+          # Summarize every pre-rendered rank:lane Build Trends panel.
+          for panel in soup.select(".wrp-cnb-panel[data-cnb-for]"):
+              key=panel.get("data-cnb-for")
+              groups=[]
+              for gi,g in enumerate(panel.select(":scope > .wrp-cnb-group, :scope > .wrp-cnb-2col > .wrp-cnb-group")):
+                  txt=" ".join(g.get_text(" ",strip=True).split())
+                  # Determine group by number of icons in a row: runes=5, spells=2, items=3.
+                  rows=[]
+                  for row in g.select("ol.wrp-cnb-tbl > li.wrp-cnb-row:not(.wrp-cnb-head)"):
+                      names=[x.get_text(" ",strip=True) for x in row.select(".wrp-cnb-icons .wrp-cnb-sr")]
+                      pick=(row.select_one(".wrp-cnb-bar").get_text(" ",strip=True) if row.select_one(".wrp-cnb-bar") else "")
+                      win=(row.select_one(".wrp-cnb-wr").get_text(" ",strip=True) if row.select_one(".wrp-cnb-wr") else "")
+                      if names:
+                          rows.append((names,pick,win))
+                  if rows:
+                      groups.append((gi,len(rows[0][0]),rows[:2]))
+              print("PANELSUMMARY",key,groups)
+
           # Rune combo rows with their nearest Build Trends ancestors.
           for ri,tag in enumerate(soup.find_all(class_=lambda x: x and "rune" in " ".join(x if isinstance(x,list) else [x]).casefold())):
               txt=" ".join(tag.get_text(" ",strip=True).split())
