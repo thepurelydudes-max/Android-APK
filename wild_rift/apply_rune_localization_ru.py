@@ -68,6 +68,61 @@ ALIASES = {
     "Axiom arcanist": "Axiom Arcanist",
 }
 
+RUNE_EN_EFFECTS = {
+    "Absolute Focus": "While above 70% health, grants additional adaptive force.",
+    "Aery": "Damaging an enemy sends Aery to hurt them; helping an ally sends Aery to shield them.",
+    "Arcane Comet": "Damaging a champion with an ability launches a comet at their position; repeated hits improve future comets.",
+    "Axiom Arcanist": "Empowers ultimate damage, healing, and shielding; takedowns reduce the remaining ultimate cooldown.",
+    "Battle Zeal": "While fighting enemy champions, gradually increases the damage of your basic abilities.",
+    "Bone Plating": "After taking champion damage, reduces damage from the next few attacks or abilities.",
+    "Botanist": "Destroying plants grants gold and improves their useful effects.",
+    "Brutal": "Basic attacks deal bonus adaptive damage to champions.",
+    "Celerity": "Increases bonus movement speed and grants a small permanent movement-speed bonus.",
+    "Chain Assault": "Hitting with an active ability marks the champion; the next two attacks or active abilities deal bonus adaptive damage.",
+    "Cheap Shot": "Deals bonus true damage to enemies affected by crowd control.",
+    "Conqueror": "Dealing damage builds stacks of adaptive force; at full stacks, healing from damage dealt is improved.",
+    "Coup de Grace": "Deals increased damage to champions at low health.",
+    "Courage of the Colossus": "Immobilizing an enemy champion grants you a shield.",
+    "Cut Down": "Deals increased damage to champions with high current health.",
+    "Dark Harvest": "Damaging a low-health champion deals bonus adaptive damage and harvests a soul that permanently strengthens the rune.",
+    "Demolish": "After charging near a turret, your next attack deals heavy bonus damage to it.",
+    "Electrocute": "Hitting the same champion with three separate attacks or abilities in a short time deals bonus adaptive damage.",
+    "Empowered Attack": "Periodically empowers your next basic attack against a champion with bonus adaptive damage.",
+    "Empowerment": "Three consecutive hits on a champion deal bonus adaptive damage and temporarily increase the damage they take.",
+    "Eyeball Collection": "Champion and epic-monster takedowns build permanent adaptive force.",
+    "First Strike": "Starting combat against a champion first briefly increases true damage dealt and grants gold based on that damage.",
+    "Fleet Footwork": "Moving and attacking builds energy; at full charge, your next attack heals you and helps you move faster.",
+    "Font of Life": "Hitting an enemy champion heals you and a nearby ally with the lowest health.",
+    "Gathering Storm": "Periodically grants increasing adaptive force as the match goes on.",
+    "Grasp of Undying": "After staying in combat, your next attack against a champion is empowered, heals you, and permanently increases max health.",
+    "Guardian": "Protects a nearby ally or an ally you affect with an ability; when heavy damage is taken, both of you gain a shield.",
+    "Hextech Flashtraption": "While Flash is on cooldown, lets you channel briefly to perform a short blink.",
+    "Hubris": "A takedown shortly after damaging an enemy grants temporary adaptive force; kills increase the bonus.",
+    "Ice Overlord": "Immobilizing an enemy creates a slowing icy area, temporarily improves defenses, and deals magic damage around you.",
+    "Ixtali Seedjar": "Destroyed plants drop seeds that can be collected and planted again.",
+    "Last Stand": "Increases your damage while you are at low health.",
+    "Legend Alacrity": "Last hits and takedowns gradually increase attack speed.",
+    "Legend Bloodline": "Last hits and takedowns gradually increase omnivamp.",
+    "Legend: Haste": "Last hits and monster or minion kills grant stacks of ability haste.",
+    "Lethal Tempo": "Attacking champions stacks attack speed; at full stacks, basic attacks gain an additional benefit.",
+    "Manaflow Band": "Hitting champions with abilities gradually increases maximum mana and improves mana sustain.",
+    "Nimbus Cloak": "Casting a summoner spell temporarily increases movement speed.",
+    "Nullifying Orb": "When your health falls to a dangerous level, grants a protective shield.",
+    "Overgrowth": "Nearby minion and monster deaths permanently increase maximum health.",
+    "Perseverance": "While affected by crowd control, temporarily increases armor and magic resistance.",
+    "Phase Rush": "Three separate hits on a champion in a short time grant movement speed and help you cast basic abilities more often.",
+    "Relentless Hunter": "Increases movement speed out of combat; takedowns strengthen the bonus.",
+    "Revitalize": "Improves healing and shielding, especially on low-health targets.",
+    "Scorch": "After hitting a champion with an ability, deals additional magic damage shortly afterward.",
+    "Second Wind": "After taking champion damage, restores part of your missing health and is especially useful against repeated poke.",
+    "Sudden Impact": "After dashing, leaping, teleporting, or leaving stealth, your next champion hit deals bonus true damage.",
+    "Transcendence": "Grants ability haste and helps you cast basic abilities more frequently.",
+    "Triumph": "Takedowns restore part of your missing health and resource and briefly increase movement speed.",
+    "Tyrant": "Hitting a champion below 50% health deals bonus adaptive damage.",
+    "Unshakeable": "Increases armor and magic resistance; the bonus becomes stronger near multiple enemy champions.",
+    "Zombie Ward": "Destroying an enemy ward creates a friendly Zombie Ward and grants stacking adaptive force.",
+}
+
 
 def _rewrite_json_names(raw: str) -> str:
     try:
@@ -152,10 +207,14 @@ def main() -> int:
             row = con.execute("SELECT name FROM runes WHERE name=?", (name,)).fetchone()
             if row is None:
                 raise SystemExit(f"Rune missing from catalog: {name}")
+            effect_en = RUNE_EN_EFFECTS.get(name, "").strip()
+            if not effect_en:
+                raise SystemExit(f"Missing EN rune description: {name}")
             con.execute(
-                """UPDATE runes SET name_ru=?,effect_ru=?,updated_at=CURRENT_TIMESTAMP
+                """UPDATE runes SET
+                     name_ru=?,effect_ru=?,effect_en=?,updated_at=CURRENT_TIMESTAMP
                    WHERE name=?""",
-                (name_ru, effect_ru, name),
+                (name_ru, effect_ru, effect_en, name),
             )
 
         used = set()
@@ -183,7 +242,16 @@ def main() -> int:
             row = con.execute(
                 "SELECT name_ru,effect_ru FROM runes WHERE name=?", (name,)
             ).fetchone()
-            if not row or not str(row["name_ru"] or "").strip() or not str(row["effect_ru"] or "").strip():
+            if (
+                not row
+                or not str(row["name_ru"] or "").strip()
+                or not str(row["effect_ru"] or "").strip()
+                or not str(
+                    con.execute(
+                        "SELECT effect_en FROM runes WHERE name=?", (name,)
+                    ).fetchone()[0] or ""
+                ).strip()
+            ):
                 missing.append(name)
         if missing:
             raise SystemExit("Missing RU rune localization: " + ", ".join(missing))

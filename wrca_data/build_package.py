@@ -119,7 +119,8 @@ def db_audit(path: Path) -> tuple[dict[str, int], dict[str, str]]:
             con.execute(
                 "SELECT COUNT(*) FROM runes "
                 "WHERE TRIM(COALESCE(name_ru,''))<>'' "
-                "AND TRIM(COALESCE(effect_ru,''))<>''"
+                "AND TRIM(COALESCE(effect_ru,''))<>'' "
+                "AND TRIM(COALESCE(effect_en,''))<>''"
             ).fetchone()[0]
         )
         meta = {str(k): str(v) for k, v in con.execute("SELECT key,value FROM meta")}

@@ -1496,14 +1496,12 @@ class MobileAssistant:
 
         self.refresh_role_controls()
 
-        # Keep the already-created dropdown/menu controls. Only their text is
-        # changed, so hundreds of portrait controls are not recreated.
+        # DropdownOption controls are frozen after they are mounted in Flet 1.0.
+        # Never mutate option.text in place: replacing the options collection is
+        # safe and language switching is a rare interaction.
         for index, dd in enumerate(self.enemy_dropdowns):
             dd.label = f"{self.t('enemy')} {index + 1}"
-            for option in dd.options or []:
-                champ = self.champ_by_id(str(option.key or ""))
-                if champ:
-                    option.text = self.champ_name(champ)
+            dd.options = self.champion_options()
         for button in self.enemy_clear_buttons:
             button.tooltip = self.t("clear")
 

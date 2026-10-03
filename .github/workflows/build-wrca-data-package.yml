@@ -94,6 +94,7 @@ jobs:
           test -f "$SEED_ROOT/data/wildrift.db"
           test -d "$SEED_ROOT/cache/runes"
           python wrca_data/source/merge_rune_seed.py             --assets-root wild_rift/assets             --seed-root "$SEED_ROOT"
+          python wild_rift/apply_rune_localization_ru.py --db wild_rift/assets/data/wildrift.db
 
       - name: Choose package version
         id: version
