@@ -1447,7 +1447,6 @@ class MobileAssistant:
                 weight=ft.FontWeight.BOLD,
             ),
             *item_rows,
-            *rune_controls,
             ft.Divider(height=1, color=P["border"]),
             ft.Text(
                 self.t("build_description"),
@@ -1455,6 +1454,8 @@ class MobileAssistant:
                 weight=ft.FontWeight.BOLD,
             ),
             *details,
+            ft.Divider(height=1, color=P["border"]),
+            *rune_controls,
             ft.Divider(height=1, color=P["border"]),
             ft.Text(
                 self.t("rune_details"),
