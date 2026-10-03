@@ -120,4 +120,18 @@ jobs:
               low=val.casefold()
               if ("lane" in low or "build" in low) and ("api" in low or "champion" in low):
                   print("URLCAND",val[:500])
+          # Inspect external scripts that populate inactive Build Trends panels.
+          base="https://wrpocket.app"
+          for src in [s.get("src") for s in soup.find_all("script") if s.get("src") and ("champion-sections" in s.get("src") or "data-manager" in s.get("src"))]:
+              js=requests.get(base+src,headers={"User-Agent":"Mozilla/5.0 WRCA-Rune-Audit/1"},timeout=45)
+              print("EXTJS",src,js.status_code,len(js.text))
+              body=js.text
+              low=body.casefold()
+              for needle2 in ("cnb","data-cnb","build trend","fetch(","site_data","combo","runes"):
+                  pos=0; shown=0
+                  while True:
+                      idx=low.find(needle2,pos)
+                      if idx<0 or shown>=20: break
+                      print("EXTCTX",src,needle2,body[max(0,idx-900):min(len(body),idx+2400)].replace("\n"," "))
+                      pos=idx+len(needle2); shown+=1
           PY
