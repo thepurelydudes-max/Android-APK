@@ -52,7 +52,7 @@ jobs:
           fi
 
       - name: Download canonical 3.7.12 APK seed
-        if: ${{ (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        if: ${{ github.ref_name != 'wrca-runes-3.9.3-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: FARLINER-Wild-Rift-APK
@@ -102,6 +102,48 @@ jobs:
             test -f mlbb/main.py || { echo "mlbb/main.py is missing."; exit 1; }
             test -d mlbb/assets || { echo "mlbb/assets is missing."; exit 1; }
           fi
+
+      - name: Restore verified WRCA GitHub package seed for rune test
+        if: ${{ github.ref_name == 'wrca-runes-3.9.3-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE="${{ runner.temp }}/wrca_verified_package.zip"
+          STAGE="${{ runner.temp }}/wrca_verified_package"
+          URL="$(python -c 'import json; print(json.load(open("wrca_data/latest.json", encoding="utf-8"))["download_url"])')"
+          SHA="$(python -c 'import json; print(json.load(open("wrca_data/latest.json", encoding="utf-8"))["sha256"])')"
+          curl --fail --location --retry 3 --retry-all-errors "$URL" -o "$PACKAGE"
+          echo "$SHA  $PACKAGE" | sha256sum --check --status || {
+            echo "::error::WRCA package SHA-256 mismatch."
+            exit 1
+          }
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          unzip -q "$PACKAGE" -d "$STAGE"
+          test -f "$STAGE/data/wildrift.db"
+          test -d "$STAGE/cache"
+
+          rm -rf "$GITHUB_WORKSPACE/wild_rift/assets/cache" "$GITHUB_WORKSPACE/wild_rift/assets/data"
+          mkdir -p "$GITHUB_WORKSPACE/wild_rift/assets"
+          cp -a "$STAGE/cache" "$GITHUB_WORKSPACE/wild_rift/assets/"
+          cp -a "$STAGE/data" "$GITHUB_WORKSPACE/wild_rift/assets/"
+
+          python - <<'PY'
+          import json, sqlite3
+          db_path = "wild_rift/assets/data/wildrift.db"
+          with sqlite3.connect(db_path) as con:
+              assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+              meta = dict(con.execute("SELECT key,value FROM meta"))
+              assert meta.get("patch_version") == "7.3a", meta
+              assert con.execute("SELECT COUNT(*) FROM champions").fetchone()[0] == 142
+              assert con.execute("SELECT COUNT(*) FROM matchups").fetchone()[0] == 9606
+              print("Rune-test seed:", json.dumps({
+                  "patch": meta.get("patch_version"),
+                  "package": meta.get("package_version"),
+                  "champions": con.execute("SELECT COUNT(*) FROM champions").fetchone()[0],
+                  "matchups": con.execute("SELECT COUNT(*) FROM matchups").fetchone()[0],
+              }, ensure_ascii=False))
+          PY
 
       - name: Restore verified MLCA GitHub package seed
         if: ${{ (steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
@@ -179,7 +221,7 @@ jobs:
           PY
 
       - name: Restore updated 3.7.12 preseed without network refresh
-        if: ${{ (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        if: ${{ github.ref_name != 'wrca-runes-3.9.3-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
