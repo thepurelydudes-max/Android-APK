@@ -39,7 +39,15 @@ jobs:
               body=s.string or s.get_text("\n")
               low=body.casefold()
               if "lane" in low and ("rune" in low or "build" in low):
-                  print("SCRIPT",body[:12000].replace("\n"," ")[:12000])
+                  for needle in ("wrp-ci-lanetab","fetch(","trend","lane"):
+                      pos=0
+                      shown=0
+                      while True:
+                          idx=low.find(needle,pos)
+                          if idx<0 or shown>=8: break
+                          a=max(0,idx-700); b=min(len(body),idx+1800)
+                          print("SCRIPTCTX",needle,body[a:b].replace("\n"," "))
+                          pos=idx+len(needle); shown+=1
           for m in re.finditer(r'https?://[^"\'\s<>]+|/[A-Za-z0-9_/?=&.-]+',r.text):
               val=m.group(0)
               low=val.casefold()
