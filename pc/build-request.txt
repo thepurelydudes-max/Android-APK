@@ -1,1 +1,1 @@
-PC build request: WRCA 3.9.5 official rune release using WRCA data 2026.10.03.5
+PC build request: WRCA 3.9.6 language-switch fix and bilingual rune descriptions
