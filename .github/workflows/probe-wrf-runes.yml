@@ -52,4 +52,34 @@ jobs:
                       txt=" ".join(cur.get_text(" ",strip=True).split())
                       if txt and len(txt)<100:
                           print("NEXT",i,cur.name,cur.get("class"),repr(txt))
+          # Root guide links and exact role/block ordering.
+          root=requests.get("https://www.wildriftfire.com/",headers={"User-Agent":"Mozilla/5.0 WRCA-Rune-Audit/1"},timeout=30)
+          rsoup=BeautifulSoup(root.text,"html.parser")
+          links=[]
+          for a in rsoup.select('a[href*="/guide/"]'):
+              href=a.get("href")
+              name=" ".join(a.get_text(" ",strip=True).split())
+              if href and href not in [x[0] for x in links]:
+                  links.append((href,name))
+          print("ROOT_GUIDE_LINKS",len(links),links[:8],links[-8:])
+          selectors=[" ".join(x.get_text(" ",strip=True).split()) for x in soup.select(".wf-champion__guide-selector span")]
+          print("SELECTORS",selectors)
+          spell_blocks=soup.select(".wf-champion__data__spells")
+          print("SPELL_BLOCKS",len(spell_blocks))
+          for bi,block in enumerate(spell_blocks):
+              rune_section=block.select_one(".section.runes")
+              rows=[]
+              if rune_section:
+                  for holder in rune_section.select(".ico-holder"):
+                      name_el=holder.select_one(".name")
+                      img=holder.find("img")
+                      rows.append({
+                          "name": " ".join((name_el.get_text(" ",strip=True) if name_el else holder.get_text(" ",strip=True)).split()),
+                          "img": (img.get("src") or img.get("data-src") or "") if img else "",
+                      })
+              print("ROLE_RUNES",bi,rows)
+          sit_blocks=soup.select(".wf-champion__data__situational-runes")
+          print("SIT_BLOCKS",len(sit_blocks))
+          for bi,block in enumerate(sit_blocks):
+              print("SIT_HTML",bi,str(block)[:2500].replace("\n"," "))
           PY
