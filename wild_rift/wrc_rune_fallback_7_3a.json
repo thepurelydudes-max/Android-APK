@@ -1,7 +1,7 @@
 {
   "patch": "7.3a",
   "source": "wildriftcore.com:indexed-7.3a",
-  "note": "Exact role-specific fallback only for WRCA role_build pairs absent from WR Pocket Tencent lane stats and WildRiftFire role pages.",
+  "note": "Exact role-specific fallback for WRCA role_build pairs absent from stronger lane sources. Five-rune pages verified against WildRiftCore 7.3a rune sections.",
   "entries": [
     {
       "champion_id": "Akshan",
@@ -34,6 +34,7 @@
         "Electrocute",
         "Sudden Impact",
         "Eyeball Collector",
+        "Hubris",
         "Bone Plating"
       ],
       "source_url": "https://wildriftcore.com/en/champions/aurora/builds/"
@@ -45,6 +46,7 @@
         "Grasp of the Undying",
         "Courage of the Colossus",
         "Second Wind",
+        "Axiom Arcanist",
         "Overgrowth"
       ],
       "source_url": "https://wildriftcore.com/en/champions/cho-gath/builds/"
@@ -68,6 +70,7 @@
         "Electrocute",
         "Sudden Impact",
         "Eyeball Collector",
+        "Hubris",
         "Bone Plating"
       ],
       "source_url": "https://wildriftcore.com/en/champions/gragas/builds/"
@@ -79,6 +82,7 @@
         "Electrocute",
         "Sudden Impact",
         "Eyeball Collector",
+        "Hubris",
         "Bone Plating"
       ],
       "source_url": "https://wildriftcore.com/en/champions/gragas/builds/"
@@ -282,6 +286,7 @@
         "Electrocute",
         "Sudden Impact",
         "Eyeball Collector",
+        "Hubris",
         "Bone Plating"
       ],
       "source_url": "https://wildriftcore.com/en/champions/pantheon/builds/"
@@ -317,6 +322,7 @@
         "Electrocute",
         "Sudden Impact",
         "Zombie Ward",
+        "Hubris",
         "Bone Plating"
       ],
       "source_url": "https://wildriftcore.com/en/champions/pyke/builds/"
@@ -400,6 +406,7 @@
         "Electrocute",
         "Sudden Impact",
         "Eyeball Collector",
+        "Hubris",
         "Bone Plating"
       ],
       "source_url": "https://wildriftcore.com/en/champions/talon/builds/"
