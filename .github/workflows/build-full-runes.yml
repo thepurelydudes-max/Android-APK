@@ -3,7 +3,7 @@ name: Build Full WRCA Rune Database
 on:
   push:
     branches:
-      - wrca-runes-3.9.3-test
+      - wrca-runes-3.9.4-test
     paths:
       - ".full-runes-trigger"
 
@@ -47,6 +47,12 @@ jobs:
         run: |
           set -euo pipefail
           python wild_rift/apply_wrc_rune_fallback.py             --db /tmp/wrca-full-runes/data/wildrift.db             --fallback wild_rift/wrc_rune_fallback_7_3a.json
+
+      - name: Apply official Russian rune names and descriptions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python wild_rift/apply_rune_localization_ru.py             --db /tmp/wrca-full-runes/data/wildrift.db
 
       - name: Prove 226 of 226 recommendation coverage
         shell: bash
@@ -100,7 +106,7 @@ jobs:
               rune_catalog = {
                   str(r["name"]): dict(r)
                   for r in con.execute(
-                      "SELECT name,icon_path,icon_url,source,patch FROM runes"
+                      "SELECT name,name_ru,effect_ru,icon_path,icon_url,source,patch FROM runes"
                   )
               }
               bad_pages = []
@@ -122,6 +128,10 @@ jobs:
                       if rr is None:
                           missing_catalog.append((key, name))
                           continue
+                      if not str(rr.get("name_ru") or "").strip():
+                          missing_catalog.append((key, name, "missing name_ru"))
+                      if not str(rr.get("effect_ru") or "").strip():
+                          missing_catalog.append((key, name, "missing effect_ru"))
                       icon_path = str(rr.get("icon_path") or "")
                       if not icon_path or not (Path("/tmp/wrca-full-runes") / icon_path).is_file():
                           missing_icons.append((key, name, icon_path))
@@ -138,6 +148,11 @@ jobs:
                   "selected_source_counts": source_counts,
                   "catalog_runes": len(rune_catalog),
                   "used_runes": len(used_names),
+                  "localized_used_runes": sum(
+                      1 for name in used_names
+                      if str((rune_catalog.get(name) or {}).get("name_ru") or "").strip()
+                      and str((rune_catalog.get(name) or {}).get("effect_ru") or "").strip()
+                  ),
                   "rune_icon_files": len(list((cache / "runes").glob("*"))),
                   "role_rune_rows_all_sources": con.execute(
                       "SELECT COUNT(*) FROM role_runes"
