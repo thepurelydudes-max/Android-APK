@@ -1,0 +1,170 @@
+name: Build Full WRCA Rune Database
+
+on:
+  push:
+    branches:
+      - wrca-runes-3.9.3-test
+    paths:
+      - ".full-runes-trigger"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install requests beautifulsoup4
+      - name: Restore current verified WRCA 7.3a package
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="$(python -c 'import json; print(json.load(open("wrca_data/latest.json", encoding="utf-8"))["download_url"])')"
+          SHA="$(python -c 'import json; print(json.load(open("wrca_data/latest.json", encoding="utf-8"))["sha256"])')"
+          curl --fail --location --retry 3 --retry-all-errors "$URL" -o /tmp/wrca.zip
+          echo "$SHA  /tmp/wrca.zip" | sha256sum --check --status
+          rm -rf /tmp/wrca-full-runes
+          mkdir -p /tmp/wrca-full-runes
+          unzip -q /tmp/wrca.zip -d /tmp/wrca-full-runes
+
+      - name: Collect Tencent lane rune statistics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python wild_rift/collect_wrpocket_runes.py             --db /tmp/wrca-full-runes/data/wildrift.db             --cache /tmp/wrca-full-runes/cache             --expected-patch 7.3a             --audit-json /tmp/wrp-audit.json
+
+      - name: Add role-guide rune pages and situational rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python wild_rift/collect_wrf_runes.py             --db /tmp/wrca-full-runes/data/wildrift.db             --cache /tmp/wrca-full-runes/cache             --expected-patch 7.3a             --audit-json /tmp/wrf-audit.json
+
+      - name: Apply exact-role WRC fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          python wild_rift/apply_wrc_rune_fallback.py             --db /tmp/wrca-full-runes/data/wildrift.db             --fallback wild_rift/wrc_rune_fallback_7_3a.json
+
+      - name: Prove 226 of 226 recommendation coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import sqlite3
+          from pathlib import Path
+
+          db = Path("/tmp/wrca-full-runes/data/wildrift.db")
+          cache = Path("/tmp/wrca-full-runes/cache")
+          priority = {
+              "wrpocket.app:tencent-cn": 0,
+              "wildriftfire.com": 1,
+              "wildriftcore.com:indexed-7.3a": 2,
+          }
+
+          with sqlite3.connect(db) as con:
+              con.row_factory = sqlite3.Row
+              quick = con.execute("PRAGMA quick_check").fetchone()[0]
+              assert str(quick).casefold() == "ok", quick
+
+              builds = {
+                  (str(r[0]), str(r[1]))
+                  for r in con.execute(
+                      "SELECT DISTINCT champion_id,role FROM role_builds "
+                      "WHERE source='wildriftcore.com'"
+                  )
+              }
+              rune_rows = con.execute(
+                  "SELECT champion_id,role,runes_json,source,patch FROM role_runes"
+              ).fetchall()
+              by_pair = {}
+              for r in rune_rows:
+                  src = str(r["source"])
+                  if src not in priority:
+                      continue
+                  key = (str(r["champion_id"]), str(r["role"]))
+                  row = dict(r)
+                  old = by_pair.get(key)
+                  if old is None or priority[src] < priority[str(old["source"])]:
+                      by_pair[key] = row
+
+              missing = sorted(builds - set(by_pair))
+              extra = sorted(set(by_pair) - builds)
+              assert len(builds) == 226, len(builds)
+              assert not missing, f"Missing rune recommendation pairs: {missing}"
+              assert len(by_pair) >= 226
+
+              rune_catalog = {
+                  str(r["name"]): dict(r)
+                  for r in con.execute(
+                      "SELECT name,icon_path,icon_url,source,patch FROM runes"
+                  )
+              }
+              bad_pages = []
+              missing_catalog = []
+              missing_icons = []
+              lengths = {}
+              source_counts = {}
+              used_names = set()
+              for key in sorted(builds):
+                  row = by_pair[key]
+                  runes = json.loads(row["runes_json"] or "[]")
+                  lengths[len(runes)] = lengths.get(len(runes), 0) + 1
+                  source_counts[row["source"]] = source_counts.get(row["source"], 0) + 1
+                  if len(runes) not in (4, 5) or len(set(runes)) != len(runes):
+                      bad_pages.append((key, runes, row["source"]))
+                  for name in runes:
+                      used_names.add(str(name))
+                      rr = rune_catalog.get(str(name))
+                      if rr is None:
+                          missing_catalog.append((key, name))
+                          continue
+                      icon_path = str(rr.get("icon_path") or "")
+                      if not icon_path or not (Path("/tmp/wrca-full-runes") / icon_path).is_file():
+                          missing_icons.append((key, name, icon_path))
+
+              assert not bad_pages, f"Malformed rune pages: {bad_pages[:20]}"
+              assert not missing_catalog, f"Runes absent from catalog: {missing_catalog[:20]}"
+              assert not missing_icons, f"Runes without local icons: {missing_icons[:20]}"
+
+              stats = {
+                  "role_build_pairs": len(builds),
+                  "covered_pairs": len(builds & set(by_pair)),
+                  "extra_pairs": len(extra),
+                  "page_lengths": lengths,
+                  "selected_source_counts": source_counts,
+                  "catalog_runes": len(rune_catalog),
+                  "used_runes": len(used_names),
+                  "rune_icon_files": len(list((cache / "runes").glob("*"))),
+                  "role_rune_rows_all_sources": con.execute(
+                      "SELECT COUNT(*) FROM role_runes"
+                  ).fetchone()[0],
+                  "role_rune_variants": con.execute(
+                      "SELECT COUNT(*) FROM role_rune_variants"
+                  ).fetchone()[0],
+                  "situational_rune_rules": con.execute(
+                      "SELECT COUNT(*) FROM role_rune_adaptations"
+                  ).fetchone()[0],
+              }
+              print("FULL_RUNE_AUDIT", json.dumps(stats, ensure_ascii=False, indent=2))
+              Path("/tmp/full-rune-audit.json").write_text(
+                  json.dumps(stats, ensure_ascii=False, indent=2) + "\n",
+                  encoding="utf-8",
+              )
+          PY
+
+      - name: Upload enriched database and audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: WRCA-3.9.3-full-rune-database
+          path: |
+            /tmp/wrca-full-runes/data/wildrift.db
+            /tmp/wrca-full-runes/cache/runes/
+            /tmp/full-rune-audit.json
+            /tmp/wrp-audit.json
+            /tmp/wrf-audit.json
+          if-no-files-found: error
+          retention-days: 14
