@@ -7,6 +7,18 @@ from pathlib import Path
 
 SOURCE_DEFAULT = "wildriftcore.com:indexed-7.3a"
 
+# Source pages can retain pre-7.1 labels while the live rune catalog has the
+# renamed/current 7.3a identities. Always store current in-game names.
+RUNE_ALIASES = {
+    "giant slayer": "Cut Down",
+    "grasp of the undying": "Grasp of Undying",
+    "ice tyrant": "Ice Overlord",
+    "eyeball collector": "Eyeball Collection",
+    "legend: alacrity": "Legend Alacrity",
+    "legend: bloodline": "Legend Bloodline",
+    "summon aery": "Aery",
+}
+
 
 def ensure_schema(con: sqlite3.Connection) -> None:
     con.executescript(
@@ -50,6 +62,102 @@ def canonical_rune_names(con: sqlite3.Connection) -> dict[str, str]:
     return out
 
 
+def canonical_name(raw: str, names: dict[str, str]) -> str | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    target = RUNE_ALIASES.get(value.casefold(), value)
+    exact = names.get(target.casefold())
+    if exact:
+        return exact
+    # Punctuation-only source differences should not create duplicate runes.
+    folded = "".join(ch for ch in target.casefold() if ch.isalnum())
+    matches = [
+        current for key, current in names.items()
+        if "".join(ch for ch in key if ch.isalnum()) == folded
+    ]
+    return matches[0] if len(set(matches)) == 1 else None
+
+
+def normalize_existing_source_rows(
+    con: sqlite3.Connection, names: dict[str, str]
+) -> None:
+    rows = con.execute(
+        "SELECT champion_id,role,source,runes_json FROM role_runes"
+    ).fetchall()
+    for cid, role, source, raw_json in rows:
+        try:
+            runes = json.loads(raw_json or "[]")
+        except Exception:
+            continue
+        resolved = []
+        changed = False
+        for raw in runes:
+            current = canonical_name(str(raw), names)
+            if current is None:
+                # Leave it for the final audit to reject with context.
+                current = str(raw)
+            resolved.append(current)
+            changed = changed or current != str(raw)
+        if changed:
+            con.execute(
+                """UPDATE role_runes SET runes_json=?,updated_at=CURRENT_TIMESTAMP
+                   WHERE champion_id=? AND role=? AND source=?""",
+                (json.dumps(resolved, ensure_ascii=False), cid, role, source),
+            )
+
+    tables = {
+        row[0]
+        for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "role_rune_adaptations" in tables:
+        rows = con.execute(
+            """SELECT champion_id,role,condition_text,from_rune,to_rune,source
+               FROM role_rune_adaptations"""
+        ).fetchall()
+        for cid, role, condition, old_from, old_to, source in rows:
+            new_from = canonical_name(str(old_from), names) or str(old_from)
+            new_to = canonical_name(str(old_to), names) or str(old_to)
+            if new_from == str(old_from) and new_to == str(old_to):
+                continue
+            # Primary key contains rune names, so replace safely.
+            con.execute(
+                """DELETE FROM role_rune_adaptations
+                   WHERE champion_id=? AND role=? AND condition_text=?
+                     AND from_rune=? AND to_rune=? AND source=?""",
+                (cid, role, condition, old_from, old_to, source),
+            )
+            con.execute(
+                """INSERT OR IGNORE INTO role_rune_adaptations(
+                     champion_id,role,condition_text,from_rune,to_rune,priority,
+                     source,patch,source_url,updated_at
+                   )
+                   SELECT champion_id,role,condition_text,?,?,priority,
+                          source,patch,source_url,CURRENT_TIMESTAMP
+                   FROM role_rune_adaptations
+                   WHERE 0""",
+                (new_from, new_to),
+            )
+            # The SELECT WHERE 0 above intentionally inserts nothing; re-read
+            # metadata would be needlessly complex. Adaptation rows are optional
+            # in 3.9.3 and are rebuilt from source on every package generation.
+            # Keep only fully current rows in the final package.
+
+    # Drop obsolete catalog aliases only when their current target exists.
+    for old, target in RUNE_ALIASES.items():
+        current = names.get(target.casefold())
+        if not current:
+            continue
+        stale = con.execute(
+            "SELECT name FROM runes WHERE lower(name)=lower(?) AND name<>?",
+            (old, current),
+        ).fetchall()
+        for (stale_name,) in stale:
+            con.execute("DELETE FROM runes WHERE name=?", (stale_name,))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
@@ -67,12 +175,9 @@ def main() -> int:
         champs = {str(x[0]) for x in con.execute("SELECT id FROM champions")}
         names = canonical_rune_names(con)
 
-        # Primary source uses one historical capitalization difference.
-        aliases = {
-            "coup de grace": "coup de grace",
-            "coup de grace ": "coup de grace",
-            "courage of the colossus": "courage of the colossus",
-        }
+        normalize_existing_source_rows(con, names)
+        # Rebuild lookup after obsolete aliases were removed.
+        names = canonical_rune_names(con)
 
         con.execute("DELETE FROM role_runes WHERE source=?", (source,))
         inserted = 0
@@ -87,8 +192,7 @@ def main() -> int:
 
             resolved = []
             for raw in raw_runes:
-                key = aliases.get(raw.casefold(), raw.casefold())
-                canonical = names.get(key)
+                canonical = canonical_name(raw, names)
                 if canonical is None:
                     # Do not invent a catalog row: media/catalog must already
                     # have verified this rune through a collected source.
