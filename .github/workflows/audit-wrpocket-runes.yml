@@ -1,0 +1,67 @@
+name: Audit WR Pocket Rune Coverage
+
+on:
+  push:
+    branches:
+      - wrca-runes-3.9.3-test
+    paths:
+      - ".wrp-runes-collect-trigger"
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install requests beautifulsoup4
+      - name: Restore current verified WRCA data package
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="$(python -c 'import json; print(json.load(open("wrca_data/latest.json", encoding="utf-8"))["download_url"])')"
+          SHA="$(python -c 'import json; print(json.load(open("wrca_data/latest.json", encoding="utf-8"))["sha256"])')"
+          curl --fail --location --retry 3 --retry-all-errors "$URL" -o /tmp/wrca.zip
+          echo "$SHA  /tmp/wrca.zip" | sha256sum --check --status
+          rm -rf /tmp/wrca-runes
+          mkdir -p /tmp/wrca-runes
+          unzip -q /tmp/wrca.zip -d /tmp/wrca-runes
+      - name: Collect all lane rune combinations
+        shell: bash
+        run: |
+          set -euo pipefail
+          python wild_rift/collect_wrpocket_runes.py \
+            --db /tmp/wrca-runes/data/wildrift.db \
+            --cache /tmp/wrca-runes/cache \
+            --expected-patch 7.3a \
+            --audit-json /tmp/wrp-rune-audit.json
+          python - <<'PY'
+          import json, sqlite3
+          a=json.load(open("/tmp/wrp-rune-audit.json",encoding="utf-8"))
+          print("=== WRP RUNE COVERAGE ===")
+          for k in (
+            "pages_found","db_champions","role_rune_pages","role_rune_variants",
+            "unique_runes","rune_icons","role_build_pairs","covered_recommendation_pairs",
+          ):
+              print(k,a[k])
+          print("unresolved_count",len(a["unresolved_pages"]))
+          print("page_error_count",len(a["page_errors"]))
+          print("missing_count",len(a["missing_recommendation_pairs"]))
+          print("missing",json.dumps(a["missing_recommendation_pairs"],ensure_ascii=False))
+          print("extra_count",len(a["extra_rune_pairs"]))
+          with sqlite3.connect("/tmp/wrca-runes/data/wildrift.db") as con:
+              print("role_runes",con.execute("SELECT COUNT(*) FROM role_runes").fetchone()[0])
+              print("variants",con.execute("SELECT COUNT(*) FROM role_rune_variants").fetchone()[0])
+              print("runes",con.execute("SELECT COUNT(*) FROM runes").fetchone()[0])
+              assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+          PY
+      - name: Upload audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrpocket-rune-coverage-audit
+          path: /tmp/wrp-rune-audit.json
+          if-no-files-found: error
+          retention-days: 14
