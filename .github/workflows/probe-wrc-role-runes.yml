@@ -1,0 +1,61 @@
+name: Probe WildRiftCore Role Runes
+
+on:
+  push:
+    branches:
+      - wrca-runes-3.9.3-test
+    paths:
+      - ".wrc-runes-probe-trigger"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install requests beautifulsoup4
+      - name: Inspect WRC role runes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import requests
+          from bs4 import BeautifulSoup
+
+          headers={"User-Agent":"Mozilla/5.0 WRCA-Rune-Audit/1"}
+          for champ in ("diana","malphite","syndra"):
+              url=f"https://wildriftcore.com/en/champions/{champ}/builds/"
+              reader="https://r.jina.ai/"+url
+              rr=requests.get(reader,headers=headers,timeout=45)
+              print("READER",champ,rr.status_code,len(rr.text))
+              rr.raise_for_status()
+              lines=rr.text.splitlines()
+              for i,line in enumerate(lines):
+                  low=line.casefold()
+                  if (
+                      "recommended build" in low
+                      or "recommended runes" in low
+                      or "situational runes" in low
+                      or line.strip().casefold()=="## runes"
+                  ):
+                      print("HIT",champ,i,repr(line))
+                      for x in lines[max(0,i-4):min(len(lines),i+24)]:
+                          print("L",repr(x))
+                      print("---")
+
+              direct=requests.get(url,headers=headers,timeout=45)
+              print("DIRECT",champ,direct.status_code,len(direct.text))
+              soup=BeautifulSoup(direct.text,"html.parser")
+              # Find short nodes containing rune labels and print ancestry.
+              for node in soup.find_all(string=lambda s: s and "Recommended runes" in s):
+                  p=node.parent
+                  anc=[]
+                  cur=p
+                  for _ in range(6):
+                      if not cur: break
+                      anc.append((cur.name,cur.get("class"),cur.get("id")))
+                      cur=cur.parent
+                  print("HTML_REC_RUNES",champ,repr(node.strip()),anc)
+                  print("HTML_PARENT",str(p.parent)[:5000].replace("\n"," "))
+          PY
