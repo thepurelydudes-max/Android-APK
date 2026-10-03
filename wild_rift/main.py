@@ -92,6 +92,7 @@ TEXT = {
         "recommended_items": "Рекомендуемые предметы",
         "recommended_runes_test": "Руны · тест",
         "rune_adaptation": "Адаптация рун",
+        "rune_no_test_data": "Для этого чемпиона и роли тестовые руны пока не добавлены.",
         "build_description": "Описание сборки",
         "offline": "Основная работа офлайн; обновление скачивается одним проверенным пакетом с GitHub.",
     },
@@ -135,6 +136,7 @@ TEXT = {
         "recommended_items": "Recommended items",
         "recommended_runes_test": "Runes · test",
         "rune_adaptation": "Rune adaptation",
+        "rune_no_test_data": "No test rune page has been added for this champion and role yet.",
         "build_description": "Build description",
         "offline": "Normal use is offline; internet is only required for database updates.",
     },
@@ -1181,7 +1183,24 @@ class MobileAssistant:
         except Exception:
             rec = None
         if not rec:
-            return []
+            return [
+                ft.Text(
+                    self.t("recommended_runes_test"),
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                ),
+                ft.Container(
+                    padding=8,
+                    border=ft.Border.all(1, P["border"]),
+                    border_radius=8,
+                    bgcolor=P["bg"],
+                    content=ft.Text(
+                        self.t("rune_no_test_data"),
+                        size=9,
+                        color=P["muted"],
+                    ),
+                ),
+            ]
 
         chips: list[ft.Control] = []
         changed_to = {
