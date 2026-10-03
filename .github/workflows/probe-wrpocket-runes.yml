@@ -47,6 +47,42 @@ jobs:
               txt=" ".join(tag.get_text(" ",strip=True).split())
               if len(txt)<200:
                   print("LANECLASS",tag.name,tag.get("class"),tag.attrs,repr(txt))
+          # Inspect Build Trends lane switch and all pre-rendered data panels.
+          sw=soup.select_one(".wrp-cnb-switch.wrp-cnb-sw-lane")
+          print("CNB_SWITCH", sw.attrs if sw else None, "TEXT", " ".join(sw.get_text(" ",strip=True).split()) if sw else "")
+          if sw:
+              p=sw.parent
+              for depth in range(5):
+                  if not p: break
+                  print("CNB_PARENT",depth,p.name,p.attrs,str(p)[:12000].replace("\n"," "))
+                  p=p.parent
+
+          cnb_tags=[]
+          for tag in soup.find_all(True):
+              attrs=" ".join(f"{k}={v}" for k,v in tag.attrs.items())
+              classes=" ".join(tag.get("class") or [])
+              blob=(attrs+" "+classes).casefold()
+              if "cnb" in blob:
+                  txt=" ".join(tag.get_text(" ",strip=True).split())
+                  if len(txt)<1200:
+                      cnb_tags.append((tag.name,tag.attrs,txt))
+          print("CNB_TAG_COUNT",len(cnb_tags))
+          for row in cnb_tags[:500]:
+              print("CNBTAG",row)
+
+          # Rune combo rows with their nearest Build Trends ancestors.
+          for ri,tag in enumerate(soup.find_all(class_=lambda x: x and "rune" in " ".join(x if isinstance(x,list) else [x]).casefold())):
+              txt=" ".join(tag.get_text(" ",strip=True).split())
+              if not txt or len(txt)>1000: continue
+              print("RUNECLASS",ri,tag.name,tag.attrs,repr(txt))
+              p=tag.parent
+              for depth in range(5):
+                  if not p: break
+                  attrs=p.attrs
+                  if any("cnb" in str(v).casefold() or "trend" in str(v).casefold() or "lane" in str(v).casefold() for v in attrs.values()):
+                      print("RUNEANC",ri,depth,p.name,attrs)
+                  p=p.parent
+
           # Find JS/JSON fragments mentioning lane + runes or endpoints.
           for s in soup.find_all("script"):
               body=s.string or s.get_text("\n")
