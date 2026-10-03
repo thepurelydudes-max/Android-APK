@@ -122,7 +122,9 @@ jobs:
                   print("URLCAND",val[:500])
           # Inspect external scripts that populate inactive Build Trends panels.
           base="https://wrpocket.app"
-          for src in [s.get("src") for s in soup.find_all("script") if s.get("src") and ("champion-sections" in s.get("src") or "data-manager" in s.get("src"))]:
+          external=[s.get("src") for s in soup.find_all("script") if s.get("src") and ("champion-sections" in s.get("src") or "data-manager" in s.get("src"))]
+          external.append("/components/build-trends-ui.js?v=7.3a-cc0af4f8")
+          for src in external:
               js=requests.get(base+src,headers={"User-Agent":"Mozilla/5.0 WRCA-Rune-Audit/1"},timeout=45)
               print("EXTJS",src,js.status_code,len(js.text))
               body=js.text
