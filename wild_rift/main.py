@@ -210,7 +210,7 @@ class MobileAssistant:
         self.page.theme = ft.Theme(color_scheme_seed=P["gold"])
         self.page.bgcolor = P["bg"]
         self.page.padding = 0
-        self.page.scroll = None
+        self.page.scroll = ft.ScrollMode.AUTO
 
     def reload_snapshot(self) -> None:
         db.init_db()
@@ -660,44 +660,43 @@ class MobileAssistant:
             ),
         )
 
-    def output_panels(self) -> list[ft.Control]:
+    def output_panel(self) -> ft.Control:
         self.pick_column = ft.Column(spacing=7)
         self.build_column = ft.Column(spacing=10)
         self.pick_title_text = ft.Text(self.t("picks"), size=16, weight=ft.FontWeight.BOLD, color=P["gold_bright"])
         self.build_title_text = ft.Text(self.t("build"), size=16, weight=ft.FontWeight.BOLD, color=P["gold_bright"])
         self.render_outputs()
-        return [
-            ft.Container(
-                bgcolor=P["panel"],
-                border=ft.Border.all(1, P["border"]),
-                border_radius=12,
-                padding=12,
-                content=ft.Column(
-                    spacing=9,
-                    controls=[
-                        self.pick_title_text,
-                        self.pick_column,
-                    ],
+        return ft.Column(
+            spacing=12,
+            controls=[
+                ft.Container(
+                    bgcolor=P["panel"],
+                    border=ft.Border.all(1, P["border"]),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=9,
+                        controls=[
+                            self.pick_title_text,
+                            self.pick_column,
+                        ],
+                    ),
                 ),
-            ),
-            ft.Container(
-                bgcolor=P["panel"],
-                border=ft.Border.all(1, P["border"]),
-                border_radius=12,
-                padding=12,
-                content=ft.Column(
-                    spacing=9,
-                    controls=[
-                        self.build_title_text,
-                        self.build_column,
-                    ],
+                ft.Container(
+                    bgcolor=P["panel"],
+                    border=ft.Border.all(1, P["border"]),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=9,
+                        controls=[
+                            self.build_title_text,
+                            self.build_column,
+                        ],
+                    ),
                 ),
-            ),
-        ]
-
-    def output_panel(self) -> ft.Control:
-        # Compatibility wrapper for any future desktop/layout reuse.
-        return ft.Column(spacing=12, controls=self.output_panels())
+            ],
+        )
 
     def footer(self) -> ft.Control:
         self.update_button = ft.FilledButton(content=self.t("update"), icon=ft.Icons.REFRESH, on_click=self.update_data)
@@ -765,26 +764,14 @@ class MobileAssistant:
     def rebuild_page(self) -> None:
         self.page.clean()
         self.status_text = ft.Text("")
-
-        output_panels = self.output_panels()
-        content = ft.ListView(
-            expand=True,
+        content = ft.Column(
             spacing=12,
-            build_controls_on_demand=True,
-            cache_extent=500,
             controls=[
                 self.header(),
                 ft.Container(
                     padding=ft.Padding.symmetric(horizontal=10),
-                    content=self.selection_panel(),
+                    content=ft.Column(spacing=12, controls=[self.selection_panel(), self.output_panel()]),
                 ),
-                *[
-                    ft.Container(
-                        padding=ft.Padding.symmetric(horizontal=10),
-                        content=panel,
-                    )
-                    for panel in output_panels
-                ],
                 self.footer(),
             ],
         )
