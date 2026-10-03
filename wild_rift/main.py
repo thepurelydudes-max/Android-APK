@@ -90,6 +90,8 @@ TEXT = {
         "tier": "Тир",
         "recommended_items": "Рекомендуемые предметы",
         "recommended_runes": "Рекомендуемые руны",
+        "runes": "Руны",
+        "rune_details": "Описание рун",
         "rune_adaptation": "Адаптация рун",
         "rune_no_data": "Для этой роли руны отсутствуют в базе.",
         "build_description": "Описание сборки",
@@ -134,6 +136,8 @@ TEXT = {
         "tier": "Tier",
         "recommended_items": "Recommended items",
         "recommended_runes": "Recommended runes",
+        "runes": "Runes",
+        "rune_details": "Rune descriptions",
         "rune_adaptation": "Rune adaptation",
         "rune_no_data": "No rune page is available for this role.",
         "build_description": "Build description",
@@ -252,6 +256,12 @@ class MobileAssistant:
         if self.lang == "ru":
             return row.get("name_ru") or canonical
         return canonical
+
+    def rune_effect(self, canonical: str) -> str:
+        row = self.rune_record(canonical)
+        if self.lang == "ru":
+            return str(row.get("effect_ru") or "").strip()
+        return str(row.get("effect_en") or row.get("effect_ru") or "").strip()
 
     def _cached_local_media_src(self, record: dict | None) -> str:
         value = str((record or {}).get("icon_path") or "")
@@ -1148,7 +1158,7 @@ class MobileAssistant:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
                             ft.Text(
-                                self.t("recommended_runes").replace("Рекомендуемые ", "").replace("Recommended ", "") + ":",
+                                self.t("runes") + ":",
                                 size=9,
                                 weight=ft.FontWeight.BOLD,
                                 color=P["muted"],
@@ -1276,8 +1286,8 @@ class MobileAssistant:
             changed = name in changed_to
             cards.append(
                 ft.Container(
-                    width=70,
-                    padding=5,
+                    expand=True,
+                    padding=4,
                     border_radius=8,
                     border=ft.Border.all(
                         1,
@@ -1286,18 +1296,18 @@ class MobileAssistant:
                     bgcolor=P["panel_hover"] if changed else P["panel_alt"],
                     content=ft.Column(
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=3,
+                        spacing=2,
                         controls=[
                             ft.Container(
-                                width=38,
-                                height=38,
-                                border_radius=19,
+                                width=30,
+                                height=30,
+                                border_radius=15,
                                 clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                                content=self.rune_image_content(row, 38),
+                                content=self.rune_image_content(row, 30),
                             ),
                             ft.Text(
                                 self.rune_name(name),
-                                size=8,
+                                size=7,
                                 text_align=ft.TextAlign.CENTER,
                                 max_lines=2,
                             ),
@@ -1312,7 +1322,7 @@ class MobileAssistant:
                 size=12,
                 weight=ft.FontWeight.BOLD,
             ),
-            ft.Row(spacing=5, run_spacing=5, wrap=True, controls=cards),
+            ft.Row(spacing=4, wrap=False, controls=cards),
         ]
         for change in rec.get("changes") or []:
             condition = str(change.get("condition") or "")
@@ -1327,6 +1337,43 @@ class MobileAssistant:
                 )
             )
         return controls
+
+    def rune_detail(self, canonical: str, number: int) -> ft.Control:
+        row = self.rune_record(canonical)
+        description = self.rune_effect(canonical) or "—"
+        return ft.Container(
+            padding=ft.Padding.only(bottom=8),
+            content=ft.Row(
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+                controls=[
+                    ft.Container(
+                        width=38,
+                        height=38,
+                        border_radius=19,
+                        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                        content=self.rune_image_content(row, 38),
+                    ),
+                    ft.Column(
+                        spacing=3,
+                        expand=True,
+                        controls=[
+                            ft.Text(
+                                f"{number}. {self.rune_name(canonical)}",
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color=P["gold_bright"],
+                            ),
+                            ft.Text(
+                                description,
+                                size=10,
+                                color=P["text"],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        )
 
     def render_current_build(self) -> None:
         if not self.current_build:
@@ -1350,6 +1397,11 @@ class MobileAssistant:
             for i, name in enumerate(items[:6])
         ]
         rune_controls = self.rune_controls(self.current_build)
+        rune_names = self.build_rune_names(self.current_build)
+        rune_details = [
+            self.rune_detail(name, i + 1)
+            for i, name in enumerate(rune_names)
+        ]
         self.build_column.controls = [
             ft.Container(
                 padding=8,
@@ -1403,6 +1455,13 @@ class MobileAssistant:
                 weight=ft.FontWeight.BOLD,
             ),
             *details,
+            ft.Divider(height=1, color=P["border"]),
+            ft.Text(
+                self.t("rune_details"),
+                size=12,
+                weight=ft.FontWeight.BOLD,
+            ),
+            *rune_details,
         ]
 
     def render_outputs(self) -> None:
