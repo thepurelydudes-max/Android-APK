@@ -77,6 +77,24 @@ jobs:
           set -euo pipefail
           python wrca_data/source/apply_update.py --assets-root wild_rift/assets
 
+      - name: Download audited WRCA rune seed
+        uses: actions/download-artifact@v4
+        with:
+          name: WRCA-3.9.3-full-rune-database
+          path: ${{ runner.temp }}/wrca-rune-seed
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 37123062121
+
+      - name: Merge full rune dataset into official WRCA data
+        shell: bash
+        run: |
+          set -euo pipefail
+          SEED_ROOT="${{ runner.temp }}/wrca-rune-seed/wrca-full-runes"
+          test -f "$SEED_ROOT/data/wildrift.db"
+          test -d "$SEED_ROOT/cache/runes"
+          python wrca_data/source/merge_rune_seed.py             --assets-root wild_rift/assets             --seed-root "$SEED_ROOT"
+
       - name: Choose package version
         id: version
         shell: bash
@@ -97,7 +115,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf dist/wrca-data
-          python wrca_data/build_package.py             --assets-root wild_rift/assets             --output dist/wrca-data             --package-version "${{ steps.version.outputs.version }}"             --release-tag "${{ steps.version.outputs.tag }}"             --min-app-version "3.9.0"
+          python wrca_data/build_package.py             --assets-root wild_rift/assets             --output dist/wrca-data             --package-version "${{ steps.version.outputs.version }}"             --release-tag "${{ steps.version.outputs.tag }}"             --min-app-version "3.9.5"
           cat dist/wrca-data/latest.json
 
       - name: Publish immutable GitHub Release
