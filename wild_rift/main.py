@@ -18,6 +18,7 @@ import package_updater as updater
 updater.recover_interrupted_update()
 import db
 import engine
+import runes_test
 from adaptive_descriptions import contextual_item_explanation
 
 
@@ -89,6 +90,8 @@ TEXT = {
         "coverage_short": "Охват",
         "tier": "Тир",
         "recommended_items": "Рекомендуемые предметы",
+        "recommended_runes_test": "Руны · тест",
+        "rune_adaptation": "Адаптация рун",
         "build_description": "Описание сборки",
         "offline": "Основная работа офлайн; обновление скачивается одним проверенным пакетом с GitHub.",
     },
@@ -130,6 +133,8 @@ TEXT = {
         "coverage_short": "Coverage",
         "tier": "Tier",
         "recommended_items": "Recommended items",
+        "recommended_runes_test": "Runes · test",
+        "rune_adaptation": "Rune adaptation",
         "build_description": "Build description",
         "offline": "Normal use is offline; internet is only required for database updates.",
     },
@@ -1164,6 +1169,72 @@ class MobileAssistant:
             for index, result in enumerate(self.pick_results)
         ]
 
+    def rune_test_controls(self, champ: dict) -> list[ft.Control]:
+        """Render the isolated 3.9.3 rune pilot directly under item cards."""
+        try:
+            profile = engine.analyze_enemy_draft(
+                self.selected_enemies(), snapshot=self.snapshot
+            )
+            rec = runes_test.recommend_runes(
+                str(champ.get("id") or ""), self.role, profile
+            )
+        except Exception:
+            rec = None
+        if not rec:
+            return []
+
+        chips: list[ft.Control] = []
+        changed_to = {
+            str(row.get("to") or "")
+            for row in (rec.get("changes") or [])
+        }
+        for name in rec.get("selected") or []:
+            changed = str(name) in changed_to
+            chips.append(
+                ft.Container(
+                    padding=ft.Padding.symmetric(horizontal=7, vertical=5),
+                    border_radius=7,
+                    border=ft.Border.all(
+                        1,
+                        P["gold_bright"] if changed else P["border"],
+                    ),
+                    bgcolor=P["panel_hover"] if changed else P["bg"],
+                    content=ft.Text(
+                        str(name),
+                        size=9,
+                        color=P["gold_bright"] if changed else P["text"],
+                    ),
+                )
+            )
+
+        controls: list[ft.Control] = [
+            ft.Text(
+                self.t("recommended_runes_test"),
+                size=12,
+                weight=ft.FontWeight.BOLD,
+            ),
+            ft.Row(spacing=5, run_spacing=5, wrap=True, controls=chips),
+        ]
+        for change in rec.get("changes") or []:
+            reason = str(change.get("reason_ru") or "")
+            if self.lang == "en":
+                reason = {
+                    "против poke": "vs poke",
+                    "против хрупкого состава": "vs a squishy draft",
+                    "против танков": "vs tanks",
+                    "против большого количества контроля": "vs heavy crowd control",
+                }.get(reason, reason)
+            controls.append(
+                ft.Text(
+                    f"{self.t('rune_adaptation')}: "
+                    f"{change.get('from')} → {change.get('to')}"
+                    + (f" · {reason}" if reason else ""),
+                    size=9,
+                    color=P["muted"],
+                )
+            )
+        return controls
+
     def render_current_build(self) -> None:
         if not self.current_build:
             self.build_column.controls = [ft.Text("—", color=P["muted"])]
@@ -1185,6 +1256,7 @@ class MobileAssistant:
             self.item_detail(name, self.current_build, i + 1)
             for i, name in enumerate(items[:6])
         ]
+        rune_controls = self.rune_test_controls(champ)
         self.build_column.controls = [
             ft.Container(
                 padding=8,
@@ -1230,6 +1302,7 @@ class MobileAssistant:
                 weight=ft.FontWeight.BOLD,
             ),
             *item_rows,
+            *rune_controls,
             ft.Divider(height=1, color=P["border"]),
             ft.Text(
                 self.t("build_description"),
