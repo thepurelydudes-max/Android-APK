@@ -174,7 +174,7 @@ jobs:
       - name: Upload enriched database and audit
         uses: actions/upload-artifact@v4
         with:
-          name: WRCA-3.9.3-full-rune-database
+          name: WRCA-3.9.4-full-rune-database
           path: |
             /tmp/wrca-full-runes/data/wildrift.db
             /tmp/wrca-full-runes/cache/runes/
