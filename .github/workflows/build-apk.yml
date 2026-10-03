@@ -52,7 +52,7 @@ jobs:
           fi
 
       - name: Download canonical 3.7.12 APK seed
-        if: ${{ github.ref_name != 'wrca-runes-3.9.4-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        if: ${{ false }}
         uses: actions/download-artifact@v4
         with:
           name: FARLINER-Wild-Rift-APK
@@ -103,18 +103,8 @@ jobs:
             test -d mlbb/assets || { echo "mlbb/assets is missing."; exit 1; }
           fi
 
-      - name: Download audited WRCA full-rune database
-        if: ${{ github.ref_name == 'wrca-runes-3.9.4-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') }}
-        uses: actions/download-artifact@v4
-        with:
-          name: WRCA-3.9.3-full-rune-database
-          path: ${{ runner.temp }}/wrca_full_runes_artifact
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
-          run-id: 37123062121
-
-      - name: Restore verified WRCA GitHub package seed for rune test
-        if: ${{ github.ref_name == 'wrca-runes-3.9.4-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') }}
+      - name: Restore verified WRCA GitHub data package
+        if: ${{ (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -137,19 +127,6 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/wild_rift/assets"
           cp -a "$STAGE/cache" "$GITHUB_WORKSPACE/wild_rift/assets/"
           cp -a "$STAGE/data" "$GITHUB_WORKSPACE/wild_rift/assets/"
-
-          RUNE_ROOT="${{ runner.temp }}/wrca_full_runes_artifact/wrca-full-runes"
-          test -f "$RUNE_ROOT/data/wildrift.db" || {
-            echo "::error::Audited rune database artifact is missing wildrift.db."
-            exit 1
-          }
-          test -d "$RUNE_ROOT/cache/runes" || {
-            echo "::error::Audited rune database artifact is missing cache/runes."
-            exit 1
-          }
-          cp "$RUNE_ROOT/data/wildrift.db" "$GITHUB_WORKSPACE/wild_rift/assets/data/wildrift.db"
-          rm -rf "$GITHUB_WORKSPACE/wild_rift/assets/cache/runes"
-          cp -a "$RUNE_ROOT/cache/runes" "$GITHUB_WORKSPACE/wild_rift/assets/cache/runes"
 
           python - <<'PY'
           import json, sqlite3
@@ -214,7 +191,7 @@ jobs:
                   ).fetchone()
               ]
               assert not missing_ru, missing_ru
-              print("Rune-test seed:", json.dumps({
+              print("Verified WRCA package seed:", json.dumps({
                   "patch": meta.get("patch_version"),
                   "package": meta.get("package_version"),
                   "champions": con.execute("SELECT COUNT(*) FROM champions").fetchone()[0],
@@ -302,7 +279,7 @@ jobs:
           PY
 
       - name: Restore updated 3.7.12 preseed without network refresh
-        if: ${{ github.ref_name != 'wrca-runes-3.9.4-test' && (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        if: ${{ false }}
         shell: bash
         run: |
           set -euo pipefail
