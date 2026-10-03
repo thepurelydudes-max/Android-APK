@@ -39,7 +39,7 @@ def _copy_tables(target_db: Path, source_db: Path) -> None:
                 raise RuntimeError("Rune seed is missing tables: " + ", ".join(missing))
 
             for table in reversed(RUNE_TABLES):
-                con.execute(f"DROP TABLE IF EXISTS {_q(table)}")
+                con.execute(f"DROP TABLE IF EXISTS main.{_q(table)}")
 
             for table in RUNE_TABLES:
                 row = con.execute(
@@ -61,7 +61,7 @@ def _copy_tables(target_db: Path, source_db: Path) -> None:
             ).fetchall():
                 name, sql, table = str(row[0]), str(row[1]), str(row[2])
                 if table in RUNE_TABLES:
-                    con.execute(f"DROP INDEX IF EXISTS {_q(name)}")
+                    con.execute(f"DROP INDEX IF EXISTS main.{_q(name)}")
                     con.execute(sql)
 
             # Rune localization metadata belongs to the rune dataset.
