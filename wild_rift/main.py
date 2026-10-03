@@ -89,6 +89,11 @@ TEXT = {
         "coverage_short": "Охват",
         "tier": "Тир",
         "recommended_items": "Рекомендуемые предметы",
+        "recommended_runes": "Рекомендуемые руны",
+        "runes": "Руны",
+        "rune_details": "Описание рун",
+        "rune_adaptation": "Адаптация рун",
+        "rune_no_data": "Для этой роли руны отсутствуют в базе.",
         "build_description": "Описание сборки",
         "offline": "Основная работа офлайн; обновление скачивается одним проверенным пакетом с GitHub.",
     },
@@ -130,6 +135,11 @@ TEXT = {
         "coverage_short": "Coverage",
         "tier": "Tier",
         "recommended_items": "Recommended items",
+        "recommended_runes": "Recommended runes",
+        "runes": "Runes",
+        "rune_details": "Rune descriptions",
+        "rune_adaptation": "Rune adaptation",
+        "rune_no_data": "No rune page is available for this role.",
         "build_description": "Build description",
         "offline": "Normal use is offline; internet is only required for database updates.",
     },
@@ -238,6 +248,21 @@ class MobileAssistant:
         # whenever an item was temporarily absent.
         return self.snapshot.get("items", {}).get(canonical) or {}
 
+    def rune_record(self, canonical: str) -> dict:
+        return self.snapshot.get("runes", {}).get(canonical) or {}
+
+    def rune_name(self, canonical: str) -> str:
+        row = self.rune_record(canonical)
+        if self.lang == "ru":
+            return row.get("name_ru") or canonical
+        return canonical
+
+    def rune_effect(self, canonical: str) -> str:
+        row = self.rune_record(canonical)
+        if self.lang == "ru":
+            return str(row.get("effect_ru") or "").strip()
+        return str(row.get("effect_en") or row.get("effect_ru") or "").strip()
+
     def _cached_local_media_src(self, record: dict | None) -> str:
         value = str((record or {}).get("icon_path") or "")
         if not value:
@@ -285,6 +310,27 @@ class MobileAssistant:
                     ft.Icon(
                         ft.Icons.IMAGE_NOT_SUPPORTED_OUTLINED,
                         size=max(14, int(size * 0.46)),
+                        color=P["muted"],
+                    )
+                ],
+            ),
+        )
+
+    def rune_image_content(self, record: dict | None, size: int) -> ft.Control:
+        local = self._cached_local_media_src(record)
+        if local:
+            return ft.Image(src=local, width=size, height=size, fit=ft.BoxFit.COVER)
+        return ft.Container(
+            width=size,
+            height=size,
+            bgcolor=P["bg"],
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(
+                        ft.Icons.AUTO_AWESOME_OUTLINED,
+                        size=max(13, int(size * 0.45)),
                         color=P["muted"],
                     )
                 ],
@@ -996,6 +1042,42 @@ class MobileAssistant:
             icons.append(ft.Container(width=29, height=29, border_radius=5, border=ft.Border.all(1, P["border"])))
         return ft.Row(spacing=4, controls=icons)
 
+    def build_rune_names(self, build: dict | None) -> list[str]:
+        rec = (build or {}).get("runes") or {}
+        return [
+            str(value)
+            for value in (rec.get("selected") or [])
+            if str(value).strip()
+        ]
+
+    def rune_preview(self, build: dict | None) -> ft.Control:
+        names = self.build_rune_names(build)
+        if not names:
+            return ft.Text("—", size=9, color=P["muted"])
+        icons: list[ft.Control] = []
+        changed_to = {
+            str(row.get("to") or "")
+            for row in (((build or {}).get("runes") or {}).get("changes") or [])
+        }
+        for name in names:
+            rune = self.rune_record(name)
+            changed = name in changed_to
+            icons.append(
+                ft.Container(
+                    width=27,
+                    height=27,
+                    border_radius=14,
+                    border=ft.Border.all(
+                        1,
+                        P["gold_bright"] if changed else P["border"],
+                    ),
+                    clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                    content=self.rune_image_content(rune, 27),
+                    tooltip=self.rune_name(name),
+                )
+            )
+        return ft.Row(spacing=4, controls=icons)
+
     def pick_card(self, result: dict, rank: int) -> ft.Control:
         champ = result.get("champion") or {}
         cid = str(champ.get("id") or "")
@@ -1069,6 +1151,19 @@ class MobileAssistant:
                                 color=P["muted"],
                             ),
                             self.build_preview(build),
+                        ],
+                    ),
+                    ft.Row(
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Text(
+                                self.t("runes") + ":",
+                                size=9,
+                                weight=ft.FontWeight.BOLD,
+                                color=P["muted"],
+                            ),
+                            self.rune_preview(build),
                         ],
                     ),
                 ],
@@ -1164,6 +1259,122 @@ class MobileAssistant:
             for index, result in enumerate(self.pick_results)
         ]
 
+    def rune_controls(self, build: dict) -> list[ft.Control]:
+        rec = (build or {}).get("runes") or {}
+        names = [
+            str(value)
+            for value in (rec.get("selected") or [])
+            if str(value).strip()
+        ]
+        if not names:
+            return [
+                ft.Text(
+                    self.t("recommended_runes"),
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                ),
+                ft.Text(self.t("rune_no_data"), size=9, color=P["muted"]),
+            ]
+
+        changed_to = {
+            str(row.get("to") or "")
+            for row in (rec.get("changes") or [])
+        }
+        cards: list[ft.Control] = []
+        for name in names:
+            row = self.rune_record(name)
+            changed = name in changed_to
+            cards.append(
+                ft.Container(
+                    expand=True,
+                    padding=4,
+                    border_radius=8,
+                    border=ft.Border.all(
+                        1,
+                        P["gold_bright"] if changed else P["border"],
+                    ),
+                    bgcolor=P["panel_hover"] if changed else P["panel_alt"],
+                    content=ft.Column(
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=2,
+                        controls=[
+                            ft.Container(
+                                width=30,
+                                height=30,
+                                border_radius=15,
+                                clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                                content=self.rune_image_content(row, 30),
+                            ),
+                            ft.Text(
+                                self.rune_name(name),
+                                size=7,
+                                text_align=ft.TextAlign.CENTER,
+                                max_lines=2,
+                            ),
+                        ],
+                    ),
+                )
+            )
+
+        controls: list[ft.Control] = [
+            ft.Text(
+                self.t("recommended_runes"),
+                size=12,
+                weight=ft.FontWeight.BOLD,
+            ),
+            ft.Row(spacing=4, wrap=False, controls=cards),
+        ]
+        for change in rec.get("changes") or []:
+            condition = str(change.get("condition") or "")
+            controls.append(
+                ft.Text(
+                    f"{self.t('rune_adaptation')}: "
+                    f"{self.rune_name(str(change.get('from') or ''))} → "
+                    f"{self.rune_name(str(change.get('to') or ''))}"
+                    + (f" · {condition}" if condition else ""),
+                    size=9,
+                    color=P["muted"],
+                )
+            )
+        return controls
+
+    def rune_detail(self, canonical: str, number: int) -> ft.Control:
+        row = self.rune_record(canonical)
+        description = self.rune_effect(canonical) or "—"
+        return ft.Container(
+            padding=ft.Padding.only(bottom=8),
+            content=ft.Row(
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+                controls=[
+                    ft.Container(
+                        width=38,
+                        height=38,
+                        border_radius=19,
+                        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                        content=self.rune_image_content(row, 38),
+                    ),
+                    ft.Column(
+                        spacing=3,
+                        expand=True,
+                        controls=[
+                            ft.Text(
+                                f"{number}. {self.rune_name(canonical)}",
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color=P["gold_bright"],
+                            ),
+                            ft.Text(
+                                description,
+                                size=10,
+                                color=P["text"],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        )
+
     def render_current_build(self) -> None:
         if not self.current_build:
             self.build_column.controls = [ft.Text("—", color=P["muted"])]
@@ -1184,6 +1395,12 @@ class MobileAssistant:
         details = [
             self.item_detail(name, self.current_build, i + 1)
             for i, name in enumerate(items[:6])
+        ]
+        rune_controls = self.rune_controls(self.current_build)
+        rune_names = self.build_rune_names(self.current_build)
+        rune_details = [
+            self.rune_detail(name, i + 1)
+            for i, name in enumerate(rune_names)
         ]
         self.build_column.controls = [
             ft.Container(
@@ -1237,6 +1454,15 @@ class MobileAssistant:
                 weight=ft.FontWeight.BOLD,
             ),
             *details,
+            ft.Divider(height=1, color=P["border"]),
+            *rune_controls,
+            ft.Divider(height=1, color=P["border"]),
+            ft.Text(
+                self.t("rune_details"),
+                size=12,
+                weight=ft.FontWeight.BOLD,
+            ),
+            *rune_details,
         ]
 
     def render_outputs(self) -> None:

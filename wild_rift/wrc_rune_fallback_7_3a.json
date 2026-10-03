@@ -1,0 +1,475 @@
+{
+  "patch": "7.3a",
+  "source": "wildriftcore.com:indexed-7.3a",
+  "note": "Exact role-specific fallback for WRCA role_build pairs absent from stronger lane sources. Five-rune pages verified against WildRiftCore 7.3a rune sections.",
+  "entries": [
+    {
+      "champion_id": "Akshan",
+      "role": "ADC",
+      "runes": [
+        "Conqueror",
+        "Brutal",
+        "Giant Slayer",
+        "Legend: Alacrity",
+        "Sudden Impact"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/akshan/builds/"
+    },
+    {
+      "champion_id": "Ashe",
+      "role": "Саппорт",
+      "runes": [
+        "Lethal Tempo",
+        "Brutal",
+        "Giant Slayer",
+        "Legend: Alacrity",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/ashe/builds/"
+    },
+    {
+      "champion_id": "Aurora",
+      "role": "Барон",
+      "runes": [
+        "Electrocute",
+        "Sudden Impact",
+        "Eyeball Collector",
+        "Hubris",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/aurora/builds/"
+    },
+    {
+      "champion_id": "ChoGath",
+      "role": "Мид",
+      "runes": [
+        "Grasp of the Undying",
+        "Courage of the Colossus",
+        "Second Wind",
+        "Axiom Arcanist",
+        "Overgrowth"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/cho-gath/builds/"
+    },
+    {
+      "champion_id": "Corki",
+      "role": "Мид",
+      "runes": [
+        "Conqueror",
+        "Brutal",
+        "Giant Slayer",
+        "Legend: Bloodline",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/corki/builds/"
+    },
+    {
+      "champion_id": "Gragas",
+      "role": "Барон",
+      "runes": [
+        "Electrocute",
+        "Sudden Impact",
+        "Eyeball Collector",
+        "Hubris",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/gragas/builds/"
+    },
+    {
+      "champion_id": "Gragas",
+      "role": "Мид",
+      "runes": [
+        "Electrocute",
+        "Sudden Impact",
+        "Eyeball Collector",
+        "Hubris",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/gragas/builds/"
+    },
+    {
+      "champion_id": "Graves",
+      "role": "Барон",
+      "runes": [
+        "Fleet Footwork",
+        "Brutal",
+        "Giant Slayer",
+        "Legend: Alacrity",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/graves/builds/"
+    },
+    {
+      "champion_id": "Heimerdinger",
+      "role": "Барон",
+      "runes": [
+        "First Strike",
+        "Botanist",
+        "Transcendence",
+        "Scorch",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/heimerdinger/builds/"
+    },
+    {
+      "champion_id": "Irelia",
+      "role": "Мид",
+      "runes": [
+        "Conqueror",
+        "Brutal",
+        "Coup de Grace",
+        "Legend: Alacrity",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/irelia/builds/"
+    },
+    {
+      "champion_id": "JarvanIV",
+      "role": "Барон",
+      "runes": [
+        "Conqueror",
+        "Demolish",
+        "Second Wind",
+        "Overgrowth",
+        "Sudden Impact"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/jarvan-iv/builds/"
+    },
+    {
+      "champion_id": "Kaisa",
+      "role": "Мид",
+      "runes": [
+        "Lethal Tempo",
+        "Brutal",
+        "Giant Slayer",
+        "Legend: Bloodline",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/kai-sa/builds/"
+    },
+    {
+      "champion_id": "Karma",
+      "role": "Мид",
+      "runes": [
+        "Arcane Comet",
+        "Botanist",
+        "Transcendence",
+        "Scorch",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/karma/builds/"
+    },
+    {
+      "champion_id": "Lucian",
+      "role": "Мид",
+      "runes": [
+        "Empowerment",
+        "Brutal",
+        "Giant Slayer",
+        "Legend: Bloodline",
+        "Sudden Impact"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/lucian/builds/"
+    },
+    {
+      "champion_id": "Malphite",
+      "role": "Мид",
+      "runes": [
+        "Grasp of the Undying",
+        "Demolish",
+        "Second Wind",
+        "Overgrowth",
+        "Manaflow Band"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/malphite/builds/"
+    },
+    {
+      "champion_id": "Maokai",
+      "role": "Барон",
+      "runes": [
+        "Ice Tyrant",
+        "Courage of the Colossus",
+        "Second Wind",
+        "Overgrowth",
+        "Transcendence"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/maokai/builds/"
+    },
+    {
+      "champion_id": "Maokai",
+      "role": "Лес",
+      "runes": [
+        "Ice Tyrant",
+        "Courage of the Colossus",
+        "Bone Plating",
+        "Overgrowth",
+        "Transcendence"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/maokai/builds/"
+    },
+    {
+      "champion_id": "Mordekaiser",
+      "role": "Лес",
+      "runes": [
+        "Conqueror",
+        "Manaflow Band",
+        "Transcendence",
+        "Scorch",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/mordekaiser/builds/"
+    },
+    {
+      "champion_id": "Morgana",
+      "role": "Лес",
+      "runes": [
+        "Arcane Comet",
+        "Botanist",
+        "Transcendence",
+        "Scorch",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/morgana/builds/"
+    },
+    {
+      "champion_id": "Nautilus",
+      "role": "Лес",
+      "runes": [
+        "Ice Tyrant",
+        "Courage of the Colossus",
+        "Bone Plating",
+        "Overgrowth",
+        "Hextech Flashtraption"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/nautilus/builds/"
+    },
+    {
+      "champion_id": "Nilah",
+      "role": "ADC",
+      "runes": [
+        "Fleet Footwork",
+        "Brutal",
+        "Giant Slayer",
+        "Legend: Alacrity",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/nilah/builds/"
+    },
+    {
+      "champion_id": "Norra",
+      "role": "Саппорт",
+      "runes": [
+        "Arcane Comet",
+        "Botanist",
+        "Transcendence",
+        "Scorch",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/norra/builds/"
+    },
+    {
+      "champion_id": "Pantheon",
+      "role": "Барон",
+      "runes": [
+        "Conqueror",
+        "Demolish",
+        "Second Wind",
+        "Overgrowth",
+        "Brutal"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/pantheon/builds/"
+    },
+    {
+      "champion_id": "Pantheon",
+      "role": "Мид",
+      "runes": [
+        "Electrocute",
+        "Sudden Impact",
+        "Eyeball Collector",
+        "Hubris",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/pantheon/builds/"
+    },
+    {
+      "champion_id": "Poppy",
+      "role": "Лес",
+      "runes": [
+        "Grasp of the Undying",
+        "Courage of the Colossus",
+        "Bone Plating",
+        "Overgrowth",
+        "Manaflow Band"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/poppy/builds/"
+    },
+    {
+      "champion_id": "Poppy",
+      "role": "Саппорт",
+      "runes": [
+        "Grasp of the Undying",
+        "Courage of the Colossus",
+        "Second Wind",
+        "Overgrowth",
+        "Manaflow Band"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/poppy/builds/"
+    },
+    {
+      "champion_id": "Pyke",
+      "role": "Мид",
+      "runes": [
+        "Electrocute",
+        "Sudden Impact",
+        "Zombie Ward",
+        "Hubris",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/pyke/builds/"
+    },
+    {
+      "champion_id": "Rengar",
+      "role": "Барон",
+      "runes": [
+        "First Strike",
+        "Brutal",
+        "Giant Slayer",
+        "Legend: Alacrity",
+        "Sudden Impact"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/rengar/builds/"
+    },
+    {
+      "champion_id": "Rumble",
+      "role": "Мид",
+      "runes": [
+        "Arcane Comet",
+        "Brutal",
+        "Coup de Grace",
+        "Legend: Bloodline",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/rumble/builds/"
+    },
+    {
+      "champion_id": "Ryze",
+      "role": "Барон",
+      "runes": [
+        "Phase Rush",
+        "Manaflow Band",
+        "Transcendence",
+        "Scorch",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/ryze/builds/"
+    },
+    {
+      "champion_id": "Seraphine",
+      "role": "Мид",
+      "runes": [
+        "Arcane Comet",
+        "Botanist",
+        "Transcendence",
+        "Scorch",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/seraphine/builds/"
+    },
+    {
+      "champion_id": "Swain",
+      "role": "Барон",
+      "runes": [
+        "Conqueror",
+        "Axiom Arcanist",
+        "Transcendence",
+        "Nimbus Cloak",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/swain/builds/"
+    },
+    {
+      "champion_id": "Taliyah",
+      "role": "Лес",
+      "runes": [
+        "Phase Rush",
+        "Manaflow Band",
+        "Transcendence",
+        "Scorch",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/taliyah/builds/"
+    },
+    {
+      "champion_id": "Talon",
+      "role": "Мид",
+      "runes": [
+        "Electrocute",
+        "Sudden Impact",
+        "Eyeball Collector",
+        "Hubris",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/talon/builds/"
+    },
+    {
+      "champion_id": "Varus",
+      "role": "Мид",
+      "runes": [
+        "Lethal Tempo",
+        "Brutal",
+        "Giant Slayer",
+        "Legend: Alacrity",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/varus/builds/"
+    },
+    {
+      "champion_id": "Vladimir",
+      "role": "Барон",
+      "runes": [
+        "Phase Rush",
+        "Botanist",
+        "Transcendence",
+        "Scorch",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/vladimir/builds/"
+    },
+    {
+      "champion_id": "Warwick",
+      "role": "Барон",
+      "runes": [
+        "Grasp of the Undying",
+        "Demolish",
+        "Second Wind",
+        "Overgrowth",
+        "Sudden Impact"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/warwick/builds/"
+    },
+    {
+      "champion_id": "Ziggs",
+      "role": "ADC",
+      "runes": [
+        "Arcane Comet",
+        "Botanist",
+        "Transcendence",
+        "Scorch",
+        "Bone Plating"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/ziggs/builds/"
+    },
+    {
+      "champion_id": "Zilean",
+      "role": "Мид",
+      "runes": [
+        "Summon Aery",
+        "Font of Life",
+        "Bone Plating",
+        "Revitalize",
+        "Transcendence"
+      ],
+      "source_url": "https://wildriftcore.com/en/champions/zilean/builds/"
+    }
+  ]
+}

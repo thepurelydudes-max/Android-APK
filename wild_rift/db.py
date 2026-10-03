@@ -154,6 +154,71 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_build_page_cache_source_patch
                 ON build_page_cache(source, patch);
+            CREATE TABLE IF NOT EXISTS runes (
+                name TEXT PRIMARY KEY,
+                name_ru TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL DEFAULT '',
+                effect_en TEXT NOT NULL DEFAULT '',
+                effect_ru TEXT NOT NULL DEFAULT '',
+                icon_url TEXT NOT NULL DEFAULT '',
+                icon_path TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                patch TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS role_runes (
+                champion_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                runes_json TEXT NOT NULL DEFAULT '[]',
+                pick_rate REAL,
+                win_rate REAL,
+                rank_band TEXT NOT NULL DEFAULT '',
+                sample_date TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL,
+                patch TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (champion_id, role, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_role_runes_lookup
+                ON role_runes(champion_id, role, source);
+            CREATE TABLE IF NOT EXISTS role_rune_variants (
+                champion_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                variant_rank INTEGER NOT NULL,
+                runes_json TEXT NOT NULL DEFAULT '[]',
+                pick_rate REAL,
+                win_rate REAL,
+                rank_band TEXT NOT NULL DEFAULT '',
+                sample_date TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL,
+                patch TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (champion_id, role, variant_rank, source),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_role_rune_variants_lookup
+                ON role_rune_variants(champion_id, role, source, variant_rank);
+            CREATE TABLE IF NOT EXISTS role_rune_adaptations (
+                champion_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                condition_text TEXT NOT NULL DEFAULT '',
+                from_rune TEXT NOT NULL,
+                to_rune TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 999,
+                source TEXT NOT NULL,
+                patch TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (
+                    champion_id, role, condition_text, from_rune, to_rune, source
+                ),
+                FOREIGN KEY (champion_id) REFERENCES champions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_role_rune_adapt_lookup
+                ON role_rune_adaptations(champion_id, role, source, priority);
             CREATE TABLE IF NOT EXISTS items (
                 name TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT ''
             );
@@ -180,6 +245,9 @@ def init_db() -> None:
         _ensure_column(con, "items", "data_patch", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "data_source_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(con, "items", "tier", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(con, "runes", "name_ru", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(con, "runes", "effect_en", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(con, "runes", "effect_ru", "TEXT NOT NULL DEFAULT ''")
         # 3.7.12 hotfix: fix the one missing RU item name locally.
         # This also repairs an existing runtime DB when the APK is installed
         # over 3.7.12, so another internet update is not required.
@@ -1301,6 +1369,18 @@ def load_runtime_snapshot() -> dict:
             "FROM role_build_opponent_adaptations "
             "ORDER BY champion_id,role,priority,enemy_name_norm,item_name"
         ).fetchall()
+        rune_rows = con.execute("SELECT * FROM runes").fetchall()
+        role_rune_rows = con.execute(
+            "SELECT * FROM role_runes ORDER BY champion_id,role,source"
+        ).fetchall()
+        role_rune_variant_rows = con.execute(
+            "SELECT * FROM role_rune_variants "
+            "ORDER BY champion_id,role,source,variant_rank"
+        ).fetchall()
+        role_rune_adaptation_rows = con.execute(
+            "SELECT * FROM role_rune_adaptations "
+            "ORDER BY champion_id,role,priority,source"
+        ).fetchall()
         item_rows = con.execute("SELECT * FROM items").fetchall()
 
     champions_list: list[dict] = []
@@ -1397,6 +1477,51 @@ def load_runtime_snapshot() -> dict:
             (row["champion_id"], row["role"]), []
         ).append(dict(row))
 
+    rune_catalog = {row["name"]: dict(row) for row in rune_rows}
+
+    rune_source_priority = {
+        "wrpocket.app:tencent-cn": 0,
+        "wildriftfire.com": 1,
+        "wildriftcore.com:indexed-7.3a": 2,
+    }
+    role_runes: dict[tuple[str, str], dict] = {}
+    for row in sorted(
+        role_rune_rows,
+        key=lambda r: (
+            str(r["champion_id"]),
+            str(r["role"]),
+            rune_source_priority.get(str(r["source"]), 99),
+        ),
+    ):
+        key = (str(row["champion_id"]), str(row["role"]))
+        if key in role_runes:
+            continue
+        data = dict(row)
+        try:
+            data["runes"] = json.loads(data.pop("runes_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            data["runes"] = []
+            data.pop("runes_json", None)
+        role_runes[key] = data
+
+    role_rune_variants: dict[tuple[str, str], list[dict]] = {}
+    for row in role_rune_variant_rows:
+        data = dict(row)
+        try:
+            data["runes"] = json.loads(data.pop("runes_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            data["runes"] = []
+            data.pop("runes_json", None)
+        role_rune_variants.setdefault(
+            (str(row["champion_id"]), str(row["role"])), []
+        ).append(data)
+
+    role_rune_adaptations: dict[tuple[str, str], list[dict]] = {}
+    for row in role_rune_adaptation_rows:
+        role_rune_adaptations.setdefault(
+            (str(row["champion_id"]), str(row["role"])), []
+        ).append(dict(row))
+
     items = {row["name"]: dict(row) for row in item_rows}
 
     return {
@@ -1415,6 +1540,10 @@ def load_runtime_snapshot() -> dict:
         "role_situational": role_situational,
         "role_boots": role_boots,
         "role_opponent_adaptations": role_opponent_adaptations,
+        "runes": rune_catalog,
+        "role_runes": role_runes,
+        "role_rune_variants": role_rune_variants,
+        "role_rune_adaptations": role_rune_adaptations,
         "items": items,
     }
 

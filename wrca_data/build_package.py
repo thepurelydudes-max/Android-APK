@@ -88,6 +88,8 @@ def db_audit(path: Path) -> tuple[dict[str, int], dict[str, str]]:
             "champions", "stats", "champion_tiers", "matchups", "items",
             "item_pools", "role_builds", "role_build_variants",
             "counter_items", "build_page_cache", "matchup_page_cache",
+            "runes", "role_runes", "role_rune_variants",
+            "role_rune_adaptations",
         )
         missing = [name for name in required if name not in tables]
         if missing:
@@ -108,10 +110,27 @@ def db_audit(path: Path) -> tuple[dict[str, int], dict[str, str]]:
         counts["tier_roles"] = int(
             con.execute("SELECT COUNT(DISTINCT role) FROM champion_tiers").fetchone()[0]
         )
+        counts["rune_role_pairs"] = int(
+            con.execute(
+                "SELECT COUNT(*) FROM (SELECT DISTINCT champion_id,role FROM role_runes)"
+            ).fetchone()[0]
+        )
+        counts["localized_runes"] = int(
+            con.execute(
+                "SELECT COUNT(*) FROM runes "
+                "WHERE TRIM(COALESCE(name_ru,''))<>'' "
+                "AND TRIM(COALESCE(effect_ru,''))<>''"
+            ).fetchone()[0]
+        )
         meta = {str(k): str(v) for k, v in con.execute("SELECT key,value FROM meta")}
         return counts, meta
 
-def validate_complete(counts: dict[str, int], champ_icons: int, item_icons: int) -> None:
+def validate_complete(
+    counts: dict[str, int],
+    champ_icons: int,
+    item_icons: int,
+    rune_icons: int,
+) -> None:
     champions = counts["champions"]
     checks = {
         "champions": champions >= 100,
@@ -127,8 +146,14 @@ def validate_complete(counts: dict[str, int], champ_icons: int, item_icons: int)
         "role_build_champions": counts["role_build_champions"] == champions,
         "build_cache_champions": counts["build_cache_champions"] == champions,
         "matchup_cache_champions": counts["matchup_cache_champions"] == champions,
+        "runes": counts["runes"] >= 51,
+        "role_runes": counts["role_runes"] >= 226,
+        "rune_role_pairs": counts["rune_role_pairs"] >= 226,
+        "role_rune_variants": counts["role_rune_variants"] > 0,
+        "localized_runes": counts["localized_runes"] >= 51,
         "champion_icons": champ_icons == champions,
         "item_icons": item_icons >= counts["items"],
+        "rune_icons": rune_icons > 0,
     }
     failed = [name for name, ok in checks.items() if not ok]
     if failed:
@@ -165,9 +190,11 @@ def main() -> int:
     counts, meta = db_audit(db_path)
     champ_icons = len(list((cache / "champions").glob("*.png")))
     item_icons = len(list((cache / "items").glob("*.png")))
-    validate_complete(counts, champ_icons, item_icons)
+    rune_icons = len([p for p in (cache / "runes").glob("*") if p.is_file()])
+    validate_complete(counts, champ_icons, item_icons, rune_icons)
     counts["champion_icons"] = champ_icons
     counts["item_icons"] = item_icons
+    counts["rune_icons"] = rune_icons
 
     db_patch = meta.get("patch_version", "").strip()
     if db_patch != patch:
@@ -243,6 +270,11 @@ def main() -> int:
         f"- WRC matchup cache: {counts['matchup_cache_champions']}/{counts['champions']}\n"
         f"- Champion icons: {champ_icons}\n"
         f"- Item icons: {item_icons}\n"
+        f"- Rune role pages: {counts['rune_role_pairs']}\n"
+        f"- Rune variants: {counts['role_rune_variants']}\n"
+        f"- Situational rune rules: {counts['role_rune_adaptations']}\n"
+        f"- Localized runes: {counts['localized_runes']}\n"
+        f"- Rune icon files: {rune_icons}\n"
         f"- SHA-256: {package_sha}\n",
         encoding="utf-8",
     )

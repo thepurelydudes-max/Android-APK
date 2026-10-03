@@ -162,6 +162,8 @@ def _database_counts(database: Path) -> dict[str, int]:
                 "champions", "stats", "champion_tiers", "matchups", "items",
                 "item_pools", "role_builds", "role_build_variants",
                 "counter_items", "build_page_cache", "matchup_page_cache",
+                "runes", "role_runes", "role_rune_variants",
+                "role_rune_adaptations",
             )
             missing = [name for name in required if name not in names]
             if missing:
@@ -180,6 +182,13 @@ def _database_counts(database: Path) -> dict[str, int]:
             )
             counts["matchup_cache_champions"] = int(
                 con.execute("SELECT COUNT(DISTINCT champion_id) FROM matchup_page_cache").fetchone()[0]
+            )
+            counts["rune_role_pairs"] = int(
+                con.execute(
+                    "SELECT COUNT(*) FROM ("
+                    "SELECT DISTINCT champion_id,role FROM role_runes"
+                    ")"
+                ).fetchone()[0]
             )
             return counts
     except PackageUpdateError:
@@ -246,6 +255,11 @@ def _validate_payload(root: Path, remote: dict) -> dict:
             "WRC role builds покрывают не всех чемпионов: "
             f"{actual.get('role_build_champions', 0)}/{champions}."
         )
+    if int(actual.get("rune_role_pairs") or 0) < 226:
+        raise PackageUpdateError(
+            "Этот пакет данных не содержит полную базу рун WRCA: "
+            f"{actual.get('rune_role_pairs', 0)}/226."
+        )
 
     cache_hash = str(internal.get("cache_sha256") or "").lower()
     if not re_full_sha(cache_hash) or _tree_sha256(cache_path) != cache_hash:
@@ -260,6 +274,15 @@ def _validate_payload(root: Path, remote: dict) -> dict:
     if item_icons != int(expected.get("item_icons") or 0):
         raise PackageUpdateError(
             f"Иконки предметов: {item_icons} вместо {expected.get('item_icons')}."
+        )
+    expected_rune_icons = int(expected.get("rune_icons") or 0)
+    rune_icons = sum(
+        1 for path in (cache_path / "runes").glob("*")
+        if path.is_file()
+    )
+    if expected_rune_icons <= 0 or rune_icons != expected_rune_icons:
+        raise PackageUpdateError(
+            f"Иконки рун: {rune_icons} вместо {expected_rune_icons}."
         )
 
     # Store the exact package manifest beside the installed DB after promotion.

@@ -15,6 +15,7 @@ on:
   push:
     branches:
       - main
+      - wrca-runes-3.9.4-test
     paths:
       - ".build-trigger"
 
@@ -51,7 +52,7 @@ jobs:
           fi
 
       - name: Download canonical 3.7.12 APK seed
-        if: ${{ (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        if: ${{ false }}
         uses: actions/download-artifact@v4
         with:
           name: FARLINER-Wild-Rift-APK
@@ -101,6 +102,106 @@ jobs:
             test -f mlbb/main.py || { echo "mlbb/main.py is missing."; exit 1; }
             test -d mlbb/assets || { echo "mlbb/assets is missing."; exit 1; }
           fi
+
+      - name: Restore verified WRCA GitHub data package
+        if: ${{ (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE="${{ runner.temp }}/wrca_verified_package.zip"
+          STAGE="${{ runner.temp }}/wrca_verified_package"
+          URL="$(python -c 'import json; print(json.load(open("wrca_data/latest.json", encoding="utf-8"))["download_url"])')"
+          SHA="$(python -c 'import json; print(json.load(open("wrca_data/latest.json", encoding="utf-8"))["sha256"])')"
+          curl --fail --location --retry 3 --retry-all-errors "$URL" -o "$PACKAGE"
+          echo "$SHA  $PACKAGE" | sha256sum --check --status || {
+            echo "::error::WRCA package SHA-256 mismatch."
+            exit 1
+          }
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          unzip -q "$PACKAGE" -d "$STAGE"
+          test -f "$STAGE/data/wildrift.db"
+          test -d "$STAGE/cache"
+
+          rm -rf "$GITHUB_WORKSPACE/wild_rift/assets/cache" "$GITHUB_WORKSPACE/wild_rift/assets/data"
+          mkdir -p "$GITHUB_WORKSPACE/wild_rift/assets"
+          cp -a "$STAGE/cache" "$GITHUB_WORKSPACE/wild_rift/assets/"
+          cp -a "$STAGE/data" "$GITHUB_WORKSPACE/wild_rift/assets/"
+
+          python - <<'PY'
+          import json, sqlite3
+          db_path = "wild_rift/assets/data/wildrift.db"
+          with sqlite3.connect(db_path) as con:
+              assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+              meta = dict(con.execute("SELECT key,value FROM meta"))
+              assert meta.get("patch_version") == "7.3a", meta
+              assert con.execute("SELECT COUNT(*) FROM champions").fetchone()[0] == 142
+              assert con.execute("SELECT COUNT(*) FROM matchups").fetchone()[0] == 9606
+              build_pairs = {
+                  (str(r[0]), str(r[1]))
+                  for r in con.execute(
+                      "SELECT DISTINCT champion_id,role FROM role_builds "
+                      "WHERE source='wildriftcore.com'"
+                  )
+              }
+              priority = {
+                  "wrpocket.app:tencent-cn": 0,
+                  "wildriftfire.com": 1,
+                  "wildriftcore.com:indexed-7.3a": 2,
+              }
+              selected_runes = {}
+              for row in con.execute(
+                  "SELECT champion_id,role,runes_json,source FROM role_runes"
+              ):
+                  source = str(row[3])
+                  if source not in priority:
+                      continue
+                  key = (str(row[0]), str(row[1]))
+                  old = selected_runes.get(key)
+                  if old is None or priority[source] < priority[old[1]]:
+                      selected_runes[key] = (str(row[2]), source)
+              rune_pairs = set(selected_runes)
+              assert len(build_pairs) == 226, len(build_pairs)
+              assert not (build_pairs - rune_pairs), sorted(build_pairs - rune_pairs)
+              incomplete = []
+              for key in sorted(build_pairs):
+                  runes = json.loads(selected_runes[key][0] or "[]")
+                  if len(runes) != 5 or len(set(runes)) != 5:
+                      incomplete.append((key, runes, selected_runes[key][1]))
+              assert not incomplete, incomplete
+              assert con.execute("SELECT COUNT(*) FROM runes").fetchone()[0] >= 51
+              localized = con.execute(
+                  "SELECT COUNT(*) FROM runes "
+                  "WHERE TRIM(COALESCE(name_ru,''))<>'' "
+                  "AND TRIM(COALESCE(effect_ru,''))<>''"
+              ).fetchone()[0]
+              used_names = set()
+              for raw_json, in con.execute("SELECT runes_json FROM role_runes"):
+                  try:
+                      used_names.update(json.loads(raw_json or "[]"))
+                  except Exception:
+                      pass
+              missing_ru = [
+                  name for name in sorted(used_names)
+                  if not con.execute(
+                      "SELECT 1 FROM runes WHERE name=? "
+                      "AND TRIM(COALESCE(name_ru,''))<>'' "
+                      "AND TRIM(COALESCE(effect_ru,''))<>''",
+                      (name,),
+                  ).fetchone()
+              ]
+              assert not missing_ru, missing_ru
+              print("Verified WRCA package seed:", json.dumps({
+                  "patch": meta.get("patch_version"),
+                  "package": meta.get("package_version"),
+                  "champions": con.execute("SELECT COUNT(*) FROM champions").fetchone()[0],
+                  "matchups": con.execute("SELECT COUNT(*) FROM matchups").fetchone()[0],
+                  "rune_catalog": con.execute("SELECT COUNT(*) FROM runes").fetchone()[0],
+                  "rune_role_pairs": len(build_pairs & rune_pairs),
+                  "five_rune_pages": len(build_pairs),
+                  "localized_runes": localized,
+              }, ensure_ascii=False))
+          PY
 
       - name: Restore verified MLCA GitHub package seed
         if: ${{ (steps.select.outputs.project == 'mlbb' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
@@ -178,7 +279,7 @@ jobs:
           PY
 
       - name: Restore updated 3.7.12 preseed without network refresh
-        if: ${{ (steps.select.outputs.project == 'wild_rift' || steps.select.outputs.project == 'both') && steps.select.outputs.preseeded == 'true' }}
+        if: ${{ false }}
         shell: bash
         run: |
           set -euo pipefail

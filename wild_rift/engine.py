@@ -1292,6 +1292,102 @@ def _enemy_threat_profile(
     return counts, enemies_by_tag
 
 
+def analyze_enemy_draft(
+    enemies: list[tuple[str, str]],
+    snapshot: dict | None = None,
+) -> dict:
+    """Public, read-only enemy profile for optional recommendation layers.
+
+    It reuses the exact threat semantics already used by adaptive item builds,
+    so experimental rune logic does not invent a second draft classifier.
+    """
+    raw_enemy_objs = [(_find_champ(name, snapshot), role) for name, role in enemies]
+    raw_enemy_objs = [
+        (enemy, enemy_role)
+        for enemy, enemy_role in raw_enemy_objs
+        if enemy
+    ]
+    enemy_objs = _infer_enemy_roles(raw_enemy_objs, snapshot) if raw_enemy_objs else []
+    counts, enemies_by_tag = _enemy_threat_profile(enemy_objs, snapshot)
+    return {
+        "enemy_count": len(enemy_objs),
+        "counts": dict(counts),
+        "enemies_by_tag": {key: list(value) for key, value in enemies_by_tag.items()},
+    }
+
+
+def _role_rune_row(
+    champion_id: str, role_ru: str, snapshot: dict | None = None,
+) -> dict | None:
+    if snapshot is not None:
+        return (snapshot.get("role_runes") or {}).get((champion_id, role_ru))
+    return None
+
+
+def _role_rune_adaptation_rows(
+    champion_id: str, role_ru: str, snapshot: dict | None = None,
+) -> list[dict]:
+    if snapshot is not None:
+        return list(
+            (snapshot.get("role_rune_adaptations") or {}).get(
+                (champion_id, role_ru), []
+            )
+        )
+    return []
+
+
+def _recommend_runes_for_context(
+    champ: dict,
+    role_ru: str,
+    threat_counts: Counter,
+    snapshot: dict | None = None,
+) -> dict | None:
+    row = _role_rune_row(str(champ.get("id") or ""), role_ru, snapshot)
+    if not row:
+        return None
+
+    base = [
+        str(value)
+        for value in (row.get("runes") or [])
+        if str(value).strip()
+    ]
+    if not base:
+        return None
+
+    selected = list(base)
+    changes: list[dict] = []
+    for rule in _role_rune_adaptation_rows(
+        str(champ.get("id") or ""), role_ru, snapshot
+    ):
+        old = str(rule.get("from_rune") or "")
+        new = str(rule.get("to_rune") or "")
+        condition = str(rule.get("condition_text") or "")
+        if not old or not new or old not in selected or new in selected:
+            continue
+        tags = _trigger_tags_from_text(condition)
+        if not _trigger_is_active(condition, tags, threat_counts):
+            continue
+        selected[selected.index(old)] = new
+        changes.append({
+            "from": old,
+            "to": new,
+            "condition": condition,
+            "source": str(rule.get("source") or ""),
+        })
+
+    return {
+        "base": base,
+        "selected": selected,
+        "changes": changes,
+        "source": str(row.get("source") or ""),
+        "source_url": str(row.get("source_url") or ""),
+        "patch": str(row.get("patch") or ""),
+        "pick_rate": row.get("pick_rate"),
+        "win_rate": row.get("win_rate"),
+        "rank_band": str(row.get("rank_band") or ""),
+    }
+
+
 def _trigger_is_active(trigger_text: str, tags: set[str], threat_counts: Counter) -> bool:
     if not tags:
         return False
@@ -1434,6 +1530,9 @@ def recommend_build(
     neutral_enemies: list[str] = []
 
     threat_counts, enemies_by_tag = _enemy_threat_profile(enemy_objs, snapshot)
+    rune_recommendation = _recommend_runes_for_context(
+        champ, effective_role, threat_counts, snapshot
+    )
 
     # WRC publishes complete source-defined variants (Standard / Vs AD / Vs AP
     # and champion-specific alternatives). Select the whole coherent variant
@@ -1654,5 +1753,6 @@ def recommend_build(
         "exact_opponent_adaptations": exact_adaptation_hits,
         "threat_counts": dict(threat_counts),
         "draft_features": DRAFT_MATRIX.feature_vector(threat_counts),
+        "runes": rune_recommendation,
     }
 
