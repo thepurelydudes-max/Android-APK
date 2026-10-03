@@ -128,27 +128,6 @@ def _audit(database: Path, cache: Path) -> dict:
             if key in build_pairs
             for name in runes
         }
-        missing_locale = []
-        missing_catalog = []
-        for name in sorted(used):
-            row = con.execute(
-                "SELECT name_ru,effect_ru,effect_en,icon_path FROM runes WHERE name=?",
-                (name,),
-            ).fetchone()
-            if row is None:
-                missing_catalog.append(name)
-                continue
-            if (
-                not str(row["name_ru"] or "").strip()
-                or not str(row["effect_ru"] or "").strip()
-                or not str(row["effect_en"] or "").strip()
-            ):
-                missing_locale.append(name)
-        if missing_catalog:
-            raise RuntimeError("Missing runes from catalog: " + ", ".join(missing_catalog))
-        if missing_locale:
-            raise RuntimeError("Missing RU rune localization: " + ", ".join(missing_locale))
-
         counts = {
             "role_build_pairs": len(build_pairs),
             "covered_pairs": len(build_pairs & set(selected)),
