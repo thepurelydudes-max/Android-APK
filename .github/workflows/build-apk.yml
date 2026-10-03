@@ -167,14 +167,31 @@ jobs:
                       "WHERE source='wildriftcore.com'"
                   )
               }
-              rune_pairs = {
-                  (str(r[0]), str(r[1]))
-                  for r in con.execute(
-                      "SELECT DISTINCT champion_id,role FROM role_runes"
-                  )
+              priority = {
+                  "wrpocket.app:tencent-cn": 0,
+                  "wildriftfire.com": 1,
+                  "wildriftcore.com:indexed-7.3a": 2,
               }
+              selected_runes = {}
+              for row in con.execute(
+                  "SELECT champion_id,role,runes_json,source FROM role_runes"
+              ):
+                  source = str(row[3])
+                  if source not in priority:
+                      continue
+                  key = (str(row[0]), str(row[1]))
+                  old = selected_runes.get(key)
+                  if old is None or priority[source] < priority[old[1]]:
+                      selected_runes[key] = (str(row[2]), source)
+              rune_pairs = set(selected_runes)
               assert len(build_pairs) == 226, len(build_pairs)
               assert not (build_pairs - rune_pairs), sorted(build_pairs - rune_pairs)
+              incomplete = []
+              for key in sorted(build_pairs):
+                  runes = json.loads(selected_runes[key][0] or "[]")
+                  if len(runes) != 5 or len(set(runes)) != 5:
+                      incomplete.append((key, runes, selected_runes[key][1]))
+              assert not incomplete, incomplete
               assert con.execute("SELECT COUNT(*) FROM runes").fetchone()[0] >= 51
               print("Rune-test seed:", json.dumps({
                   "patch": meta.get("patch_version"),
@@ -183,6 +200,7 @@ jobs:
                   "matchups": con.execute("SELECT COUNT(*) FROM matchups").fetchone()[0],
                   "rune_catalog": con.execute("SELECT COUNT(*) FROM runes").fetchone()[0],
                   "rune_role_pairs": len(build_pairs & rune_pairs),
+                  "five_rune_pages": len(build_pairs),
               }, ensure_ascii=False))
           PY
 
