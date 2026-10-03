@@ -109,6 +109,27 @@ def parse_role_labels(soup: BeautifulSoup) -> list[tuple[str, str]]:
         role = ROLE_MAP.get(source_role)
         if role:
             labels.append((role, text))
+    if labels:
+        return labels
+
+    # Single-role champion pages have no build selector. Use the explicit
+    # Recommended Role field from the source instead of guessing locally.
+    for title in soup.select(".additional-info .title"):
+        if "recommended role" not in title.get_text(" ", strip=True).casefold():
+            continue
+        parent = title.parent
+        text = " ".join(parent.get_text(" ", strip=True).split()) if parent else ""
+        m = re.search(
+            r"Recommended Role\s*(Solo|Baron|Jungle|Mid|Duo|ADC|Support)(?:\s+Lane)?",
+            text,
+            re.I,
+        )
+        if m:
+            source_role = m.group(1).casefold()
+            role = ROLE_MAP.get(source_role)
+            if role:
+                labels.append((role, f"{m.group(1)} Build"))
+                break
     return labels
 
 
