@@ -210,7 +210,7 @@ class MobileAssistant:
         self.page.theme = ft.Theme(color_scheme_seed=P["gold"])
         self.page.bgcolor = P["bg"]
         self.page.padding = 0
-        self.page.scroll = ft.ScrollMode.AUTO
+        self.page.scroll = None
 
     def reload_snapshot(self) -> None:
         db.init_db()
@@ -289,6 +289,31 @@ class MobileAssistant:
         self._media_src_cache[key] = result
         return result
 
+    def optimized_image(
+        self,
+        src: str,
+        width: int,
+        height: int,
+        fit=ft.BoxFit.COVER,
+    ) -> ft.Image:
+        """Decode thumbnails near their rendered size instead of full source size.
+
+        Most bundled champion/item/rune images are much larger than the 18-58px
+        controls used on screen. Limiting decode dimensions cuts image memory
+        and raster work during Android scrolling without changing the source
+        file or visible layout.
+        """
+        decode_w = max(48, int(width * 2))
+        decode_h = max(48, int(height * 2))
+        return ft.Image(
+            src=src,
+            width=width,
+            height=height,
+            fit=fit,
+            cache_width=decode_w,
+            cache_height=decode_h,
+        )
+
     def item_image_content(self, record: dict | None, size: int) -> ft.Control:
         """Render only a successfully cached item icon.
 
@@ -298,7 +323,7 @@ class MobileAssistant:
         """
         local = self._cached_local_media_src(record)
         if local:
-            return ft.Image(src=local, width=size, height=size, fit=ft.BoxFit.COVER)
+            return self.optimized_image(local, size, size, ft.BoxFit.COVER)
         return ft.Container(
             width=size,
             height=size,
@@ -359,7 +384,7 @@ class MobileAssistant:
             )
         src = self.image_src(champ, fallback="")
         if src:
-            return ft.Image(src=src, fit=ft.BoxFit.COVER)
+            return self.optimized_image(src, size, size, ft.BoxFit.COVER)
         initials = (self.champ_name(champ)[:2] or "?").upper()
         return ft.Row(
             alignment=ft.MainAxisAlignment.CENTER,
@@ -433,7 +458,7 @@ class MobileAssistant:
             spacing=2,
             expand=True,
             controls=[
-                ft.Image(src="wildrift_logo.png", width=178, height=48, fit=ft.BoxFit.CONTAIN),
+                self.optimized_image("wildrift_logo.png", 178, 48, ft.BoxFit.CONTAIN),
                 self.header_subtitle_text,
             ],
         )
@@ -447,7 +472,7 @@ class MobileAssistant:
                     ft.Row(
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Image(src="wildrift_icon.png", width=42, height=42, fit=ft.BoxFit.CONTAIN),
+                            self.optimized_image("wildrift_icon.png", 42, 42, ft.BoxFit.CONTAIN),
                             brand,
                             self.lang_button,
                         ],
@@ -482,7 +507,7 @@ class MobileAssistant:
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=2,
                     controls=[
-                        ft.Image(src=ROLE_ICONS[role], width=32, height=32, fit=ft.BoxFit.CONTAIN),
+                        self.optimized_image(ROLE_ICONS[role], 32, 32, ft.BoxFit.CONTAIN),
                         label,
                     ],
                 ),
@@ -635,43 +660,44 @@ class MobileAssistant:
             ),
         )
 
-    def output_panel(self) -> ft.Control:
+    def output_panels(self) -> list[ft.Control]:
         self.pick_column = ft.Column(spacing=7)
         self.build_column = ft.Column(spacing=10)
         self.pick_title_text = ft.Text(self.t("picks"), size=16, weight=ft.FontWeight.BOLD, color=P["gold_bright"])
         self.build_title_text = ft.Text(self.t("build"), size=16, weight=ft.FontWeight.BOLD, color=P["gold_bright"])
         self.render_outputs()
-        return ft.Column(
-            spacing=12,
-            controls=[
-                ft.Container(
-                    bgcolor=P["panel"],
-                    border=ft.Border.all(1, P["border"]),
-                    border_radius=12,
-                    padding=12,
-                    content=ft.Column(
-                        spacing=9,
-                        controls=[
-                            self.pick_title_text,
-                            self.pick_column,
-                        ],
-                    ),
+        return [
+            ft.Container(
+                bgcolor=P["panel"],
+                border=ft.Border.all(1, P["border"]),
+                border_radius=12,
+                padding=12,
+                content=ft.Column(
+                    spacing=9,
+                    controls=[
+                        self.pick_title_text,
+                        self.pick_column,
+                    ],
                 ),
-                ft.Container(
-                    bgcolor=P["panel"],
-                    border=ft.Border.all(1, P["border"]),
-                    border_radius=12,
-                    padding=12,
-                    content=ft.Column(
-                        spacing=9,
-                        controls=[
-                            self.build_title_text,
-                            self.build_column,
-                        ],
-                    ),
+            ),
+            ft.Container(
+                bgcolor=P["panel"],
+                border=ft.Border.all(1, P["border"]),
+                border_radius=12,
+                padding=12,
+                content=ft.Column(
+                    spacing=9,
+                    controls=[
+                        self.build_title_text,
+                        self.build_column,
+                    ],
                 ),
-            ],
-        )
+            ),
+        ]
+
+    def output_panel(self) -> ft.Control:
+        # Compatibility wrapper for any future desktop/layout reuse.
+        return ft.Column(spacing=12, controls=self.output_panels())
 
     def footer(self) -> ft.Control:
         self.update_button = ft.FilledButton(content=self.t("update"), icon=ft.Icons.REFRESH, on_click=self.update_data)
@@ -739,14 +765,26 @@ class MobileAssistant:
     def rebuild_page(self) -> None:
         self.page.clean()
         self.status_text = ft.Text("")
-        content = ft.Column(
+
+        output_panels = self.output_panels()
+        content = ft.ListView(
+            expand=True,
             spacing=12,
+            build_controls_on_demand=True,
+            cache_extent=500,
             controls=[
                 self.header(),
                 ft.Container(
                     padding=ft.Padding.symmetric(horizontal=10),
-                    content=ft.Column(spacing=12, controls=[self.selection_panel(), self.output_panel()]),
+                    content=self.selection_panel(),
                 ),
+                *[
+                    ft.Container(
+                        padding=ft.Padding.symmetric(horizontal=10),
+                        content=panel,
+                    )
+                    for panel in output_panels
+                ],
                 self.footer(),
             ],
         )
@@ -1007,7 +1045,7 @@ class MobileAssistant:
                                     height=18,
                                     border_radius=4,
                                     clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                                    content=ft.Image(src=self.image_src(champ), fit=ft.BoxFit.COVER),
+                                    content=self.optimized_image(self.image_src(champ), 18, 18, ft.BoxFit.COVER),
                                 ),
                                 ft.Text(self.champ_name(champ), size=9),
                             ],
@@ -1100,7 +1138,7 @@ class MobileAssistant:
                     height=46,
                     border_radius=8,
                     clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                    content=ft.Image(src=self.image_src(champ), fit=ft.BoxFit.COVER),
+                    content=self.optimized_image(self.image_src(champ), 46, 46, ft.BoxFit.COVER),
                 ),
                 ft.Column(
                     spacing=1,
@@ -1416,9 +1454,8 @@ class MobileAssistant:
                             height=58,
                             border_radius=9,
                             clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                            content=ft.Image(
-                                src=self.image_src(champ),
-                                fit=ft.BoxFit.COVER,
+                            content=self.optimized_image(
+                                self.image_src(champ), 58, 58, ft.BoxFit.COVER
                             ),
                         ),
                         ft.Column(
