@@ -28,7 +28,7 @@ jobs:
               url=f"https://wildriftcore.com/en/champions/{champ}/builds/"
               reader="https://r.jina.ai/"+url
               rr=requests.get(reader,headers=headers,timeout=45)
-              print("READER",champ,rr.status_code,len(rr.text))
+              print("READER",champ,rr.status_code,len(rr.text),repr(rr.text[:1200]))
               rr.raise_for_status()
               lines=rr.text.splitlines()
               for i,line in enumerate(lines):
