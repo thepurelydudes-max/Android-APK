@@ -1,0 +1,48 @@
+name: Probe WR Pocket Rune Lanes
+
+on:
+  push:
+    branches:
+      - wrca-runes-3.9.3-test
+    paths:
+      - ".wrp-runes-probe-trigger"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install requests beautifulsoup4
+      - name: Inspect lane controls and rune data
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re, requests, json
+          from bs4 import BeautifulSoup
+          url="https://wrpocket.app/en/champions/malphite"
+          r=requests.get(url,headers={"User-Agent":"Mozilla/5.0 WRCA-Rune-Audit/1"},timeout=45)
+          print("STATUS",r.status_code,"LEN",len(r.text),r.url)
+          r.raise_for_status()
+          soup=BeautifulSoup(r.text,"html.parser")
+          for tag in soup.find_all(["form","select","option","button","a","input"]):
+              txt=" ".join(tag.get_text(" ",strip=True).split())
+              attrs={k:v for k,v in tag.attrs.items() if k in {"name","value","href","action","id","class","data-lane","data-role","data-url","hx-get","hx-post","hx-target"}}
+              blob=(txt+" "+str(attrs)).casefold()
+              if any(x in blob for x in ("lane","top","support","build trend","rune")):
+                  if len(txt)<100:
+                      print("CTRL",tag.name,repr(txt),attrs)
+          # Find JS/JSON fragments mentioning lane + runes or endpoints.
+          for s in soup.find_all("script"):
+              body=s.string or s.get_text("\n")
+              low=body.casefold()
+              if "lane" in low and ("rune" in low or "build" in low):
+                  print("SCRIPT",body[:12000].replace("\n"," ")[:12000])
+          for m in re.finditer(r'https?://[^"\'\s<>]+|/[A-Za-z0-9_/?=&.-]+',r.text):
+              val=m.group(0)
+              low=val.casefold()
+              if ("lane" in low or "build" in low) and ("api" in low or "champion" in low):
+                  print("URLCAND",val[:500])
+          PY
