@@ -1,0 +1,55 @@
+name: Probe WildRiftFire Runes DOM
+
+on:
+  push:
+    branches:
+      - wrca-runes-3.9.3-test
+    paths:
+      - ".runes-probe-trigger"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install requests beautifulsoup4
+      - name: Inspect guide DOM
+        shell: bash
+        run: |
+          python - <<'PY'
+          import requests
+          from bs4 import BeautifulSoup, Tag
+          url="https://www.wildriftfire.com/guide/malphite"
+          r=requests.get(url,headers={"User-Agent":"Mozilla/5.0 WRCA-Rune-Audit/1"},timeout=30)
+          print("STATUS",r.status_code,"LEN",len(r.text))
+          r.raise_for_status()
+          soup=BeautifulSoup(r.text,"html.parser")
+          print("TITLE",soup.title.get_text(" ",strip=True) if soup.title else "-")
+          # Print all headings containing build/rune/role words and ancestry classes.
+          for tag in soup.find_all(["h1","h2","h3","h4","h5","div","span"]):
+              txt=" ".join(tag.get_text(" ",strip=True).split())
+              low=txt.casefold()
+              if txt and len(txt)<120 and any(k in low for k in ("spells & runes","situational runes","solo build","support build","recommended role")):
+                  anc=[]
+                  p=tag
+                  for _ in range(5):
+                      if not isinstance(p,Tag): break
+                      anc.append((p.name,p.get("id"),p.get("class"),p.get("data-role"),p.get("data-tab")))
+                      p=p.parent
+                  print("MATCH",repr(txt),anc)
+          # Around every exact Runes text, show next siblings/tags.
+          for node in soup.find_all(string=lambda s: s and s.strip()=="Runes"):
+              p=node.parent
+              print("RUNES_NODE",p.name,p.get("class"),"PARENT",p.parent.name,p.parent.get("class"))
+              cur=p
+              for i in range(18):
+                  cur=cur.find_next()
+                  if not cur: break
+                  if isinstance(cur,Tag):
+                      txt=" ".join(cur.get_text(" ",strip=True).split())
+                      if txt and len(txt)<100:
+                          print("NEXT",i,cur.name,cur.get("class"),repr(txt))
+          PY
