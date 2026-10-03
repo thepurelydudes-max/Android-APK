@@ -45,28 +45,6 @@ def main() -> int:
                 con.executescript(sql)
                 con.commit()
 
-    support_path = source_dir / "support.json"
-    if support_path.is_file():
-        support = json.loads(support_path.read_text(encoding="utf-8"))
-        if not isinstance(support, dict):
-            raise RuntimeError("support.json must contain a JSON object")
-        if not isinstance(support.get("enabled", True), bool):
-            raise RuntimeError("support.json enabled must be boolean")
-        for key in (
-            "title_ru", "title_en", "body_ru", "body_en",
-            "method_ru", "method_en", "details", "recipient",
-        ):
-            if key in support and not isinstance(support.get(key), str):
-                raise RuntimeError(f"support.json {key} must be a string")
-        payload = json.dumps(support, ensure_ascii=False, separators=(",", ":"))
-        with sqlite3.connect(database) as con:
-            con.execute(
-                "INSERT INTO meta(key,value) VALUES(?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                ("support_config_json", payload),
-            )
-            con.commit()
-
     delete_path = source_dir / "delete_cache.txt"
     if delete_path.is_file():
         for raw in delete_path.read_text(encoding="utf-8").splitlines():
