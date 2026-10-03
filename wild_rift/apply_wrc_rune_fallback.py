@@ -196,8 +196,8 @@ def main() -> int:
             if cid is None:
                 raise SystemExit(f"Unknown champion in rune fallback: {raw_cid}")
             raw_runes = [str(x).strip() for x in (row.get("runes") or []) if str(x).strip()]
-            if len(raw_runes) not in (4, 5):
-                raise SystemExit(f"{cid}/{role}: expected 4 or 5 source runes, got {raw_runes}")
+            if len(raw_runes) != 5:
+                raise SystemExit(f"{cid}/{role}: expected exactly 5 source runes, got {raw_runes}")
 
             resolved = []
             for raw in raw_runes:
