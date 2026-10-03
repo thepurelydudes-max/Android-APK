@@ -367,7 +367,6 @@ jobs:
             paths.py \
             localization.py \
             adaptive_descriptions.py \
-            runes_test.py \
             VERSION.txt \
             requirements.txt; do
             cp "$GITHUB_WORKSPACE/mlbb/$file" "$RUNTIME_PROJECT/$file"
@@ -427,6 +426,7 @@ jobs:
             paths.py \
             localization.py \
             adaptive_descriptions.py \
+            runes_test.py \
             VERSION.txt \
             requirements.txt; do
             cp "$GITHUB_WORKSPACE/wild_rift/$file" "$RUNTIME_PROJECT/$file"
