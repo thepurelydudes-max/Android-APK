@@ -1,0 +1,29 @@
+name: Inspect WR Pocket recommendation markup
+on:
+  push:
+    branches: [main]
+    paths: [".inspect-wrca-wrp-trigger"]
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install requests beautifulsoup4
+      - shell: bash
+        run: |
+          python - <<'PY'
+          import requests
+          from bs4 import BeautifulSoup
+          for champ in ('yasuo','hwei','senna'):
+              soup=BeautifulSoup(requests.get('https://wrpocket.app/en/champions/'+champ,timeout=20).text,'html.parser')
+              print('===',champ,'===')
+              for tag in soup.find_all(['h2','h3','h4']):
+                  if 'Build Trends' in tag.get_text(' ',strip=True) or tag.get_text(' ',strip=True).startswith(('Runes','Core items')):
+                      print('HEADING',tag.name,tag.get_text(' ',strip=True),'PARENT',tag.parent.name,tag.parent.get('class'))
+                      print('NEXT_SIBLINGS',[(x.name,x.get('class'),x.get_text(' ',strip=True)[:155]) for x in tag.next_siblings if getattr(x,'name',None)][:8])
+                      print('PARENT_HTML',str(tag.parent)[:4500])
+                      print('NEXT',str(tag.find_next('table'))[:3200] if tag.find_next('table') else 'NONE')
+          PY
