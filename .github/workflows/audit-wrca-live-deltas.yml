@@ -1,0 +1,103 @@
+name: Audit WRCA Live Data Deltas (read only)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".audit-wrca-live-trigger"]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install requests beautifulsoup4
+      - name: Compare baseline 7.3a to live WRC source for affected champions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import requests, zipfile, sqlite3, json, re, sys, time, io, unicodedata
+          from pathlib import Path
+          sys.path.insert(0, 'wild_rift')
+          from sources import (_parse_wildriftcore_counter_page, parse_wildriftcore_build_page, WR_CORE_HTML_HEADERS)
+          old="https://github.com/thepurelydudes-max/Android-APK/releases/download/wrca-data-2026.10.03.7/WRCA-data-2026.10.03.7.zip"
+          response=requests.get(old,timeout=80)
+          response.raise_for_status()
+          with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+              Path("/tmp/wrca-old.db").write_bytes(z.read("data/wildrift.db"))
+          con=sqlite3.connect("/tmp/wrca-old.db")
+          con.row_factory=sqlite3.Row
+          ch=list(con.execute("select id,name,name_ru from champions"))
+          alias=list(con.execute("select alias,champion_id from champion_aliases"))
+          def norm(value):
+              return re.sub(r'[^a-z0-9]','',unicodedata.normalize('NFKD',str(value).lower()))
+          ids={}
+          for row in ch:
+              for key in (row['id'],row['name'],row['name_ru']):
+                  if key:ids[norm(key)]=row['id']
+          for row in alias:
+              if row['alias']:ids[norm(row['alias'])]=row['champion_id']
+          def resolve(name):
+              return ids.get(norm(name))
+          known_items=[r[0] for r in con.execute("select name from items")]
+          targets=["Volibear","Jhin","Tryndamere","Yasuo","Hwei","Nocturne","Yunara","Senna"]
+          session=requests.Session()
+          def load(url,prefer_reader=False):
+              urls=([f"https://r.jina.ai/{url}",url] if prefer_reader else [url, f"https://r.jina.ai/{url}"])
+              errs=[]
+              for target in urls:
+                  try:
+                      r=session.get(target,headers=WR_CORE_HTML_HEADERS,timeout=35)
+                      r.raise_for_status()
+                      if len(r.text)>1500: return r.text, ("reader" if "r.jina.ai" in target else "direct")
+                  except Exception as e:errs.append(str(e)[:120])
+              return "", ("; ".join(errs)[:200])
+          print("AUDIT_BASELINE",json.dumps({"champions":len(ch),"old_matchups":con.execute("select count(*) from matchups").fetchone()[0],"old_builds":con.execute("select count(*) from role_builds").fetchone()[0],"old_role_runes":con.execute("select count(*) from role_runes").fetchone()[0]}))
+          all_changed_m=0
+          all_changed_b=0
+          all_observed_m=0
+          all_observed_b=0
+          for cid in targets:
+              slug=cid.lower()
+              print("AUDIT_CHAMPION",cid)
+              page,transport=load(f"https://wildriftcore.com/en/champions/{slug}/counters/",True)
+              pairs=_parse_wildriftcore_counter_page(page,cid,resolve) if page else []
+              old_pairs=list(con.execute("select enemy_id,role,score from matchups where champion_id=? and source='wildriftcore.com'",(cid,)))
+              old_exact={(r['enemy_id'],r['role']):r['score'] for r in old_pairs}
+              old_general={}
+              for r in old_pairs:
+                  old_general.setdefault(r['enemy_id'],set()).add(r['score'])
+              exact_compares=[]; rough_compares=[]
+              for _,opp,role,score in pairs:
+                  if (opp,role) in old_exact:
+                      old_score=old_exact[(opp,role)]
+                      exact_compares.append((opp,role,old_score,score))
+                  elif not role and len(old_general.get(opp,set()))==1:
+                      old_score=next(iter(old_general[opp]))
+                      rough_compares.append((opp,'general-match',old_score,score))
+              changed_exact=[v for v in exact_compares if abs(v[2]-v[3])>0.001]
+              changed_rough=[v for v in rough_compares if abs(v[2]-v[3])>0.001]
+              all_changed_m+=len(changed_exact)
+              all_observed_m+=len(exact_compares)
+              print("AUDIT_MATCHUP",json.dumps({"champion":cid,"transport":transport,"live_rows":len(pairs),"old_rows":len(old_pairs),"exact_compared":len(exact_compares),"exact_changed":len(changed_exact),"exact_examples":changed_exact[:7],"approx_comparable":len(rough_compares),"approx_changes":len(changed_rough),"approx_examples":changed_rough[:5]},ensure_ascii=False))
+              page,transport=load(f"https://wildriftcore.com/en/champions/{slug}/builds/",True)
+              parsed=parse_wildriftcore_build_page(page,cid,known_items) if page else {"builds":[]}
+              old_builds={r['role']:(json.loads(r['items_json']),r['boot_name']) for r in con.execute("select role,items_json,boot_name from role_builds where champion_id=? and source='wildriftcore.com'",(cid,))}
+              comparison=[]
+              for row in parsed.get("builds",[]):
+                  role=row['role']
+                  if role not in old_builds:continue
+                  new=(row['items'],row.get('boot',''))
+                  old=old_builds[role]
+                  comparison.append({"role":role,"changed":old!=new,"old":old if old!=new else [],"new":new if old!=new else []})
+              changes=[v for v in comparison if v['changed']]
+              all_changed_b+=len(changes)
+              all_observed_b+=len(comparison)
+              print("AUDIT_BUILDS",json.dumps({"champion":cid,"transport":transport,"new_role_builds":len(parsed.get('builds',[])),"old_roles":list(old_builds),"compared_roles":len(comparison),"changed":len(changes),"changes":changes[:4]},ensure_ascii=False))
+          print("AUDIT_TOTAL",json.dumps({"champions_checked":len(targets),"exact_matchups_comparable":all_observed_m,"exact_changed":all_changed_m,"role_builds_comparable":all_observed_b,"role_builds_changed":all_changed_b},ensure_ascii=False))
+          PY
