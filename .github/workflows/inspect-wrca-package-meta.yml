@@ -103,3 +103,15 @@ jobs:
               runes=con.execute("SELECT runes_json,source FROM role_runes WHERE champion_id=? AND role=? ORDER BY source",(champ,role)).fetchall()
               print("AUDIT_OLD_BUILD_RUNE",json.dumps({"champ":champ,"role":role,"builds":builds,"runes":runes},ensure_ascii=False))
           PY
+
+
+      - name: Audit exact source profile variants before selective 7.3c update
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sqlite3,json
+          con=sqlite3.connect('/tmp/wrca/data/wildrift.db')
+          pairs=[('Yasuo','Мид'),('Yasuo','Барон'),('Hwei','Мид'),('Hwei','Саппорт'),('Jhin','ADC'),('Senna','Саппорт'),('Senna','ADC')]
+          for cid,role in pairs:
+              print('WRC_CURRENT_PROFILE',json.dumps({'champion':cid,'role':role,'standard':con.execute("SELECT items_json,boot_name FROM role_builds WHERE champion_id=? AND role=? AND source='wildriftcore.com'",(cid,role)).fetchall(),'variants':con.execute("SELECT variant_name,items_json FROM role_build_variants WHERE champion_id=? AND role=? AND source='wildriftcore.com'",(cid,role)).fetchall()},ensure_ascii=False))
+          PY
