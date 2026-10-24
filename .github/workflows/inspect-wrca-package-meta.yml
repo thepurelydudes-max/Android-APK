@@ -115,3 +115,49 @@ jobs:
           for cid,role in pairs:
               print('WRC_CURRENT_PROFILE',json.dumps({'champion':cid,'role':role,'standard':con.execute("SELECT items_json,boot_name FROM role_builds WHERE champion_id=? AND role=? AND source='wildriftcore.com'",(cid,role)).fetchall(),'variants':con.execute("SELECT variant_name,items_json FROM role_build_variants WHERE champion_id=? AND role=? AND source='wildriftcore.com'",(cid,role)).fetchall()},ensure_ascii=False))
           PY
+
+
+      - name: Dry-run verified 7.3c recommendation deltas with exact row-count and completeness checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import sqlite3,json,hashlib,shutil
+          orig='/tmp/wrca/data/wildrift.db'
+          path='/tmp/wrca/verified-recommendation-audit.db'
+          shutil.copy2(orig,path)
+          sql=open('wrca_data/source/update.sql',encoding='utf-8').read()
+          con=sqlite3.connect(path)
+          con.row_factory=sqlite3.Row
+          before={tbl:[tuple(row) for row in con.execute('SELECT * FROM '+tbl+' ORDER BY 1,2')] for tbl in ['matchups','champion_tiers','stats','items','role_builds','role_runes']}
+          old_role_builds={(r['champion_id'],r['role'],r['source']):r['items_json'] for r in con.execute('SELECT * FROM role_builds')}
+          old_role_runes={(r['champion_id'],r['role'],r['source']):r['runes_json'] for r in con.execute('SELECT * FROM role_runes')}
+          con.executescript(sql)
+          after={tbl:[tuple(row) for row in con.execute('SELECT * FROM '+tbl+' ORDER BY 1,2')] for tbl in before}
+          changed_builds=[(r['champion_id'],r['role']) for r in con.execute('SELECT * FROM role_builds') if old_role_builds[(r['champion_id'],r['role'],r['source'])]!=r['items_json']]
+          changed_runes=[(r['champion_id'],r['role']) for r in con.execute('SELECT * FROM role_runes') if old_role_runes[(r['champion_id'],r['role'],r['source'])]!=r['runes_json']]
+          assert len(changed_builds)==7,(len(changed_builds),changed_builds)
+          assert len(changed_runes)==26,(len(changed_runes),changed_runes)
+          assert before['matchups']==after['matchups'],'Matchup ratings unexpectedly changed'
+          assert before['champion_tiers']==after['champion_tiers'],'Champion tiers changed'
+          assert before['stats']==after['stats'],'Win rates changed'
+          assert before['items']==after['items'],'Item catalog changed'
+          for champ,role in changed_builds:
+              row=con.execute("SELECT items_json FROM role_builds WHERE champion_id=? AND role=? AND source='wildriftcore.com'",(champ,role)).fetchone()
+              build=json.loads(row[0]);assert len(build)==5 and len(set(build))==5,(champ,role,build)
+              for name in build:
+                  data=con.execute('SELECT name,tier,icon_path FROM items WHERE name=?',(name,)).fetchone()
+                  assert data is not None,(champ,role,'unknown item',name)
+                  assert data['tier'].lower()=='upgraded',(champ,role,'not finished',name,data['tier'])
+          for champ,role in changed_runes:
+              row=con.execute("SELECT runes_json FROM role_runes WHERE champion_id=? AND role=? AND source='wrpocket.app:tencent-cn'",(champ,role)).fetchone()
+              runes=json.loads(row[0]);assert len(runes)==5 and len(set(runes))==5,(champ,role,runes)
+              for name in runes: assert con.execute('SELECT 1 FROM runes WHERE name=?',(name,)).fetchone() is not None,(champ,role,'missing rune',name)
+          assert con.execute('PRAGMA quick_check').fetchone()[0]=='ok'
+          snapshot={(r['champion_id'],r['role'],r['source']):r['items_json'] for r in con.execute('SELECT * FROM role_builds')}
+          runes_snapshot={(r['champion_id'],r['role'],r['source']):r['runes_json'] for r in con.execute('SELECT * FROM role_runes')}
+          con.executescript(sql)
+          assert snapshot=={(r['champion_id'],r['role'],r['source']):r['items_json'] for r in con.execute('SELECT * FROM role_builds')}
+          assert runes_snapshot=={(r['champion_id'],r['role'],r['source']):r['runes_json'] for r in con.execute('SELECT * FROM role_runes')}
+          print('VERIFIED_RECOMMENDATION_DELTA_OK',json.dumps({'changed_rune_role_pages':len(changed_runes),'changed_standard_role_builds':len(changed_builds),'matchups_preserved':len(before['matchups']),'champions_preserved':con.execute('SELECT COUNT(*) FROM champions').fetchone()[0],'idempotent':True,'items_and_runes_valid':True},ensure_ascii=False))
+          PY
