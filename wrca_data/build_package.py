@@ -39,8 +39,8 @@ def write_package_db_metadata(
     iso_time = generated_at.astimezone(timezone.utc).isoformat()
     rows = {
         "patch_version": patch,
-        "tier_patch": patch,
-        "item_dataset_checked_patch": patch,
+        # Preserve the last verified tier and full-item-catalog refresh versions.
+        # A selective balance delta must not claim these sources were refreshed.
         "last_update": display_time,
         "last_update_iso": iso_time,
         "package_version": package_version,
@@ -276,7 +276,8 @@ def main() -> int:
         f"- Situational rune rules: {counts['role_rune_adaptations']}\n"
         f"- Localized runes: {counts['localized_runes']}\n"
         f"- Rune icon files: {rune_icons}\n"
-        f"- SHA-256: {package_sha}\n",
+        f"- SHA-256: {package_sha}\n"
+        f"- Targeted balance update: {meta.get('balance_delta_note', '-')}\n",
         encoding="utf-8",
     )
     print(json.dumps(latest, ensure_ascii=False, indent=2))
