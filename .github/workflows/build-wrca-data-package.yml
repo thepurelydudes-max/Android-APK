@@ -77,26 +77,18 @@ jobs:
           set -euo pipefail
           python wrca_data/source/apply_update.py --assets-root wild_rift/assets
 
-      - name: Download audited WRCA rune seed
-        uses: actions/download-artifact@v4
-        with:
-          name: WRCA-3.9.3-full-rune-database
-          path: ${{ runner.temp }}/wrca-rune-seed
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
-          run-id: 37123062121
-
-      - name: Merge full rune dataset into official WRCA data
+      - name: Audit complete runes already included in current verified release
         shell: bash
         run: |
           set -euo pipefail
-          SEED_ROOT="${{ runner.temp }}/wrca-rune-seed/wrca-full-runes"
-          test -f "$SEED_ROOT/data/wildrift.db"
-          test -d "$SEED_ROOT/cache/runes"
-          python wrca_data/source/merge_rune_seed.py             --assets-root wild_rift/assets             --seed-root "$SEED_ROOT"
-          python wild_rift/apply_rune_localization_ru.py --db wild_rift/assets/data/wildrift.db
+          python - <<'PY'
+          from pathlib import Path
+          from wrca_data.source.merge_rune_seed import _audit
+          result = _audit(Path("wild_rift/assets/data/wildrift.db"), Path("wild_rift/assets/cache"))
+          print("Baseline full rune dataset verified:", result)
+          PY
 
-      - name: Apply Riot 7.3b delta after rune seed merge
+      - name: Apply Riot 7.3b delta to audited baseline runes
         shell: bash
         run: |
           set -euo pipefail
