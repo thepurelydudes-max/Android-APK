@@ -72,3 +72,20 @@ jobs:
           for name in ["Electrocute","Cheap Shot","Grasp of Undying","Aery"]:
               print("POST_PATCH_RUNE:",con.execute("SELECT name,effect_en,effect_ru,patch FROM runes WHERE name=?",(name,)).fetchone())
           PY
+
+
+      - name: Compare specific old WRC matchup edges with publicly readable 7.3c pages
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sqlite3, json
+          con=sqlite3.connect("/tmp/wrca/data/wildrift.db")
+          pairs={"Yasuo":["Vex","Malphite","Lissandra","Brand"],"Volibear":["Gwen","Lillia","Kayn","Riven"]}
+          for champion, opponents in pairs.items():
+              for opp in opponents:
+                  vals=con.execute(
+                      "SELECT role,score,source FROM matchups WHERE champion_id=? AND enemy_id=?",
+                      (champion,opp),
+                  ).fetchall()
+                  print("AUDIT_OLD_EDGE",json.dumps({"champion":champion,"opponent":opp,"stored":vals},ensure_ascii=False))
+          PY
