@@ -25,3 +25,34 @@ jobs:
           print(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True))
           con.close()
           PY
+
+
+      - name: Audit selective 7.3b balance fields in currently published package
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sqlite3, json
+          con=sqlite3.connect("/tmp/wrca/data/wildrift.db")
+          con.row_factory=sqlite3.Row
+          names=["Youmuu's Ghostblade","Locket of the Iron Solari","Thornmail","Warmog's Armor","Statikk Shiv","Yun Tal Wildarrows"]
+          print("AUDIT_ITEMS_BEGIN")
+          for name in names:
+              rows=con.execute("SELECT name,name_ru,price,stats_json,effect_en,data_patch FROM items WHERE lower(name)=lower(?)",(name,)).fetchall()
+              print(json.dumps({"target":name,"rows":[dict(x) for x in rows]},ensure_ascii=False))
+          print("AUDIT_RUNES_BEGIN")
+          for name in ["Electrocute","Cheap Shot","Grasp of Undying","Aery"]:
+              rows=con.execute("SELECT name,name_ru,effect_en,effect_ru,patch FROM runes WHERE lower(name)=lower(?)",(name,)).fetchall()
+              print(json.dumps({"target":name,"rows":[dict(x) for x in rows]},ensure_ascii=False))
+          print("AUDIT_SOURCE_PATCHES_BEGIN")
+          for table in ["champion_tiers","matchup_page_cache","build_page_cache","role_builds","role_runes","items","runes"]:
+              col="data_patch" if table=="items" else "patch"
+              try:
+                  data=con.execute("SELECT "+col+",COUNT(*) FROM "+table+" GROUP BY "+col).fetchall()
+                  print(table, json.dumps([list(x) for x in data],ensure_ascii=False))
+              except sqlite3.OperationalError: pass
+          print("AUDIT_MATCHUPS_SAMPLE_BEGIN")
+          for name in ["Volibear","Jhin","Tryndamere","Yasuo","Hwei","Nocturne","Yunara","Senna"]:
+              rows=con.execute("SELECT c.id,c.name,COUNT(*) AS n FROM champions c JOIN matchups m ON m.champion_id=c.id WHERE lower(c.name)=lower(?) GROUP BY c.id,c.name",(name,)).fetchall()
+              print(name,json.dumps([dict(x) for x in rows],ensure_ascii=False))
+          con.close()
+          PY
