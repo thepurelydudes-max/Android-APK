@@ -89,3 +89,17 @@ jobs:
                   ).fetchall()
                   print("AUDIT_OLD_EDGE",json.dumps({"champion":champion,"opponent":opp,"stored":vals},ensure_ascii=False))
           PY
+
+
+      - name: Inspect old item-and-rune choices for representative roles
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sqlite3, json
+          con=sqlite3.connect("/tmp/wrca/data/wildrift.db")
+          pairs=[("Yasuo","Мид"),("Hwei","Мид"),("Jhin","ADC"),("Senna","Саппорт")]
+          for champ,role in pairs:
+              builds=con.execute("SELECT items_json,boot_name,source FROM role_builds WHERE champion_id=? AND role=?",(champ,role)).fetchall()
+              runes=con.execute("SELECT runes_json,source FROM role_runes WHERE champion_id=? AND role=? ORDER BY source",(champ,role)).fetchall()
+              print("AUDIT_OLD_BUILD_RUNE",json.dumps({"champ":champ,"role":role,"builds":builds,"runes":runes},ensure_ascii=False))
+          PY
