@@ -74,8 +74,8 @@ def main() -> None:
         stats = json.loads(row["stats_json"])
         if not isinstance(stats, list):
             raise RuntimeError("Invalid Locket stats JSON")
-        old_hp = [s for s in stats if re.fullmatch(r"\\+200\\s+(?:HP|Health)", str(s), re.I)]
-        new_hp = [s for s in stats if re.fullmatch(r"\\+300\\s+(?:HP|Health)", str(s), re.I)]
+        old_hp = [s for s in stats if re.fullmatch(r"\+200\s+(?:HP|Health)", str(s), re.I)]
+        new_hp = [s for s in stats if re.fullmatch(r"\+300\s+(?:HP|Health)", str(s), re.I)]
         if len(old_hp) == 1:
             stats = [re.sub(r"200", "300", s, count=1) if s == old_hp[0] else s for s in stats]
             con.execute("UPDATE items SET stats_json=? WHERE name=?",
@@ -91,10 +91,10 @@ def main() -> None:
         if row is None or not row["effect_en"]:
             raise RuntimeError("Warmog effect is missing")
         effect = row["effect_en"]
-        if re.search(r"\\b(?:900|950)\\s+bonus health\\b", effect, re.I):
-            effect = re.sub(r"\\b(?:900|950)\\s+bonus health\\b",
+        if re.search(r"\b(?:900|950)\s+bonus health\b", effect, re.I):
+            effect = re.sub(r"\b(?:900|950)\s+bonus health\b",
                             "1250 bonus health", effect, flags=re.I)
-        elif not re.search(r"\\b1250\\s+bonus health\\b", effect, re.I):
+        elif not re.search(r"\b1250\s+bonus health\b", effect, re.I):
             raise RuntimeError("Cannot locate Warmog trigger threshold")
         con.execute(
             "UPDATE items SET effect_en=?,data_patch='7.3b' WHERE name=?",
