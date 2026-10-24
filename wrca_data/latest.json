@@ -25,14 +25,14 @@
     "stats": 922,
     "tier_roles": 5
   },
-  "download_url": "https://github.com/thepurelydudes-max/Android-APK/releases/download/wrca-data-2026.10.24.11/WRCA-data-2026.10.24.11.zip",
-  "generated_at_utc": "2026-10-24T21:48:41.796899+00:00",
-  "manifest_sha256": "a45726869da9b66dd96b0358314a1a7b27a70e1fbf67e87a2d93ef4dd39aadf3",
+  "download_url": "https://github.com/thepurelydudes-max/Android-APK/releases/download/wrca-data-2026.10.24.12/WRCA-data-2026.10.24.12.zip",
+  "generated_at_utc": "2026-10-24T22:18:51.774034+00:00",
+  "manifest_sha256": "9f9e6ad458bb18931bce69218a1ca1ed57ccdd16ffde3eb034dd49742044616b",
   "min_app_version": "3.9.5",
-  "package_version": "2026.10.24.11",
+  "package_version": "2026.10.24.12",
   "patch": "7.3c",
   "protocol_version": 1,
-  "release_tag": "wrca-data-2026.10.24.11",
-  "sha256": "628b1d44f8713e9ca3dd418f2c7f1df2a46756d02576993ea46c01cbaf130c4e",
-  "size_bytes": 10064407
+  "release_tag": "wrca-data-2026.10.24.12",
+  "sha256": "35f848e69db0e646ebc19ea985f01c2eb1828bee1eb79748d1906c37ead41d0b",
+  "size_bytes": 10064914
 }
