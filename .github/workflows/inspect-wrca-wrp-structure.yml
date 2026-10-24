@@ -20,6 +20,8 @@ jobs:
           for champ in ('yasuo','hwei','senna'):
               soup=BeautifulSoup(requests.get('https://wrpocket.app/en/champions/'+champ,timeout=20).text,'html.parser')
               print('===',champ,'===')
+              raw=str(soup)
+              print("MULTI_ROLE_PROBE",champ,"rune_h3",len([t for t in soup.find_all("h3") if "Runes" in t.get_text(' ',strip=True)]),"role_markers",[(m,raw.count(m)) for m in ['data-cnb-lane','data-cnb-role','data-cnb-champ','data-lane','cnb_by_lane','data-rank']],"all-links",len(soup.find_all("a",href=lambda h: h and h.startswith("/en/champions/"))))
               for tag in soup.find_all(['h2','h3','h4']):
                   if 'Build Trends' in tag.get_text(' ',strip=True) or tag.get_text(' ',strip=True).startswith(('Runes','Core items')):
                       print('HEADING',tag.name,tag.get_text(' ',strip=True),'PARENT',tag.parent.name,tag.parent.get('class'))
