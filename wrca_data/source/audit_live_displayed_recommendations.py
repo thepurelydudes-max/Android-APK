@@ -51,6 +51,8 @@ def extract(url: str) -> dict:
         if not first:
             first = next((r for r in rows if "wrp-cnb-head" not in (r.get("class") or [])), None)
         names = [b.get("data-name-en", "").strip() for b in (first.select("button[data-name-en]") if first else [])]
+        # WRP uses a lowercase variant for the same official rune identity.
+        names = [{"axiom arcanist": "Axiom Arcanist"}.get(name.casefold(), name) for name in names]
         if not role or len(names) != 5 or len(set(names)) != 5:
             return {"url": url, "error": f"invalid live lane/runes: {role} {names!r}"}
         return {"url": url, "role": role, "runes": names}
@@ -147,7 +149,7 @@ def main():
         key: value for key, value in report.items()
         if key not in {"changes", "unchanged", "failed_or_uncovered"}
     }, ensure_ascii=False), flush=True)
-    for row in report["changes"][:20]:
+    for row in report["changes"]:
         print("WRCA_RUNE_CHANGE", json.dumps({
             "champion": row["champion"], "role": row["role"],
             "old": row["old"], "new": row["runes"]
