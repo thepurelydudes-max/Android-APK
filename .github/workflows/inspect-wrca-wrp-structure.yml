@@ -29,7 +29,7 @@ jobs:
               for node in soup.find_all('script'):
                   st=node.get_text()
                   if len(st)>10000:
-                      print('SCRIPT_FLAGS',champ,'length',len(st),'fetches',[(i,st[max(0,i-45):i+130]) for i in [m.start() for m in __import__('re').finditer(r'fetch\\(|/api/|cnbData|trendData|runeCombo|cnb-lane',st,__import__('re').I)][:14]])
+                      print('SCRIPT_FLAGS',champ,'length',len(st),'fetches',[(i,st[max(0,i-45):i+130]) for i in [m.start() for m in __import__('re').finditer(r'fetch|/api/|cnbData|trendData|runeCombo|cnb-lane',st,__import__('re').I)][:14]])
               for query in ['?lane=top','?lane=support']:
                   rr=requests.get('https://wrpocket.app/en/champions/'+champ+query,timeout=20)
                   ss=BeautifulSoup(rr.text,'html.parser')
