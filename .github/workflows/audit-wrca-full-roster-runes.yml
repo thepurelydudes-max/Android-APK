@@ -1,0 +1,32 @@
+name: Audit WRCA All-Champion Rune Differences (read only)
+on:
+  push:
+    branches: [main]
+    paths: [".audit-wrca-all-runes-trigger"]
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install requests beautifulsoup4
+      - name: Restore last verified WRCA baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 --retry-all-errors "https://github.com/thepurelydudes-max/Android-APK/releases/download/wrca-data-2026.10.03.7/WRCA-data-2026.10.03.7.zip" -o /tmp/wrca-audit-baseline.zip
+          unzip -p /tmp/wrca-audit-baseline.zip data/wildrift.db > /tmp/wrca-audit-baseline.db
+      - name: Compare all known champions (primary roles) to current WR Pocket recommendations
+        shell: bash
+        run: |
+          set -euo pipefail
+          python wrca_data/source/audit_live_displayed_recommendations.py --db /tmp/wrca-audit-baseline.db --output dist/wrca-rune-audit.json --workers 10
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WRCA-7.3c-readonly-rune-audit
+          path: dist/wrca-rune-audit.json
+          if-no-files-found: error
+          retention-days: 30
