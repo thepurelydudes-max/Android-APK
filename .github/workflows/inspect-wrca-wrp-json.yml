@@ -1,0 +1,37 @@
+name: Inspect WR Pocket Structured Data
+on:
+  push:
+    branches: [main]
+    paths: [".inspect-wrca-wrp-json-trigger"]
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install requests
+      - shell: bash
+        run: |
+          python - <<'PY'
+          import requests,json
+          for champ in ['yasuo','hwei','senna']:
+              resp=requests.get('https://wrpocket.app/site_data/champions/'+champ+'.json',timeout=30)
+              print('STRUCTURE_HTTP',champ,resp.status_code,len(resp.content),flush=True)
+              if resp.status_code!=200:continue
+              data=resp.json()
+              def walk(obj,level=0,key='root'):
+                  if level>4:return
+                  if isinstance(obj,dict):
+                      print('STRUCTURE',' '*level,key,'dict',len(obj),'keys',list(obj)[:35],flush=True)
+                      for k,v in list(obj.items())[:25]:
+                          if isinstance(v,(dict,list)):walk(v,level+1,k)
+                  elif isinstance(obj,list):
+                      print('STRUCTURE',' '*level,key,'list',len(obj),flush=True)
+                      if obj and level<4:walk(obj[0],level+1,'[0]')
+              walk(data)
+              for key in ['build_trends','buildTrends','runes','rune_combos','cnb','champion']:
+                  if key in data:
+                      print('TOP_SAMPLE',champ,key,json.dumps(data[key],ensure_ascii=False)[:1100],flush=True)
+          PY
