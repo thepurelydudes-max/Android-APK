@@ -1,0 +1,40 @@
+name: Diagnose WRCA Current Recommendation Sources
+on:
+  push:
+    branches: [main]
+    paths: [".diagnose-wrca-live-trigger"]
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install requests
+      - name: Check public sources
+        shell: bash
+        run: |
+          python - <<'PY'
+          import requests, json
+          urls=[
+             'https://wildriftcore.com/en/champions/yasuo/builds/',
+             'https://r.jina.ai/https://wildriftcore.com/en/champions/yasuo/builds/',
+             'https://r.jina.ai/http://wildriftcore.com/en/champions/yasuo/builds/',
+             'https://www.google.com/search?q=site%3Awildriftcore.com%2Fen%2Fchampions%2Fyasuo%2Fbuilds%2F',
+             'https://wrpocket.app/en/champions/yasuo',
+             'https://wrpocket.app/en/champions',
+             'https://wildriftfire.com/guide/yasuo',
+             'https://www.wildriftmeta.com/champions/yasuo',
+             'https://ry2x.github.io/WildRift-Merged-Stats-Data/heroStats.json',
+          ]
+          for url in urls:
+              try:
+                  response=requests.get(url,timeout=8,headers={'User-Agent':'Mozilla/5.0 (compatible; WRCADataAudit/1.0)'})
+                  text=response.text
+                  print('SOURCE_PROBE',json.dumps({'url':url,'code':response.status_code,'length':len(text),'content_type':response.headers.get('content-type'),'sample':text[:120].replace('\\n',' ')},ensure_ascii=False),flush=True)
+              except Exception as e:
+                  print('SOURCE_ERROR',url,str(e)[:200],flush=True)
+          PY
