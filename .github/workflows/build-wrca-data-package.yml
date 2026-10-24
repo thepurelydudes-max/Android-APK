@@ -96,6 +96,12 @@ jobs:
           python wrca_data/source/merge_rune_seed.py             --assets-root wild_rift/assets             --seed-root "$SEED_ROOT"
           python wild_rift/apply_rune_localization_ru.py --db wild_rift/assets/data/wildrift.db
 
+      - name: Apply Riot 7.3b delta after rune seed merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python wrca_data/source/apply_7_3b_delta.py --db wild_rift/assets/data/wildrift.db
+
       - name: Choose package version
         id: version
         shell: bash
