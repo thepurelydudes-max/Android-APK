@@ -22,6 +22,10 @@ jobs:
               print('===',champ,'===')
               raw=str(soup)
               print("MULTI_ROLE_PROBE",champ,"rune_h3",len([t for t in soup.find_all("h3") if "Runes" in t.get_text(' ',strip=True)]),"role_markers",[(m,raw.count(m)) for m in ['data-cnb-lane','data-cnb-role','data-cnb-champ','data-lane','cnb_by_lane','data-rank']],"all-links",len(soup.find_all("a",href=lambda h: h and h.startswith("/en/champions/"))))
+              for node in soup.find_all(attrs={'data-cnb-lane':True}): print('LANE_MARKUP',champ,node.name,node.get('data-cnb-lane'),str(node)[:600])
+              for node in soup.select('script'):
+                  txt=node.get_text()
+                  if 'cnb' in txt.lower() or 'lane' in txt.lower(): print('SCRIPT_SAMPLE',champ,len(txt),txt[:400])
               for tag in soup.find_all(['h2','h3','h4']):
                   if 'Build Trends' in tag.get_text(' ',strip=True) or tag.get_text(' ',strip=True).startswith(('Runes','Core items')):
                       print('HEADING',tag.name,tag.get_text(' ',strip=True),'PARENT',tag.parent.name,tag.parent.get('class'))
