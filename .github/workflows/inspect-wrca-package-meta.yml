@@ -56,3 +56,19 @@ jobs:
               print(name,json.dumps([dict(x) for x in rows],ensure_ascii=False))
           con.close()
           PY
+
+
+      - name: Simulate 7.3b delta on a disposable copy (do not publish)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/wrca/data/wildrift.db /tmp/wrca/delta-audit.db
+          python wrca_data/source/apply_7_3b_delta.py --db /tmp/wrca/delta-audit.db
+          python - <<'PY'
+          import sqlite3
+          con=sqlite3.connect('/tmp/wrca/delta-audit.db')
+          for name in ["Youmuu's Ghostblade", "Locket of the Iron Solari", "Thornmail", "Warmog's Armor", "Statikk Shiv", "Yun Tal Wildarrows"]:
+              print("POST_PATCH_ITEM:",con.execute("SELECT name,price,stats_json,effect_en,data_patch FROM items WHERE name=?",(name,)).fetchone())
+          for name in ["Electrocute","Cheap Shot","Grasp of Undying","Aery"]:
+              print("POST_PATCH_RUNE:",con.execute("SELECT name,effect_en,effect_ru,patch FROM runes WHERE name=?",(name,)).fetchone())
+          PY
