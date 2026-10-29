@@ -16,6 +16,7 @@ on:
     branches:
       - main
       - wrca-runes-3.9.4-test
+      - wrca-3.9.8-performance
     paths:
       - ".build-trigger"
 
@@ -134,7 +135,7 @@ jobs:
           with sqlite3.connect(db_path) as con:
               assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
               meta = dict(con.execute("SELECT key,value FROM meta"))
-              assert meta.get("patch_version") == "7.3a", meta
+              assert meta.get("patch_version") == json.load(open("wrca_data/latest.json", encoding="utf-8"))["patch"], meta
               assert con.execute("SELECT COUNT(*) FROM champions").fetchone()[0] == 142
               assert con.execute("SELECT COUNT(*) FROM matchups").fetchone()[0] == 9606
               build_pairs = {

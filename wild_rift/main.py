@@ -289,6 +289,31 @@ class MobileAssistant:
         self._media_src_cache[key] = result
         return result
 
+    def optimized_image(
+        self,
+        src: str,
+        width: int,
+        height: int,
+        fit=ft.BoxFit.COVER,
+    ) -> ft.Image:
+        """Decode thumbnails near their rendered size instead of full source size.
+
+        Most bundled champion/item/rune images are much larger than the 18-58px
+        controls used on screen. Limiting decode dimensions cuts image memory
+        and raster work during Android scrolling without changing the source
+        file or visible layout.
+        """
+        decode_w = max(48, int(width * 2))
+        decode_h = max(48, int(height * 2))
+        return ft.Image(
+            src=src,
+            width=width,
+            height=height,
+            fit=fit,
+            cache_width=decode_w,
+            cache_height=decode_h,
+        )
+
     def item_image_content(self, record: dict | None, size: int) -> ft.Control:
         """Render only a successfully cached item icon.
 
@@ -298,7 +323,7 @@ class MobileAssistant:
         """
         local = self._cached_local_media_src(record)
         if local:
-            return ft.Image(src=local, width=size, height=size, fit=ft.BoxFit.COVER)
+            return self.optimized_image(local, size, size, ft.BoxFit.COVER)
         return ft.Container(
             width=size,
             height=size,
@@ -359,7 +384,7 @@ class MobileAssistant:
             )
         src = self.image_src(champ, fallback="")
         if src:
-            return ft.Image(src=src, fit=ft.BoxFit.COVER)
+            return self.optimized_image(src, size, size, ft.BoxFit.COVER)
         initials = (self.champ_name(champ)[:2] or "?").upper()
         return ft.Row(
             alignment=ft.MainAxisAlignment.CENTER,
@@ -433,7 +458,7 @@ class MobileAssistant:
             spacing=2,
             expand=True,
             controls=[
-                ft.Image(src="wildrift_logo.png", width=178, height=48, fit=ft.BoxFit.CONTAIN),
+                self.optimized_image("wildrift_logo.png", 178, 48, ft.BoxFit.CONTAIN),
                 self.header_subtitle_text,
             ],
         )
@@ -447,7 +472,7 @@ class MobileAssistant:
                     ft.Row(
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Image(src="wildrift_icon.png", width=42, height=42, fit=ft.BoxFit.CONTAIN),
+                            self.optimized_image("wildrift_icon.png", 42, 42, ft.BoxFit.CONTAIN),
                             brand,
                             self.lang_button,
                         ],
@@ -482,7 +507,7 @@ class MobileAssistant:
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=2,
                     controls=[
-                        ft.Image(src=ROLE_ICONS[role], width=32, height=32, fit=ft.BoxFit.CONTAIN),
+                        self.optimized_image(ROLE_ICONS[role], 32, 32, ft.BoxFit.CONTAIN),
                         label,
                     ],
                 ),
@@ -1007,7 +1032,7 @@ class MobileAssistant:
                                     height=18,
                                     border_radius=4,
                                     clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                                    content=ft.Image(src=self.image_src(champ), fit=ft.BoxFit.COVER),
+                                    content=self.optimized_image(self.image_src(champ), 18, 18, ft.BoxFit.COVER),
                                 ),
                                 ft.Text(self.champ_name(champ), size=9),
                             ],
@@ -1100,7 +1125,7 @@ class MobileAssistant:
                     height=46,
                     border_radius=8,
                     clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                    content=ft.Image(src=self.image_src(champ), fit=ft.BoxFit.COVER),
+                    content=self.optimized_image(self.image_src(champ), 46, 46, ft.BoxFit.COVER),
                 ),
                 ft.Column(
                     spacing=1,
@@ -1416,9 +1441,8 @@ class MobileAssistant:
                             height=58,
                             border_radius=9,
                             clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                            content=ft.Image(
-                                src=self.image_src(champ),
-                                fit=ft.BoxFit.COVER,
+                            content=self.optimized_image(
+                                self.image_src(champ), 58, 58, ft.BoxFit.COVER
                             ),
                         ),
                         ft.Column(
@@ -1614,21 +1638,21 @@ class MobileAssistant:
             summary = await worker
             if self.update_progress:
                 self.update_progress.value = 1.0
-            self.reload_snapshot()
-            valid_ids = set(self.snapshot.get("champions_by_id", {}))
-            self.enemy_ids = [cid if cid in valid_ids else None for cid in self.enemy_ids]
             errors = list(summary.get("errors") or [])
-            self.recalculate(preserve_selection=True, update_page=False)
-            # The database can gain new heroes, so refresh menu options once,
-            # but keep the existing page and controls mounted to avoid a flash.
-            for index, dd in enumerate(self.enemy_dropdowns):
-                dd.options = self.champion_options()
-                dd.value = self.enemy_ids[index] if index < len(self.enemy_ids) else None
-            for index, box in enumerate(self.enemy_portraits):
-                cid = self.enemy_ids[index] if index < len(self.enemy_ids) else None
-                box.content = self.avatar_content(self.champ_by_id(cid), 48)
-            if self.header_meta_text is not None:
-                self.header_meta_text.value = self.header_meta_value()
+            if not summary.get("already_current"):
+                self.reload_snapshot()
+                valid_ids = set(self.snapshot.get("champions_by_id", {}))
+                self.enemy_ids = [cid if cid in valid_ids else None for cid in self.enemy_ids]
+                self.recalculate(preserve_selection=True, update_page=False)
+                # A newly installed database can add or remove champions.
+                for index, dd in enumerate(self.enemy_dropdowns):
+                    dd.options = self.champion_options()
+                    dd.value = self.enemy_ids[index] if index < len(self.enemy_ids) else None
+                for index, box in enumerate(self.enemy_portraits):
+                    cid = self.enemy_ids[index] if index < len(self.enemy_ids) else None
+                    box.content = self.avatar_content(self.champ_by_id(cid), 48)
+                if self.header_meta_text is not None:
+                    self.header_meta_text.value = self.header_meta_value()
 
             if summary.get("already_current"):
                 msg = "База уже актуальна." if self.lang == "ru" else "Data is already up to date."
@@ -1749,3 +1773,4 @@ async def main(page: ft.Page):
 
 if __name__ == "__main__":
     ft.run(main, assets_dir="assets")
+

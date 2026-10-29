@@ -1264,6 +1264,19 @@ def _enemy_threat_profile(
     enemy_objs: list[tuple[dict, str]],
     snapshot: dict | None = None,
 ) -> tuple[Counter, dict[str, list[str]]]:
+    # All build previews for a draft share the same enemies. Keep this cache
+    # inside the snapshot so data updates discard it together with the data it
+    # describes, and return copies so callers cannot modify cached results.
+    cache = None
+    key = None
+    if snapshot is not None:
+        cache = snapshot.setdefault("_enemy_threat_profiles", {})
+        key = tuple((str(enemy.get("id") or ""), str(role or "")) for enemy, role in enemy_objs)
+        cached = cache.get(key)
+        if cached is not None:
+            counts, names = cached
+            return Counter(counts), defaultdict(list, {tag: list(values) for tag, values in names.items()})
+
     counts: Counter = Counter()
     enemies_by_tag: dict[str, list[str]] = defaultdict(list)
 
@@ -1289,6 +1302,10 @@ def _enemy_threat_profile(
             if enemy["name"] not in enemies_by_tag[tag]:
                 enemies_by_tag[tag].append(enemy["name"])
 
+    if cache is not None:
+        if len(cache) >= 64:
+            cache.clear()
+        cache[key] = (dict(counts), {tag: tuple(values) for tag, values in enemies_by_tag.items()})
     return counts, enemies_by_tag
 
 
@@ -1755,4 +1772,5 @@ def recommend_build(
         "draft_features": DRAFT_MATRIX.feature_vector(threat_counts),
         "runes": rune_recommendation,
     }
+
 
